@@ -3241,6 +3241,9 @@ class EpubPageView(context: Context) : View(context) {
     }
     while (end > probe + 1 && text[end - 1] == WORD_JOINER) end -= 1
 
+    splitGluedVerseNumber(text, start, end, probe)?.let { part ->
+      return LocalTokenRange(part.first, part.last + 1)
+    }
     return if (start < end) LocalTokenRange(start, end) else null
   }
 

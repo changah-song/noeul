@@ -28,3 +28,6 @@ koroman
 kiwipiepy
 
 pyiceberg
+
+# MP3 encoding for the Listen-mode voice (woof_tts.py); WAV without it.
+lameenc

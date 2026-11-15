@@ -58,7 +58,7 @@ import ListenBar from '../components/Read/ListenBar';
 import ListenVoiceSheet from '../components/Read/ListenVoiceSheet';
 import VocabLevelModal from '../components/shared/VocabLevelModal';
 import { hasVocabSizeGrid } from '../services/vocabSizeLevels';
-import { createListenPlayer, voiceLocaleFor, voiceSampleFor, LISTEN_PITCHES, LISTEN_RATES } from '../services/listenPlayer';
+import { cloudVoiceFor, createListenPlayer, voiceLocaleFor, voiceSampleFor, LISTEN_PITCHES, LISTEN_RATES } from '../services/listenPlayer';
 import { remainingFrom, spokenRangeAt } from '../services/listenSpokenWord';
 import {
     PREPROCESS_VERSION,
@@ -139,7 +139,8 @@ import useSavedWordFades from '../hooks/useSavedWordFades';
 import { ONBOARDING_FLOW_SEEN_KEY } from './Onboarding';
 import { getSyncStatus, markSyncPending, subscribeSyncStatus } from '../services/syncStatus';
 import { activeTocIndex, blockIdForAnchor, tocAnchorFromHref } from '../services/tocAnchors';
-import { blankNoteMarkers, linkAtOffset, resolveLinkTarget } from '../services/readerLinks';
+import { blankNoteMarkers, linkAtOffset, resolveLinkTarget, wordBesideNoteMarkers } from '../services/readerLinks';
+import { blankGluedVerseNumbers } from '../services/listenVerseNumbers';
 import {
     anchorFraction,
     chapterMarks,
@@ -171,7 +172,7 @@ import {
     buildAnnotatedLevelTerms,
     withPhraseTapTerms,
 } from '../services/readerAnnotations';
-import { createNativeReaderThemeTokens, fontFamilies, radii, spacing, textStyles, useTheme } from '../theme';
+import { createNativeReaderThemeTokens, fontFamilies, radii, resolveThemeMode, spacing, textStyles, useTheme } from '../theme';
 
 // Listen mode preferences (speed, stop on underlined words, AI meaning).
 const LISTEN_PREFS_KEY = 'listenPrefs';
@@ -193,6 +194,7 @@ const READER_SETTINGS_KEY = 'readerSettings';
 const READER_SETTINGS_UPDATED_AT_KEY = 'readerSettingsUpdatedAt';
 const DEFAULT_READER_SETTINGS = {
     fontSize: 18,
+    themeMode: 'light',
     isDarkMode: false,
     lineSpacing: 2.05,
     // New readers start in scroll mode.
@@ -623,7 +625,7 @@ const Read = ({
     route,
 }) => {
     const { t, language: interfaceLanguage } = useTranslation();
-    const { targetLanguage, isDarkMode, setIsDarkMode } = useAppContext();
+    const { targetLanguage, isDarkMode, themeMode, setThemeMode } = useAppContext();
     const { colors: themeColors } = useTheme();
     const styles = useMemo(() => createStyles(themeColors), [themeColors]);
     const chrome = useMemo(() => createReaderChromeStyles(themeColors), [themeColors]);
@@ -648,6 +650,12 @@ const Read = ({
     const heldSpotRef = useRef(null);
     heldSpotRef.current = heldSpot;
     const [locationPrompt, setLocationPrompt] = useState(false);
+    // The jump was a link in the text (a footnote, a contents entry): the
+    // prompt is then just the way back, and any move off the page holds the
+    // spot, however short.
+    const [heldByLink, setHeldByLink] = useState(false);
+    const linkJumpRef = useRef(false);
+    const returnToHeldSpotRef = useRef(null);
     const lastViewedSpotRef = useRef(null);
     // Set by a jump the reader asked for, until its page event arrives.
     const deliberateJumpRef = useRef(false);
@@ -1353,9 +1361,10 @@ const Read = ({
 
     // Follows the book link under a word tap (see followBookLink).
     const followLinkRef = useRef(null);
+    const trimNoteMarkersRef = useRef(null);
     const [saveToggleToken, setSaveToggleToken] = useState(0);
     const handleNativeWordSelected = useCallback((event = {}) => {
-        const text = typeof event.text === 'string' ? event.text.trim() : '';
+        let text = typeof event.text === 'string' ? event.text.trim() : '';
         if (!text) {
             return;
         }
@@ -1371,6 +1380,8 @@ const Read = ({
         if (followLinkRef.current?.(event)) {
             return;
         }
+        // A note letter glued to the word ("aIn"): look up the word without it.
+        text = trimNoteMarkersRef.current?.(event) || text;
 
         // A word tap with the panel already open looks the new word up (the
         // panel stays and changes); a tap on blank space closes it through
@@ -1567,15 +1578,17 @@ const Read = ({
             ]);
             if (savedSettings) {
                 const parsedSettings = JSON.parse(savedSettings);
-                if (typeof parsedSettings?.isDarkMode === 'boolean') {
-                    setIsDarkMode(parsedSettings.isDarkMode);
+                // The theme saved with the reader settings wins; with none
+                // saved, the app's current theme stays.
+                const savedThemeMode = resolveThemeMode(parsedSettings ?? {}, themeMode);
+                if (savedThemeMode !== themeMode) {
+                    setThemeMode(savedThemeMode);
                 }
                 const nextSettings = {
                     ...DEFAULT_READER_SETTINGS,
                     ...parsedSettings,
-                    isDarkMode: typeof parsedSettings?.isDarkMode === 'boolean'
-                        ? parsedSettings.isDarkMode
-                        : isDarkMode,
+                    themeMode: savedThemeMode,
+                    isDarkMode: savedThemeMode === 'dark',
                 };
                 readerSettingsRef.current = nextSettings;
                 setSettings(nextSettings);
@@ -1660,11 +1673,12 @@ const Read = ({
                     };
                     delete nextSettings.updatedAt;
                     delete nextSettings.updated_at;
-                    if (typeof nextSettings.isDarkMode === 'boolean') {
-                        setIsDarkMode(nextSettings.isDarkMode);
-                    } else {
-                        nextSettings.isDarkMode = isDarkMode;
+                    const cloudThemeMode = resolveThemeMode(cloudReaderSettings, themeMode);
+                    if (cloudThemeMode !== themeMode) {
+                        setThemeMode(cloudThemeMode);
                     }
+                    nextSettings.themeMode = cloudThemeMode;
+                    nextSettings.isDarkMode = cloudThemeMode === 'dark';
 
                     if (!isMounted) {
                         return;
@@ -1708,18 +1722,24 @@ const Read = ({
                 readerSettingsCloudUserRef.current = null;
             }
         };
-    }, [activeOwnerId, isDarkMode, readerSettingsLoaded, saveSettings, setIsDarkMode, syncGeneration, syncPaused, user]);
+    }, [activeOwnerId, themeMode, readerSettingsLoaded, saveSettings, setThemeMode, syncGeneration, syncPaused, user]);
 
     // `keepSelection`: a setting that doesn't change the page (the translation
     // card's collapsed state) leaves the open lookup alone.
     const updateSettings = (patch, { keepSelection = false } = {}) => {
-        if ('isDarkMode' in patch) {
-            setIsDarkMode(patch.isDarkMode);
+        // The theme is the app's, not only the reader's: hand it to the app
+        // and keep both fields in step in what gets saved.
+        const nextThemeMode = 'themeMode' in patch
+            ? resolveThemeMode({ themeMode: patch.themeMode }, themeMode)
+            : ('isDarkMode' in patch ? (patch.isDarkMode ? 'dark' : 'light') : themeMode);
+        if (nextThemeMode !== themeMode) {
+            setThemeMode(nextThemeMode);
         }
         const newSettings = {
             ...settings,
-            isDarkMode,
             ...patch,
+            themeMode: nextThemeMode,
+            isDarkMode: nextThemeMode === 'dark',
         };
         if (!keepSelection) {
             setHighlightedWord('');
@@ -1824,7 +1844,12 @@ const Read = ({
     // when one of those layers is active so normal back behaviour is untouched
     // otherwise.
     useEffect(() => {
-        const layer = readerBackLayer({ showMenu, lookupOpen, isFullscreen });
+        const layer = readerBackLayer({
+            showMenu,
+            lookupOpen,
+            linkReturn: locationPrompt && heldByLink && Boolean(heldSpot),
+            isFullscreen,
+        });
         if (!layer) {
             return undefined;
         }
@@ -1834,13 +1859,15 @@ const Read = ({
             } else if (layer === 'lookup') {
                 // Also clears the native selection highlight.
                 dismissLookup();
+            } else if (layer === 'linkReturn') {
+                returnToHeldSpotRef.current?.();
             } else {
                 setIsFullscreen(false);
             }
             return true;
         });
         return () => subscription.remove();
-    }, [showMenu, isFullscreen, lookupOpen, dismissLookup]);
+    }, [showMenu, isFullscreen, lookupOpen, dismissLookup, locationPrompt, heldByLink, heldSpot]);
 
     // Last resort while the reader is on screen: back leaves the book like the
     // header's chevron, rather than closing the app (the history can hold only
@@ -1869,19 +1896,25 @@ const Read = ({
         onPanResponderTerminationRequest: () => true,
     }), [dismissLookup]);
 
+    // The theme changed somewhere else (Profile, the song reader): take it
+    // into the reader's settings and save it, so the next launch doesn't
+    // bring the old theme back from them.
     useEffect(() => {
-        setSettings((current) => {
-            if (current.isDarkMode === isDarkMode) {
-                return current;
-            }
-            const nextSettings = {
-                ...current,
-                isDarkMode,
-            };
-            readerSettingsRef.current = nextSettings;
-            return nextSettings;
-        });
-    }, [isDarkMode]);
+        const current = readerSettingsRef.current;
+        if (current.themeMode === themeMode && current.isDarkMode === isDarkMode) {
+            return;
+        }
+        const nextSettings = {
+            ...current,
+            themeMode,
+            isDarkMode,
+        };
+        readerSettingsRef.current = nextSettings;
+        setSettings(nextSettings);
+        if (readerSettingsLoaded) {
+            saveSettings(nextSettings);
+        }
+    }, [isDarkMode, readerSettingsLoaded, saveSettings, themeMode]);
 
     const activeBookSizeMb = typeof activeBook?.size === 'number'
         ? activeBook.size / (1024 * 1024)
@@ -2313,6 +2346,21 @@ const Read = ({
         }
     }, [activeSpineIndex, flushPendingFocusPageChange, updateNativeRestorePosition]);
 
+    // The tapped word without a note marker the reader's word ran into, or
+    // null when it has none (see wordBesideNoteMarkers).
+    trimNoteMarkersRef.current = (event = {}) => {
+        if (typeof event.blockId !== 'string' || !Number.isFinite(event.tapOffset)) return null;
+        const loadedSpineIndex = currentSpineIndexRef.current;
+        const spineIndex = Number.isInteger(event.spineIndex) ? event.spineIndex : loadedSpineIndex;
+        const blocks = chapterBlocksForReaderPackage(
+            spineIndex === loadedSpineIndex
+                ? nativeReaderPackageRef.current
+                : parsedChapterCacheRef.current.get(spineIndex)
+        );
+        const block = blocks.find((candidate) => candidate?.id === event.blockId);
+        return wordBesideNoteMarkers(block, event.sourceStartOffset, event.sourceEndOffset, event.tapOffset)?.text || null;
+    };
+
     // A word tap that landed on a link in the book's text (a footnote number,
     // a contents entry, a web address): go where it points. True when the tap
     // was a link, so the word under it is not looked up. `tapOffset` is the
@@ -2350,13 +2398,16 @@ const Read = ({
             return true;
         }
 
-        const jump = (firstBlockId) => handleSelectBookmark({
-            spineIndex: target.spineIndex,
-            pageIndex: firstBlockId ? null : 0,
-            pagesInChapter: null,
-            href: target.path,
-            firstBlockId,
-        });
+        const jump = (firstBlockId) => {
+            handleSelectBookmark({
+                spineIndex: target.spineIndex,
+                pageIndex: firstBlockId ? null : 0,
+                pagesInChapter: null,
+                href: target.path,
+                firstBlockId,
+            });
+            linkJumpRef.current = true;
+        };
         if (target.spineIndex === spineIndex) {
             // Within the chapter: only when the place it names can be found.
             const firstBlockId = blockIdForAnchor(blocks, target.anchor);
@@ -2398,6 +2449,7 @@ const Read = ({
         setLocationPrompt(false);
         if (held?.position) handleSelectBookmark(held.position);
     }, [handleSelectBookmark]);
+    returnToHeldSpotRef.current = returnToHeldSpot;
     // Another book starts fresh.
     useEffect(() => {
         heldSpotRef.current = null;
@@ -3538,13 +3590,26 @@ const Read = ({
         const moved = !previousSpot || !isNearPosition(previousSpot.position, nextPosition);
         const deliberate = deliberateJumpRef.current
             && Date.now() - lastSeekAtRef.current < DELIBERATE_JUMP_MS;
-        if (moved || !deliberate) deliberateJumpRef.current = false;
+        // A link's jump holds the spot even when it lands close by.
+        const linkJump = deliberate && moved && linkJumpRef.current;
+        if (moved || !deliberate) {
+            deliberateJumpRef.current = false;
+            linkJumpRef.current = false;
+        }
         const held = heldSpotRef.current;
         if (held) {
             if (isNearPosition(held.position, nextPosition)) {
                 heldSpotRef.current = null;
                 setHeldSpot(null);
                 setLocationPrompt(false);
+            } else if (linkJump) {
+                // A link followed while a spot is already held (one note to
+                // the next): the first spot stays the one to go back to.
+                setHeldByLink(true);
+                stepsSincePromptRef.current = 0;
+                setLocationPrompt(true);
+                updateNativeRestorePosition(nextPosition);
+                return;
             } else {
                 // Reading on from the new spot without answering counts as yes.
                 const readOn = !relayout && previousSpot && !isLocationJump(previousSpot.position, nextPosition)
@@ -3563,13 +3628,14 @@ const Read = ({
             previousSpot
             && !focusModeRef.current
             && !relayout
-            && isLocationJump(previousSpot.position, nextPosition, {
+            && (linkJump || isLocationJump(previousSpot.position, nextPosition, {
                 pagedWithinChapter: deliberate || readerSettingsRef.current?.readingMode !== 'scroll',
-            })
+            }))
         ) {
             const spot = { position: previousSpot.position, progress: previousSpot.progress };
             heldSpotRef.current = spot;
             setHeldSpot(spot);
+            setHeldByLink(linkJump);
             stepsSincePromptRef.current = 0;
             setLocationPrompt(true);
             updateNativeRestorePosition(nextPosition);
@@ -4454,6 +4520,10 @@ const Read = ({
         );
         const earlyNext = knownNext();
         const earlyNextText = earlyNext?.moved ? cleanListenText(earlyNext.text) : '';
+        // An online voice fetches the next sentence's audio while this one plays.
+        if (earlyNextText) {
+            player.prefetch([{ text: earlyNextText, ...listenVoiceFor(prefs, ctx.targetLocale) }]);
+        }
         const nextTranslation = prefs.translateSentences && earlyNextText
             ? chapterTranslations.translate(earlyNextText, ctx.language, ctx.interfaceLanguage).catch(() => '')
             : null;
@@ -4501,11 +4571,16 @@ const Read = ({
         // uncleaned text.
         const leading = rawText.length - rawText.trimStart().length;
         // Note markers (the "1" or "*" of a footnote link) are not read: they
-        // become spaces, so the engine's offsets still match the page.
-        const voiced = blankNoteMarkers(
+        // become spaces, so the engine's offsets still match the page. In an
+        // English book so do verse numbers glued to a word ("26Then").
+        const unmarked = blankNoteMarkers(
             rawText,
             event.segments,
             chapterBlocksForReaderPackage(nativeReaderPackageRef.current)
+        );
+        const voiced = (String(ctx.language || '').toLowerCase().startsWith('en')
+            ? blankGluedVerseNumbers(unmarked)
+            : unmarked
         ).slice(leading, leading + text.length);
         const rest = remainingFrom(voiced, prepared.from);
         listenReachedRef.current = { key, offset: rest.base };
@@ -5466,6 +5541,7 @@ const Read = ({
                     onToggleExplain={() => updateListenPrefs({ explainWords: !listenPrefsRef.current.explainWords })}
                     onToggleTranslate={() => updateListenPrefs({ translateSentences: !listenPrefsRef.current.translateSentences })}
                     onClose={() => pauseListening({ keepActive: false })}
+                    credit={cloudVoiceFor(listenPrefs.voices?.[listenTargetLocale], listenTargetLocale)}
                     bottom={focusControlsBaseBottom}
                     translateY={focusControlsTranslate}
                     styles={chrome}
@@ -5542,6 +5618,7 @@ const Read = ({
                 onHeight={setLocationPromptHeight}
                 onConfirm={confirmNewSpot}
                 onDecline={declineNewSpot}
+                onReturn={heldByLink ? returnToHeldSpot : null}
             />
 
             {/* "Getting this chapter's word help ready". Floats above the

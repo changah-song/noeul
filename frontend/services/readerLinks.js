@@ -50,12 +50,20 @@ const HAS_LETTER = /\p{L}/u;
 const OPENERS = '[(（［【〔';
 const CLOSERS = '])）］】〕';
 
+// One letter of an alphabet (Latin, Greek, Cyrillic, Hebrew) or one Korean
+// consonant or vowel on its own ("ㄱ"). A link that is nothing but this is a
+// note letter, the "a" "b" "c" of a study Bible, whether or not the book
+// raises it. A single Chinese character or Korean syllable can be a whole
+// word, so those are left out.
+const LONE_LETTER = /^[A-Za-z\u00C0-\u024F\u0370-\u03FF\u0400-\u04FF\u05D0-\u05EA\u3131-\u318E]$/;
+
 // A link that is only a marker: no words in it ("1", "[12]", "*", "†", "①"),
-// or a short raised label ("a", "주1").
+// a single letter ("a", "ㄱ"), or a short raised label ("ab", "주1").
 const isNoteMarker = (range) => {
     const label = range.text.trim();
     if (!label || label.length > 8) return false;
     if (!HAS_LETTER.test(label)) return true;
+    if (LONE_LETTER.test(label)) return true;
     return range.raised && label.length <= 4;
 };
 
@@ -83,6 +91,28 @@ export const silentRangesForBlock = (block) => {
         }
         return { start, end };
     });
+};
+
+// A tapped word with a note marker glued to it ("aIn" where the "a" is a
+// footnote link): the reader's word runs across the link, so the part of the
+// word on the tapped side of it is what gets looked up. `start`..`end` is the
+// word in the block, `tapOffset` the character under the finger. Returns the
+// trimmed { start, end, text }, or null when nothing needs trimming.
+export const wordBesideNoteMarkers = (block, start, end, tapOffset) => {
+    if (![start, end, tapOffset].every(Number.isFinite) || end <= start) return null;
+    const text = typeof block?.text === 'string' ? block.text : '';
+    if (!text) return null;
+    let from = start;
+    let to = end;
+    linkRangesForBlock(block).filter(isNoteMarker).forEach((marker) => {
+        if (marker.end <= from || marker.start >= to) return;
+        if (tapOffset >= marker.start && tapOffset < marker.end) return;
+        if (tapOffset < marker.start) to = Math.min(to, marker.start);
+        else from = Math.max(from, marker.end);
+    });
+    if (from === start && to === end) return null;
+    const word = text.slice(from, to).trim();
+    return word ? { start: from, end: to, text: word } : null;
 };
 
 // `text` (what the focus payload hands listen mode) with its note markers

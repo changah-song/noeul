@@ -55,7 +55,7 @@ import {
 } from '../services/preferencesCloudSync';
 import { upsertUserProfile } from '../services/profilesCloudSync';
 import { requestUserDataSync } from '../services/userDataSyncQueue';
-import { ThemeProvider } from '../theme/tokens';
+import { ThemeProvider, resolveThemeMode } from '../theme/tokens';
 
 const AppContext = createContext({
   dictMode: true,
@@ -75,6 +75,8 @@ const AppContext = createContext({
   activeProfileId: DEFAULT_ACTIVE_PROFILE_ID,
   setActiveProfileId: () => {},
   switchProfile: () => {},
+  themeMode: 'light',
+  setThemeMode: () => {},
   isDarkMode: false,
   setIsDarkMode: () => {},
   toggleDarkMode: () => {},
@@ -133,6 +135,15 @@ export const normalizeLanguageSettings = (settings = {}) => {
     DEFAULT_LANGUAGE_SETTINGS.interfaceLanguage
   );
 
+  const storedDarkMode = settings.isDarkMode
+    ?? settings.is_dark_mode
+    ?? settings.darkMode
+    ?? settings.dark_mode;
+  const themeMode = resolveThemeMode({
+    themeMode: settings.themeMode ?? settings.theme_mode,
+    isDarkMode: storedDarkMode == null ? undefined : normalizeBoolean(storedDarkMode, false),
+  });
+
   return {
     targetLanguage,
     chineseScript: normalizeChineseScript(
@@ -160,13 +171,8 @@ export const normalizeLanguageSettings = (settings = {}) => {
         ?? settings.readingLevelsByLanguage
         ?? settings.reading_levels_by_language
     ),
-    isDarkMode: normalizeBoolean(
-      settings.isDarkMode
-        ?? settings.is_dark_mode
-        ?? settings.darkMode
-        ?? settings.dark_mode,
-      false
-    ),
+    themeMode,
+    isDarkMode: themeMode === 'dark',
     notificationsEnabled: normalizeBoolean(
       settings.notificationsEnabled
         ?? settings.notifications_enabled,
@@ -190,6 +196,7 @@ const settingsFromCloudPreferences = (preferences = {}) => normalizeLanguageSett
   is_dark_mode: preferences.reader_settings?.isDarkMode
     ?? preferences.reader_settings?.is_dark_mode
     ?? preferences.reader_settings?.darkMode,
+  theme_mode: preferences.reader_settings?.themeMode,
   updated_at: preferences.updated_at,
 });
 
@@ -246,6 +253,10 @@ const hasInterfaceLanguagePatch = (patch = {}) => (
   || hasOwn(patch, 'interface_language')
 );
 
+// Both fields are written together, so a build from before sepia (which reads
+// only isDarkMode) still gets the right answer.
+const themeModePatch = (themeMode) => ({ themeMode, isDarkMode: themeMode === 'dark' });
+
 // A patch naming an app language is the learner choosing it; any other patch
 // (a new learning language, say) keeps their choice and re-derives what's shown.
 export const applyLanguageSettingsPatch = (current = {}, patch = {}, updatedAt) => {
@@ -273,6 +284,7 @@ export const AppProvider = ({ children, user }) => {
     interfaceLanguage: getDeviceInterfaceLanguage() ?? DEFAULT_LANGUAGE_SETTINGS.interfaceLanguage,
     levelsByLanguage: DEFAULT_PROFICIENCY_LEVELS_BY_LANGUAGE,
     activeProfileId: DEFAULT_ACTIVE_PROFILE_ID,
+    themeMode: 'light',
     isDarkMode: false,
     updatedAt: null,
   });
@@ -489,6 +501,9 @@ export const AppProvider = ({ children, user }) => {
       isDarkMode: cloudPreferences
         ? cloudPreferenceSettings.isDarkMode
         : localSettings.isDarkMode,
+      themeMode: cloudPreferences
+        ? cloudPreferenceSettings.themeMode
+        : localSettings.themeMode,
       updatedAt: cloudTimestamp,
     });
     cloudSettings = await ensureCloudProfileForSettings(
@@ -705,9 +720,11 @@ export const AppProvider = ({ children, user }) => {
       activeProfileId: profileId,
       targetLanguage,
     }),
+    themeMode: languageSettings.themeMode,
+    setThemeMode: (themeMode) => saveLanguageSettings(themeModePatch(themeMode)),
     isDarkMode: languageSettings.isDarkMode,
-    setIsDarkMode: (isDarkMode) => saveLanguageSettings({ isDarkMode }),
-    toggleDarkMode: () => saveLanguageSettings({ isDarkMode: !languageSettings.isDarkMode }),
+    setIsDarkMode: (isDarkMode) => saveLanguageSettings(themeModePatch(isDarkMode ? 'dark' : 'light')),
+    toggleDarkMode: () => saveLanguageSettings(themeModePatch(languageSettings.isDarkMode ? 'light' : 'dark')),
     notificationsEnabled: languageSettings.notificationsEnabled ?? true,
     setNotificationsEnabled: (notificationsEnabled) => saveLanguageSettings({ notificationsEnabled }),
     personalizedVocabEnabled: languageSettings.personalizedVocabEnabled ?? true,
@@ -723,6 +740,7 @@ export const AppProvider = ({ children, user }) => {
     languageSettings.nativeLanguage,
     languageSettings.activeProfileId,
     languageSettings.isDarkMode,
+    languageSettings.themeMode,
     languageSettings.notificationsEnabled,
     languageSettings.personalizedVocabEnabled,
     languageSettings.targetLanguage,
@@ -733,7 +751,7 @@ export const AppProvider = ({ children, user }) => {
 
   return (
     <AppContext.Provider value={value}>
-      <ThemeProvider isDarkMode={languageSettings.isDarkMode}>
+      <ThemeProvider mode={languageSettings.themeMode}>
         {children}
       </ThemeProvider>
     </AppContext.Provider>

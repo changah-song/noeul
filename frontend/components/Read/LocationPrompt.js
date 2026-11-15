@@ -1,5 +1,6 @@
 import { memo, useEffect, useMemo, useRef } from 'react';
 import { Animated, Easing, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Feather } from '@expo/vector-icons';
 import { fontFamilies, useTheme } from '../../theme';
 import { useTranslation } from '../../hooks/useTranslation';
 
@@ -9,8 +10,12 @@ import { useTranslation } from '../../hooks/useTranslation';
  * new spot. Yes saves it; No keeps the old one, which stays marked with a black
  * dot on the scrubber to get back to (screens/Read.js holds it). `onHeight`
  * hears the card's height, for what has to make room above it.
+ *
+ * After a link in the text (a footnote, a contents entry) there is nothing to
+ * ask: with `onReturn` it is one row, the way back to where the link was
+ * tapped and a close button that stays here.
  */
-const LocationPrompt = ({ visible, bottom = 24, onConfirm, onDecline, onHeight }) => {
+const LocationPrompt = ({ visible, bottom = 24, onConfirm, onDecline, onReturn, onHeight }) => {
     const { colors } = useTheme();
     const { t } = useTranslation();
     const styles = useMemo(() => createStyles(colors), [colors]);
@@ -29,6 +34,38 @@ const LocationPrompt = ({ visible, bottom = 24, onConfirm, onDecline, onHeight }
 
     if (!visible) return null;
     const translateY = enter.interpolate({ inputRange: [0, 1], outputRange: [12, 0] });
+    if (onReturn) {
+        return (
+            <View
+                pointerEvents="box-none"
+                style={[styles.layer, { bottom }]}
+                onLayout={onHeight ? (event) => onHeight(Math.round(event?.nativeEvent?.layout?.height ?? 0)) : undefined}
+            >
+                <Animated.View style={[styles.card, styles.linkCard, { opacity: enter, transform: [{ translateY }] }]}>
+                    <TouchableOpacity
+                        style={[styles.button, styles.buttonMain, styles.linkBack]}
+                        onPress={onReturn}
+                        activeOpacity={0.85}
+                        accessibilityRole="button"
+                    >
+                        <Feather name="corner-up-left" size={17} color={colors.backgroundWarm} />
+                        <Text style={[styles.buttonText, styles.buttonMainText, styles.linkBackText]} numberOfLines={1}>
+                            {t('read.linkBack')}
+                        </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                        style={[styles.button, styles.buttonQuiet, styles.linkStay]}
+                        onPress={onConfirm}
+                        activeOpacity={0.75}
+                        accessibilityRole="button"
+                        accessibilityLabel={t('read.linkStay')}
+                    >
+                        <Feather name="x" size={18} color={colors.text} />
+                    </TouchableOpacity>
+                </Animated.View>
+            </View>
+        );
+    }
     return (
         <View
             pointerEvents="box-none"
@@ -90,6 +127,26 @@ const createStyles = (colors) => StyleSheet.create({
         shadowOpacity: 0.14,
         shadowRadius: 18,
         elevation: 8,
+    },
+    linkCard: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        paddingTop: 8,
+        paddingHorizontal: 8,
+        paddingBottom: 8,
+    },
+    linkBack: {
+        flexDirection: 'row',
+        gap: 8,
+    },
+    linkBackText: {
+        flexShrink: 1,
+    },
+    linkStay: {
+        flex: 0,
+        width: 42,
+        paddingHorizontal: 0,
     },
     title: {
         fontFamily: fontFamilies.sansSemiBold,

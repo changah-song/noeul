@@ -18,6 +18,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the rest of the backend
 COPY . .
 
+# Listen mode's natural English voice: fetch the Woof model (about 41 MB,
+# pinned revision; see woof_tts.py). A failed download does not fail the
+# build: the app then keeps to the phone's own voice.
+RUN python woof_tts.py || echo "Woof model not downloaded; /speak/ will answer 503"
+
 # FastAPI will listen on this port
 EXPOSE 8000
 

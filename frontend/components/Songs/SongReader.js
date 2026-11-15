@@ -157,7 +157,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
     const { colors } = useTheme();
     const styles = useMemo(() => createStyles(colors), [colors]);
     const chrome = useMemo(() => createReaderChromeStyles(colors), [colors]);
-    const { targetLanguage, chineseScript, interfaceLanguage, isDarkMode } = useAppContext();
+    const { targetLanguage, chineseScript, interfaceLanguage, isDarkMode, setThemeMode } = useAppContext();
     const { activeOwnerId } = useLocalOwner();
     const insets = useSafeAreaInsets();
     const songLanguage = normalizeBookLanguage(targetLanguage);
@@ -306,8 +306,13 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
     }, [dismissLookup]);
 
     const handleSettingChange = useCallback((key, value) => {
+        // The theme is the app's setting, not one of the song reader's.
+        if (key === 'themeMode') {
+            setThemeMode?.(value);
+            return;
+        }
         updateSettings({ [key]: value });
-    }, [updateSettings]);
+    }, [setThemeMode, updateSettings]);
 
     const resetSongSettings = useCallback(() => {
         updateSettings({

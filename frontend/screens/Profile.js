@@ -120,8 +120,8 @@ const Profile = ({ user, signOut, updateUsername, navigation }) => {
         targetLanguage,
         setTargetLanguage,
         setChineseScript,
-        isDarkMode,
-        setIsDarkMode,
+        themeMode,
+        setThemeMode,
         activeProfileId,
     } = useAppContext();
     const { activeOwnerId } = useLocalOwner();
@@ -309,10 +309,12 @@ const Profile = ({ user, signOut, updateUsername, navigation }) => {
         }
     };
 
-    const appearanceModes = [
-        { key: 'light', label: t('profile.light'), selected: !isDarkMode, onPress: () => setIsDarkMode(false) },
-        { key: 'dark', label: t('profile.dark'), selected: isDarkMode, onPress: () => setIsDarkMode(true) },
-    ];
+    const appearanceModes = ['light', 'sepia', 'dark'].map((mode) => ({
+        key: mode,
+        label: t(`profile.${mode}`),
+        selected: themeMode === mode,
+        onPress: () => setThemeMode(mode),
+    }));
 
     return (
         <Screen

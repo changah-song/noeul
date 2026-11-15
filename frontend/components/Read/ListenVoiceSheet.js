@@ -18,7 +18,7 @@ import { Feather, MaterialIcons } from '@expo/vector-icons';
 import { useTranslation } from '../../hooks/useTranslation';
 import { formatNumber } from '../../services/interfaceLanguage';
 import { fontFamilies } from '../../theme';
-import { LISTEN_PITCHES, LISTEN_RATES, loadWorkingVoices } from '../../services/listenPlayer';
+import { LISTEN_PITCHES, LISTEN_RATES, cloudVoicesFor, loadWorkingVoices } from '../../services/listenPlayer';
 import { openVoiceDownload } from '../../modules/tts-voice-check/src';
 import {
     SHEET_PADDING,
@@ -151,9 +151,11 @@ const ListenVoiceSheet = ({
         { value: LISTEN_PITCHES[2], label: t('read.listenPitchHigher') },
     ];
     // One radio list of voices: "Phone default" (when it speaks), then the
-    // phone's working voices. `previewKey` keeps the two lists' sample
-    // indicators apart.
-    const renderVoiceList = ({ state, chosenId, onSelect, onPreview, label, previewKey }) => {
+    // phone's working voices, then the online voices for `onlineLocale` (the
+    // book's list only). `previewKey` keeps the two lists' sample indicators
+    // apart.
+    const renderVoiceList = ({ state, chosenId, onSelect, onPreview, label, previewKey, onlineLocale = null }) => {
+        const online = onlineLocale ? cloudVoicesFor(onlineLocale) : [];
         if (state == null) {
             return (
                 <>
@@ -167,7 +169,7 @@ const ListenVoiceSheet = ({
         }
         const list = state.voices;
         const defaultWorks = state.defaultVoice !== false;
-        if (!defaultWorks && list.length === 0) {
+        if (!defaultWorks && list.length === 0 && online.length === 0) {
             return (
                 <>
                     <Text style={styles.sectionLabel}>{label}</Text>
@@ -187,7 +189,7 @@ const ListenVoiceSheet = ({
                 </>
             );
         }
-        const listedIds = new Set(list.map((voice) => voice.id));
+        const listedIds = new Set([...list, ...online].map((voice) => voice.id));
         // A saved voice the phone no longer has reads with the default.
         const selectedId = chosenId && listedIds.has(chosenId) ? chosenId : null;
         const rows = [
@@ -197,6 +199,7 @@ const ListenVoiceSheet = ({
                 label: t('read.listenVoiceNumber', { number: voice.number }),
                 detail: voice.gender ? t(voice.gender === 'female' ? 'read.listenVoiceFemale' : 'read.listenVoiceMale') : '',
             })),
+            ...online.map((voice) => ({ id: voice.id, label: voice.name, detail: t('read.listenVoiceOnline') })),
         ];
         return (
             <>
@@ -238,6 +241,18 @@ const ListenVoiceSheet = ({
                 {list.length === 0 ? (
                     <Text style={styles.note}>{t('read.listenVoiceNoneOffline')}</Text>
                 ) : null}
+                {online.map((voice) => (
+                    <Text key={voice.id} style={styles.note}>
+                        {t('read.listenVoiceOnlineNote', { voice: voice.name })}{' '}
+                        <Text
+                            style={styles.creditLink}
+                            onPress={() => Linking.openURL(voice.creditUrl).catch(() => {})}
+                            accessibilityRole="link"
+                        >
+                            {voice.credit}
+                        </Text>
+                    </Text>
+                ))}
             </>
         );
     };
@@ -291,6 +306,7 @@ const ListenVoiceSheet = ({
                             onPreview: onPreviewVoice,
                             label: t('read.listenVoiceLabel'),
                             previewKey: 'book',
+                            onlineLocale: locale,
                         })}
                         {translationLocale && translationLocale !== locale ? renderVoiceList({
                             state: translationVoices,
@@ -449,6 +465,9 @@ const createStyles = (colors, maxHeight = 560) => StyleSheet.create({
         fontSize: 13,
         lineHeight: 18,
         color: colors.textTertiary,
+    },
+    creditLink: {
+        textDecorationLine: 'underline',
     },
     moreRow: {
         marginTop: 12,

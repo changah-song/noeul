@@ -4,7 +4,7 @@ import { Animated, Easing, Platform, ScrollView, StyleSheet, Text, TouchableOpac
 import { useTranslation } from '../../hooks/useTranslation';
 import usePresence from '../../hooks/usePresence';
 import { chapterTranslations } from '../../services/chapterTranslations';
-import { fontFamilies, useTheme } from '../../theme';
+import { fontFamilies, panelLift, useTheme } from '../../theme';
 
 // The pane is never taller than this many lines, however long the sentence:
 // a longer translation scrolls inside it, opening at the part that goes with
@@ -31,7 +31,7 @@ export const wordPositionInSentence = (sentence, word) => {
 /**
  * SentenceTranslationPopup — the translation of the tapped word's sentence,
  * in a pane across the top of the page: the dictionary panel's twin (the same
- * surface, edge to edge, no shadow), hanging from the header the way that one
+ * surface, edge to edge, lifted off the page by a soft shadow), hanging from the header the way that one
  * rises from the bottom. It is at most MAX_LINES tall; a longer translation
  * opens scrolled to about where the tapped word (`focusWord`) falls in its
  * sentence, an estimate from the word's place in the original, since the
@@ -181,7 +181,9 @@ const SentenceTranslationPopup = ({
 
 const createStyles = (colors, textSize) => StyleSheet.create({
     // The dictionary panel upside down: the same surface and hairline, edge
-    // to edge, rounded on the side that faces the page, and no shadow.
+    // to edge, rounded on the side that faces the page, with the same soft
+    // shadow falling onto it. Nothing here clips (the scroll view keeps its
+    // own text in), since clipping would cut the shadow off on iOS.
     pane: {
         position: 'absolute',
         left: 0,
@@ -193,7 +195,7 @@ const createStyles = (colors, textSize) => StyleSheet.create({
         borderColor: colors.readerBorder,
         borderWidth: StyleSheet.hairlineWidth,
         borderTopWidth: 0,
-        overflow: 'hidden',
+        ...panelLift(colors, 'down'),
     },
     scroll: {
         flexGrow: 0,

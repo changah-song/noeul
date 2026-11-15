@@ -42,20 +42,51 @@ const dirnameOf = (path = '') => {
     return index >= 0 ? path.slice(0, index) : '';
 };
 
-const LINK_RE = /<a\b[^>]*?\bhref\s*=\s*(?:"([^"]*)"|'([^']*)')[^>]*>([\s\S]*?)<\/a\s*>/gi;
+// One link, matched from the start of a piece that begins at "<a".
+const LINK_RE = /^<a\b[^>]*?\bhref\s*=\s*(?:"([^"]*)"|'([^']*)')[^>]*>([\s\S]*?)<\/a\s*>/i;
+const CLOSE_RE = /^<\/a\s*>/i;
 const MAX_LABEL_LENGTH = 120;
+// The most of a page looked at for one closing tag's trailing spaces.
+const CLOSE_TAG_SPAN = 16;
 
-/** The links of a page as `{ href, label }`, in page order. */
+// Where the first "</a>" at or after `from` ends, or -1.
+const endOfLinkClose = (markup, lower, from) => {
+    let at = lower.indexOf('</a', from);
+    while (at >= 0) {
+        const close = CLOSE_RE.exec(markup.slice(at, at + CLOSE_TAG_SPAN));
+        if (close) return at + close[0].length;
+        at = lower.indexOf('</a', at + 3);
+    }
+    return -1;
+};
+
+/**
+ * The links of a page as `{ href, label }`, in page order.
+ *
+ * The page is walked with indexOf and the pattern only ever sees one link's
+ * worth of text. Running one pattern over the whole page, link after link,
+ * is what Hermes does slowly: each match re-reads the page, so a 600 KB
+ * index page with 5,000 links took 14 seconds.
+ */
 export const linksInMarkup = (xhtml = '') => {
     const links = [];
     const markup = String(xhtml || '');
-    LINK_RE.lastIndex = 0;
-    let match = LINK_RE.exec(markup);
-    while (match) {
-        const href = decodeEntities(match[1] ?? match[2] ?? '').trim();
-        const label = decodeEntities(match[3].replace(/<[^>]*>/g, ' ')).replace(/\s+/g, ' ').trim();
-        if (href && label) links.push({ href, label: label.slice(0, MAX_LABEL_LENGTH) });
-        match = LINK_RE.exec(markup);
+    const lowered = markup.toLowerCase();
+    // Lower-casing can change the length of a few letters; positions must line up.
+    const lower = lowered.length === markup.length ? lowered : markup.replace(/[A-Z]/g, (c) => c.toLowerCase());
+    let at = lower.indexOf('<a');
+    while (at >= 0) {
+        const end = endOfLinkClose(markup, lower, at + 2);
+        if (end < 0) break;
+        const match = LINK_RE.exec(markup.slice(at, end));
+        if (match) {
+            const href = decodeEntities(match[1] ?? match[2] ?? '').trim();
+            const label = decodeEntities(match[3].replace(/<[^>]*>/g, ' ')).replace(/\s+/g, ' ').trim();
+            if (href && label) links.push({ href, label: label.slice(0, MAX_LABEL_LENGTH) });
+            at = lower.indexOf('<a', at + match[0].length);
+        } else {
+            at = lower.indexOf('<a', at + 2);
+        }
     }
     return links;
 };

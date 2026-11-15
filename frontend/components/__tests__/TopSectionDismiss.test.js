@@ -15,6 +15,7 @@ jest.mock('../../contexts/AppContext', () => ({
 }));
 jest.mock('../../theme', () => ({
   fontFamilies: {},
+  panelLift: () => ({}),
   spacing: { xs: 4, sm: 8, md: 12, lg: 16, xl: 24 },
   useTheme: () => ({ colors: new Proxy({}, { get: () => '#000000' }) }),
 }));
