@@ -1,10 +1,13 @@
 import JSZip from 'jszip';
 import { DOMParser } from '@xmldom/xmldom';
 import * as FileSystem from 'expo-file-system/legacy';
+import { File as ExpoFile } from 'expo-file-system';
 import { rebaseAppContainerUri } from './appContainerPaths';
 import { resolveBookSourceUri } from './bookFiles';
 import { normalizeBookLanguage } from '../constants/languages';
 import { addScriptCounts, dominantScriptLanguage, emptyScriptCounts } from './textScript';
+import { addLinkedSections } from './tocLinkedSections';
+import { announceBookLoadStep } from './bookLoadProgress';
 
 // xmldom parses in strict XML mode, so any prefixed tag/attribute (e.g.
 // `epub:type`, `xlink:href`) whose prefix isn't declared with an in-scope
@@ -51,8 +54,11 @@ const CHAPTER_CACHE_DIR = 'epub-native-chapters';
 const PACKAGE_CACHE_DIR = 'epub-native-packages';
 const EXTRACTED_BOOK_META_FILE = '.ff-extraction.json';
 const EXTRACTED_EPUB_CACHE_VERSION = 'epub-extraction-v1';
-const EPUB_PACKAGE_CACHE_VERSION = 'native-renderer-css-v7';
-const CHAPTER_CACHE_VERSION = `${EPUB_PACKAGE_CACHE_VERSION}:chapter-blocks-v3`;
+const EPUB_RENDERER_VERSION = 'native-renderer-css-v7';
+// The saved package also holds the contents list: `toc-vN` changes when the
+// way that list is built does, without throwing away every saved chapter.
+const EPUB_PACKAGE_CACHE_VERSION = `${EPUB_RENDERER_VERSION}:toc-v3`;
+const CHAPTER_CACHE_VERSION = `${EPUB_RENDERER_VERSION}:chapter-blocks-v3`;
 const EPUB_PACKAGE_CACHE = new Map();
 const ZIP_REQUIRED_CACHE_MISS = 'ZIP_REQUIRED_CACHE_MISS';
 
@@ -972,14 +978,53 @@ const normalizeParsedChildren = (children, { trimEdges = false, preserveWhitespa
     return normalized.filter(hasRenderableContent);
 };
 
-const loadEpubZip = async (uri) => {
-    const response = await fetch(await resolveBookSourceUri(uri));
+// The book file's bytes. Read straight from the file where the file system
+// can hand them over; a file fetched as an ArrayBuffer comes through as
+// base64 text first, which took most of ten seconds for a 30 MB book.
+const readBookFileBytes = async (sourceUri) => {
+    if (/^file:\/\//i.test(sourceUri) && typeof ExpoFile === 'function') {
+        try {
+            return await new ExpoFile(sourceUri).bytes();
+        } catch (error) {
+            console.warn('[epubMetadata] Direct file read failed, fetching instead:', error?.message ?? error);
+        }
+    }
+
+    const response = await fetch(sourceUri);
     if (!response.ok) {
         throw new Error(`Failed to fetch EPUB: ${response.status}`);
     }
 
-    const epubBuffer = await response.arrayBuffer();
-    return JSZip.loadAsync(epubBuffer);
+    return response.arrayBuffer();
+};
+
+// The book unzipped last, kept so the first open right after an import
+// doesn't read and unzip the same file a second time.
+let lastLoadedZip = null;
+
+const loadEpubZip = async (uri) => {
+    const sourceUri = await resolveBookSourceUri(uri);
+    if (lastLoadedZip?.sourceUri === sourceUri) {
+        return lastLoadedZip.zipPromise;
+    }
+
+    const zipPromise = (async () => {
+        const startedAt = Date.now();
+        await announceBookLoadStep(uri, 'file');
+        const bytes = await readBookFileBytes(sourceUri);
+        const readAt = Date.now();
+        const zip = await JSZip.loadAsync(bytes);
+        if (__DEV__) {
+            console.log(`[epub] book file: read=${readAt - startedAt} ms, unzip index=${Date.now() - readAt} ms`);
+        }
+        return zip;
+    })();
+    lastLoadedZip = { sourceUri, zipPromise };
+    zipPromise.catch(() => {
+        if (lastLoadedZip?.zipPromise === zipPromise) lastLoadedZip = null;
+    });
+
+    return zipPromise;
 };
 
 const extractionRootUriForBook = (sourceUri, fallbackName = '') => {
@@ -999,6 +1044,41 @@ const extractionMetadataMatches = (metadata, expected) => (
     && metadata?.sourceSignatureKey === expected.sourceSignatureKey
     && metadata?.entryCount === expected.entryCount
 );
+
+// The files written out this session, by where they were written.
+const extractedResourceUris = new Set();
+
+// Write out the files a chapter shows (its images, fonts and stylesheets), if
+// they aren't there yet. The reader draws them from the extracted folder; the
+// text itself is only ever read from the zip.
+const ensureResourcesExtracted = async (zip, resources = []) => {
+    for (const resource of resources) {
+        const path = resource?.path;
+        const fileUri = resource?.fileUri;
+
+        if (!zip || !path || !fileUri || extractedResourceUris.has(fileUri) || !isSafeZipPath(path)) {
+            continue;
+        }
+
+        try {
+            const file = findZipFile(zip, path);
+            if (!file || file.dir) {
+                continue;
+            }
+
+            const info = await FileSystem.getInfoAsync(fileUri);
+            if (!info?.exists) {
+                await ensureDirectoryForFile(fileUri);
+                await FileSystem.writeAsStringAsync(fileUri, await file.async('base64'), {
+                    encoding: FileSystem.EncodingType.Base64,
+                });
+            }
+            extractedResourceUris.add(fileUri);
+        } catch (error) {
+            console.warn(`[epubMetadata] Failed to write out ${path}:`, error);
+        }
+    }
+};
 
 const extractEpubZip = async (zip, sourceUri, fallbackName = '', sourceSignature = null) => {
     const rootUri = extractionRootUriForBook(sourceUri, fallbackName);
@@ -1023,31 +1103,15 @@ const extractEpubZip = async (zip, sourceUri, fallbackName = '', sourceSignature
 
     await FileSystem.deleteAsync(rootUri, { idempotent: true });
     await ensureDirectory(rootUri);
+    [...extractedResourceUris].forEach((fileUri) => {
+        if (fileUri.startsWith(rootUri)) extractedResourceUris.delete(fileUri);
+    });
 
-    let fileCount = 0;
-
-    for (const entry of entries) {
-        const entryPath = String(entry.name || '').replace(/\\/g, '/');
-
-        if (!isSafeZipPath(entryPath)) {
-            console.warn(`[epubMetadata] Skipping unsafe EPUB path: ${entryPath}`);
-            continue;
-        }
-
-        const targetUri = toExtractedFileUri(rootUri, entryPath);
-
-        if (entry.dir) {
-            await ensureDirectory(targetUri.endsWith('/') ? targetUri : `${targetUri}/`);
-            continue;
-        }
-
-        await ensureDirectoryForFile(targetUri);
-        const base64 = await entry.async('base64');
-        await FileSystem.writeAsStringAsync(targetUri, base64, {
-            encoding: FileSystem.EncodingType.Base64,
-        });
-        fileCount += 1;
-    }
+    // Nothing is written out here. Each chapter writes the images, fonts and
+    // stylesheets it shows as it is opened (ensureResourcesExtracted). Writing
+    // the whole book out first held the first page back for many seconds on a
+    // book with a lot of pictures.
+    const fileCount = 0;
 
     await writeJsonFile(metaUri, {
         ...expectedMetadata,
@@ -1137,9 +1201,22 @@ const writePersistentEpubPackage = async (uri, fallbackName = '', sourceSignatur
     });
 };
 
+// Index pages read between pauses while the contents are filled in.
+const LINKED_PAGES_PER_TURN = 8;
+
 const loadFreshEpubPackage = async (uri, fallbackName = '', sourceSignature = null) => {
+    // How long each step of a book's first open takes (dev log below).
+    const stepTimes = [];
+    let stepStartedAt = Date.now();
+    const stepDone = (name) => {
+        stepTimes.push(`${name}=${Date.now() - stepStartedAt}`);
+        stepStartedAt = Date.now();
+    };
     const zip = await loadEpubZip(uri);
+    stepDone('unzip');
     const extractedBook = await extractEpubZip(zip, uri, fallbackName, sourceSignature);
+    stepDone('extract');
+    await announceBookLoadStep(uri, 'contents');
     const containerFile = zip.file('META-INF/container.xml');
     let containerXml = null;
     let packagePath = null;
@@ -1174,15 +1251,41 @@ const loadFreshEpubPackage = async (uri, fallbackName = '', sourceSignature = nu
             return Number.isFinite(size) && size > 0 ? { ...item, size } : item;
         }),
     };
+    stepDone('package');
     const parsedToc = await readPackageToc(zip, parsedPackageBase);
+    stepDone('tocRead');
+    const listedToc = buildTocNavigation(parsedToc.items, parsedPackageBase.spine, {
+        hasTocEntries: parsedToc.items.length > 0,
+    });
+    stepDone('tocBuild');
+    // Chapter files the contents file leaves out but an entry's own page
+    // links to (a Bible lists "Genesis"; the Genesis page links its chapters).
+    let toc = listedToc;
+    try {
+        let pagesRead = 0;
+        toc = await addLinkedSections(listedToc, parsedPackageBase.spine, async (path) => {
+            // A pause every few pages lets the app draw and take touches.
+            pagesRead += 1;
+            if (pagesRead % LINKED_PAGES_PER_TURN === 0) {
+                await new Promise((resolve) => setTimeout(resolve, 0));
+            }
+            const file = findZipFile(zip, path);
+            return file ? file.async('string') : null;
+        });
+    } catch (error) {
+        console.warn('[epubMetadata] Failed to read linked contents sections:', error);
+    }
+    stepDone('tocLinked');
     const parsedPackage = {
         ...parsedPackageBase,
-        toc: buildTocNavigation(parsedToc.items, parsedPackageBase.spine, {
-            hasTocEntries: parsedToc.items.length > 0,
-        }),
+        toc,
         tocSource: parsedToc.source,
     };
     const bookResources = buildBookResources(zip, parsedPackage);
+    stepDone('resources');
+    if (__DEV__) {
+        console.log(`[epub] first open, ms: ${stepTimes.join(' ')} (files=${extractedBook.fileCount})`);
+    }
 
     return {
         zip,
@@ -1212,6 +1315,13 @@ const loadCachedEpubPackage = async (uri, fallbackName = '', options = {}) => {
             if (persistentPackage) {
                 return persistentPackage;
             }
+        } else if (cachedPackage?.parsedPackage) {
+            // Only the book file itself is missing (a chapter that isn't saved
+            // yet): open it and keep everything already worked out. Building
+            // the package and its contents again took ten seconds on a book
+            // of thousands of files, at the first turn to each new chapter.
+            const zip = await loadEpubZip(uri);
+            return { ...cachedPackage, zip };
         }
 
         const freshPackage = await loadFreshEpubPackage(uri, fallbackName, sourceSignature);
@@ -1624,24 +1734,10 @@ const buildBookManifest = ({
         totalSpineItems: parsedPackage.spine.length,
         manifestItemCount: parsedPackage.manifest.length,
         resourceCount: parsedPackage.manifest.filter((item) => item.path).length,
-        spineOrder: parsedPackage.spine.map((item) => ({
-            index: item.index,
-            idref: item.idref,
-            path: item.path,
-            fileUri: item.fileUri,
-            mediaType: item.mediaType,
-            linear: item.linear,
-            properties: item.properties,
-        })),
+        // No list of the book's chapter files here: this goes to the native
+        // reader with every chapter, and nothing read it. A book of thousands
+        // of files (a Bible) paid for it at each chapter turn.
     };
-};
-
-const extractBodyText = (xhtmlXml) => {
-    const xhtmlDoc = parseChapterXhtmlDocument(xhtmlXml, 'extractBodyText');
-    const bodyNode = firstDescendant(xhtmlDoc, (node) => localNameOf(node) === 'body');
-    const text = textOf(bodyNode || xhtmlDoc);
-
-    return normalizeTextValue(text).trim();
 };
 
 export const countReadableTextWords = (text = '') => {
@@ -1654,26 +1750,95 @@ export const countReadableTextWords = (text = '') => {
     return tokens?.length ?? 0;
 };
 
+// At import the whole book used to be read and parsed just to count its
+// words, which froze the app for most of a minute on a very long book (a
+// Bible). Now at most this much chapter markup is read; past it, chapters are
+// sampled evenly through the book and the count is scaled up by file size.
+export const WORD_COUNT_SAMPLE_BYTES = 3 * 1024 * 1024;
+// Chapters read between pauses that let the app draw and take touches.
+const WORD_COUNT_FILES_PER_TURN = 8;
+
+// A chapter's readable text without building its document: enough to count
+// words and tell the script, and many times faster than parsing it.
+export const quickBodyText = (xhtmlXml = '') => {
+    const xml = String(xhtmlXml || '');
+    const bodyStart = xml.search(/<body[\s>]/i);
+    const body = bodyStart >= 0 ? xml.slice(bodyStart) : xml;
+
+    return normalizeTextValue(
+        body
+            .replace(/<!--[\s\S]*?-->/g, ' ')
+            .replace(/<(script|style)\b[\s\S]*?<\/\1\s*>/gi, ' ')
+            .replace(/<[^>]*>/g, ' ')
+            .replace(/&(?:nbsp|#160|#xa0);/gi, ' ')
+            .replace(/&[a-zA-Z#][a-zA-Z0-9]*;/g, '')
+    ).trim();
+};
+
+// The chapters to read for the count: all of them when the book is under the
+// limit, otherwise every nth, so the sample runs the length of the book.
+export const wordCountSample = (items = [], limitBytes = WORD_COUNT_SAMPLE_BYTES) => {
+    const totalBytes = items.reduce((sum, item) => sum + item.size, 0);
+    if (totalBytes <= limitBytes || items.length <= 1) {
+        return { sample: items, totalBytes };
+    }
+
+    const stride = Math.ceil(totalBytes / limitBytes);
+    const sample = [];
+    let sampleBytes = 0;
+    for (let index = 0; index < items.length && sampleBytes < limitBytes; index += stride) {
+        sample.push(items[index]);
+        sampleBytes += items[index].size;
+    }
+    return { sample, totalBytes };
+};
+
 // The book's word count and the language its text is written in (by script).
-const readEpubSpineText = async (zip, parsedPackage) => {
-    let total = 0;
+// For a long book both come from a sample (see WORD_COUNT_SAMPLE_BYTES).
+const readEpubSpineText = async (zip, parsedPackage, sourceUri = '') => {
     const scripts = emptyScriptCounts();
+    const items = [];
 
     for (const spineItem of parsedPackage.spine || []) {
         if (spineItemSkipReason(spineItem) || spineItemAutoSkipReason(spineItem)) {
             continue;
         }
 
-        const chapterFile = findZipFile(zip, spineItem.path);
-        if (!chapterFile) {
+        const file = findZipFile(zip, spineItem.path);
+        if (!file) {
             continue;
         }
 
-        const chapterXml = await chapterFile.async('string');
-        const text = extractBodyText(chapterXml);
-        total += countReadableTextWords(text);
-        addScriptCounts(scripts, text);
+        const size = Number(file?._data?.uncompressedSize);
+        items.push({ file, size: Number.isFinite(size) && size > 0 ? size : 1 });
     }
+
+    const { sample, totalBytes } = wordCountSample(items);
+    let sampledWords = 0;
+    let sampledBytes = 0;
+
+    await announceBookLoadStep(sourceUri, 'text', 0);
+    for (let index = 0; index < sample.length; index += 1) {
+        const { file, size } = sample[index];
+        const chapterXml = await file.async('string');
+        // One chapter far over the limit (a book in a single file): its start.
+        const readXml = chapterXml.length > WORD_COUNT_SAMPLE_BYTES
+            ? chapterXml.slice(0, WORD_COUNT_SAMPLE_BYTES)
+            : chapterXml;
+        const text = quickBodyText(readXml);
+        sampledWords += countReadableTextWords(text);
+        sampledBytes += size * (readXml.length / (chapterXml.length || 1));
+        addScriptCounts(scripts, text);
+
+        if ((index + 1) % WORD_COUNT_FILES_PER_TURN === 0) {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            await announceBookLoadStep(sourceUri, 'text', (index + 1) / sample.length);
+        }
+    }
+
+    const total = sampledBytes > 0 && sampledBytes < totalBytes
+        ? Math.round(sampledWords * (totalBytes / sampledBytes))
+        : sampledWords;
 
     return {
         wordCount: total > 0 ? total : null,
@@ -2044,39 +2209,76 @@ const selectorSpecificity = (selector = '') => {
     return (idCount * 100) + (classCount * 10) + tagCount;
 };
 
-const simpleSelectorMatches = (tag, attrs = {}, selector = '') => {
+// One part of a selector ("p.verse", "#intro"), worked out once: what a node
+// must have to match it.
+const compileSimpleSelector = (selector = '') => {
     const target = String(selector || '').trim();
 
     if (!target || target === '*') {
-        return true;
+        return { any: true, id: null, classes: [], tag: null };
     }
 
     const idMatch = target.match(/#([a-zA-Z0-9_-]+)/);
-    if (idMatch && attrs.id !== idMatch[1]) {
-        return false;
-    }
-
-    const classNames = String(attrs.className || '').split(/\s+/).filter(Boolean);
-    const requiredClasses = (target.match(/\.([a-zA-Z0-9_-]+)/g) || [])
-        .map((className) => className.slice(1));
-
-    if (requiredClasses.some((className) => !classNames.includes(className))) {
-        return false;
-    }
-
     const tagMatch = target.match(/^[a-zA-Z][a-zA-Z0-9_-]*/);
-    if (tagMatch && tagMatch[0].toLowerCase() !== tag) {
+
+    return {
+        any: false,
+        id: idMatch ? idMatch[1] : null,
+        classes: (target.match(/\.([a-zA-Z0-9_-]+)/g) || []).map((className) => className.slice(1)),
+        tag: tagMatch ? tagMatch[0].toLowerCase() : null,
+    };
+};
+
+const ANY_SIMPLE_SELECTOR = compileSimpleSelector('');
+
+// A node's class names, split once per node (its attrs object).
+const classNamesByAttrs = new WeakMap();
+const NO_CLASS_NAMES = [];
+
+const classNamesOf = (attrs) => {
+    if (!attrs || typeof attrs !== 'object' || !attrs.className) {
+        return NO_CLASS_NAMES;
+    }
+
+    let names = classNamesByAttrs.get(attrs);
+    if (!names) {
+        names = String(attrs.className).split(/\s+/).filter(Boolean);
+        classNamesByAttrs.set(attrs, names);
+    }
+
+    return names;
+};
+
+const simpleSelectorMatches = (tag, attrs = {}, compiled = ANY_SIMPLE_SELECTOR, classNames = null) => {
+    if (compiled.any) {
+        return true;
+    }
+
+    if (compiled.id !== null && attrs?.id !== compiled.id) {
+        return false;
+    }
+
+    if (compiled.classes.length > 0) {
+        const names = classNames || classNamesOf(attrs);
+
+        if (compiled.classes.some((className) => !names.includes(className))) {
+            return false;
+        }
+    }
+
+    if (compiled.tag !== null && compiled.tag !== tag) {
         return false;
     }
 
     return true;
 };
 
-const nodeMatchesCssSelector = (tag, attrs = {}, selector = '', ancestorChain = []) => {
-    const parts = selectorParts(selector);
-    const target = parts[parts.length - 1] || '';
+// Whether a node matches a selector's compiled parts: the last part against
+// the node itself, the ones before it against its ancestors, nearest first.
+const nodeMatchesCompiledSelector = (tag, attrs = {}, parts = [], ancestorChain = [], classNames = null) => {
+    const target = parts[parts.length - 1] || ANY_SIMPLE_SELECTOR;
 
-    if (!simpleSelectorMatches(tag, attrs, target)) {
+    if (!simpleSelectorMatches(tag, attrs, target, classNames)) {
         return false;
     }
 
@@ -2103,6 +2305,48 @@ const nodeMatchesCssSelector = (tag, attrs = {}, selector = '', ancestorChain = 
     }
 
     return true;
+};
+
+// A chapter's rules, sorted once by what the node itself must have (an id, a
+// class, a tag, or nothing), so a node is only checked against the rules that
+// could match it. Checking every node against every rule, and splitting each
+// selector again for each check, made a long chapter take many seconds to
+// open.
+const cssRuleIndexes = new WeakMap();
+
+const cssRuleIndexFor = (cssRules = []) => {
+    let index = cssRuleIndexes.get(cssRules);
+
+    if (!index) {
+        index = { byId: new Map(), byClass: new Map(), byTag: new Map(), rest: [] };
+        const addTo = (map, key, entry) => {
+            const bucket = map.get(key);
+            if (bucket) {
+                bucket.push(entry);
+            } else {
+                map.set(key, [entry]);
+            }
+        };
+
+        cssRules.forEach((rule) => {
+            const parts = selectorParts(rule.selector).map(compileSimpleSelector);
+            const target = parts[parts.length - 1] || ANY_SIMPLE_SELECTOR;
+            const entry = { rule, parts };
+
+            if (target.id !== null) {
+                addTo(index.byId, target.id, entry);
+            } else if (target.classes.length > 0) {
+                addTo(index.byClass, target.classes[0], entry);
+            } else if (target.tag !== null) {
+                addTo(index.byTag, target.tag, entry);
+            } else {
+                index.rest.push(entry);
+            }
+        });
+        cssRuleIndexes.set(cssRules, index);
+    }
+
+    return index;
 };
 
 const canEvaluateSelectorStatically = (selector = '') => {
@@ -2170,15 +2414,34 @@ const parseCssRules = (cssText = '', sourcePath = '') => {
     return rules;
 };
 
-const matchedCssRulesForNode = (tag, attrs = {}, cssRules = [], ancestorChain = []) => (
-    cssRules
-        .filter((rule) => nodeMatchesCssSelector(tag, attrs, rule.selector, ancestorChain))
-        .sort((a, b) => (
-            a.specificity === b.specificity
-                ? a.order - b.order
-                : a.specificity - b.specificity
-        ))
-);
+const matchedCssRulesForNode = (tag, attrs = {}, cssRules = [], ancestorChain = []) => {
+    if (!Array.isArray(cssRules) || cssRules.length === 0) {
+        return [];
+    }
+
+    const index = cssRuleIndexFor(cssRules);
+    const classNames = classNamesOf(attrs);
+    const matched = [];
+    const check = (entries) => {
+        if (!entries) return;
+        entries.forEach(({ rule, parts }) => {
+            if (nodeMatchesCompiledSelector(tag, attrs, parts, ancestorChain, classNames)) {
+                matched.push(rule);
+            }
+        });
+    };
+
+    if (attrs.id) check(index.byId.get(attrs.id));
+    new Set(classNames).forEach((className) => check(index.byClass.get(className)));
+    check(index.byTag.get(tag));
+    check(index.rest);
+
+    return matched.sort((a, b) => (
+        a.specificity === b.specificity
+            ? a.order - b.order
+            : a.specificity - b.specificity
+    ));
+};
 
 const resolveNodeStyleTokens = (tag, attrs = {}, cssRules = [], ancestorChain = []) => {
     const matchedCssTokens = matchedCssRulesForNode(tag, attrs, cssRules, ancestorChain)
@@ -3068,7 +3331,10 @@ const readSpineChapter = async (
         extractedRootUri,
         manifestByPath
     );
-    const chapterText = extractBodyText(chapterXml);
+    await ensureResourcesExtracted(zip, parsedChapter.resources);
+    // The chapter was parsed once already, for its blocks: the plain text only
+    // says whether there is any, so it isn't parsed a second time for it.
+    const chapterText = quickBodyText(chapterXml);
     const analysis = analyzeParsedChapter(chapterText, parsedChapter);
 
     const chapter = {
@@ -3251,10 +3517,17 @@ const parseOpfMetadata = async (zip, packagePath, fallbackName, sourceUri = '') 
     const author = parsedPackage.metadata.author;
     const packageDir = parsedPackage.packageDir;
     const manifestItems = parsedPackage.manifest;
-    const { wordCount, scriptLanguage } = await readEpubSpineText(zip, parsedPackage).catch((error) => {
+    const countStartedAt = Date.now();
+    const { wordCount, scriptLanguage } = await readEpubSpineText(zip, parsedPackage, sourceUri).catch((error) => {
         console.warn('[epubMetadata] Failed to count EPUB words:', error);
         return { wordCount: null, scriptLanguage: null };
     });
+    if (__DEV__) {
+        console.log(
+            `[epub] import: words counted in ${Date.now() - countStartedAt} ms `
+            + `(chapters=${parsedPackage.spine.length} words=${wordCount})`
+        );
+    }
     // The text's own script wins over the package's language tag, which is
     // often wrong (Korean ebooks tagged "en"). 'ja' stays as is so import can
     // say Japanese isn't supported.
@@ -3376,6 +3649,7 @@ const parseOpfMetadata = async (zip, packagePath, fallbackName, sourceUri = '') 
         }
 
         const coverFile = findZipFile(zip, coverPath);
+        await announceBookLoadStep(sourceUri, 'cover');
 
         if (coverFile) {
             const base64 = await coverFile.async('base64');
@@ -3398,7 +3672,11 @@ const parseOpfMetadata = async (zip, packagePath, fallbackName, sourceUri = '') 
 
 export const readEpubMetadata = async (uri, fallbackName = '') => {
     try {
+        const startedAt = Date.now();
         const zip = await loadEpubZip(uri);
+        if (__DEV__) {
+            console.log(`[epub] import: file read and unzipped in ${Date.now() - startedAt} ms`);
+        }
         const containerFile = zip.file('META-INF/container.xml');
 
         if (!containerFile) {
@@ -3439,7 +3717,9 @@ export const readEpubMetadata = async (uri, fallbackName = '') => {
 
 export const readEpubPackageXml = async (uri, fallbackName = '', options = {}) => {
     const readOptions = typeof options === 'number' ? { spineIndex: options } : (options || {});
+    const startedAt = Date.now();
     let packageState = await loadCachedEpubPackage(uri, fallbackName);
+    const packageReadyAt = Date.now();
     let loadedChapter;
 
     const chooseLoadedChapter = async () => chooseSpineChapter(
@@ -3456,6 +3736,7 @@ export const readEpubPackageXml = async (uri, fallbackName = '', options = {}) =
     );
 
     try {
+        await announceBookLoadStep(uri, 'chapter');
         loadedChapter = await chooseLoadedChapter();
     } catch (error) {
         if (error?.code !== ZIP_REQUIRED_CACHE_MISS) {
@@ -3463,6 +3744,7 @@ export const readEpubPackageXml = async (uri, fallbackName = '', options = {}) =
         }
 
         packageState = await loadCachedEpubPackage(uri, fallbackName, { forceZip: true });
+        await announceBookLoadStep(uri, 'chapter');
         loadedChapter = await chooseLoadedChapter();
     }
 
@@ -3475,6 +3757,16 @@ export const readEpubPackageXml = async (uri, fallbackName = '', options = {}) =
         bookResources,
     } = packageState;
     const loadedSpineItem = loadedChapter.spineItem;
+    if (__DEV__) {
+        // How long a chapter took to come up, and how big it is.
+        console.log(
+            `[epub] chapter spine=${loadedSpineItem?.index} of ${packageState.parsedPackage.spine.length} `
+            + `blocks=${loadedChapter.parsedChapter.chapterBlocks.length} `
+            + `chars=${(loadedChapter.chapterText || '').length} `
+            + `fromCache=${Boolean(loadedChapter.diagnostic?.cacheHit)} `
+            + `packageMs=${packageReadyAt - startedAt} chapterMs=${Date.now() - packageReadyAt}`
+        );
+    }
     const bookManifest = buildBookManifest({
         sourceUri: uri,
         fallbackName,

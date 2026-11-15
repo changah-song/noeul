@@ -60,6 +60,9 @@ struct ReaderChapter {
   let title: String
   let blocks: [ReaderBlock]
   let signature: String
+  // The chapter's content alone, whatever its place in the window: its
+  // laid-out pages are kept under this.
+  let layoutSignature: String
 
   static func parse(_ raw: [String: Any]) -> ReaderChapter? {
     guard let spine = intValue(raw["spineIndex"]) else { return nil }
@@ -73,9 +76,21 @@ struct ReaderChapter {
     let blockSig = "\(blocks.count):\(blocks.first?.id ?? ""):\(blocks.last?.id ?? ""):\(textLength)"
     return ReaderChapter(
       role: role, spineIndex: spine, href: href, path: path, title: title, blocks: blocks,
-      signature: "\(role):\(spine):\(href):\(path):\(title):\(blockSig)"
+      signature: "\(role):\(spine):\(href):\(path):\(title):\(blockSig)",
+      layoutSignature: "\(spine):\(href):\(path):\(blockSig)"
     )
   }
+}
+
+// Where the reader is, to the character: the first one on the page, or the
+// first visible line when scrolling. lineFraction is how far the top of the
+// reading area sits into that line, so restoring into an unchanged layout
+// doesn't move.
+struct ReadingAnchor {
+  let spineIndex: Int
+  let blockId: String
+  let offset: Int
+  var lineFraction: CGFloat = 0
 }
 
 struct ReaderPosition {
@@ -84,12 +99,16 @@ struct ReaderPosition {
   let pagesInChapter: Int?
   let href: String
   let firstBlockId: String?
+  // The exact character: an offset into a block's whole text. Unlike the
+  // page number it survives a relayout (another font size).
+  let anchorBlockId: String?
+  let anchorOffset: Int?
   let seekToken: String?
   // 0...1 through the chapter (the scrubber).
   let chapterFraction: Double?
 
   var signature: String {
-    "\(spineIndex)|\(pageIndex ?? -1)|\(pagesInChapter ?? -1)|\(href)|\(firstBlockId ?? "")|\(seekToken ?? "")|\(chapterFraction ?? -1)"
+    "\(spineIndex)|\(pageIndex ?? -1)|\(pagesInChapter ?? -1)|\(href)|\(firstBlockId ?? "")|\(seekToken ?? "")|\(chapterFraction ?? -1)|\(anchorBlockId ?? "")|\(anchorOffset ?? -1)"
   }
 
   static func parse(_ raw: [String: Any]) -> ReaderPosition? {
@@ -102,6 +121,8 @@ struct ReaderPosition {
       pagesInChapter: intValue(raw["pagesInChapter"]),
       href: (raw["href"] as? String) ?? "",
       firstBlockId: blockId,
+      anchorBlockId: (raw["anchorBlockId"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+      anchorOffset: intValue(raw["anchorOffset"]),
       seekToken: seek,
       chapterFraction: doubleValue(raw["chapterFraction"]).map { min(max($0, 0), 1) }
     )

@@ -82,7 +82,7 @@ describe('ReaderSettingsSheet', () => {
     expect(json).toContain('Font size');
     expect(json).toContain('Page turns');
     expect(json).toContain('Line spacing');
-    expect(json).not.toContain('Difficulty underlines');
+    expect(json).not.toContain('Difficulty colors');
     // Gone from the menu: brightness, the focus tab, the translation bar toggle.
     expect(json).not.toContain('Brightness');
     expect(tree.root.findAllByProps({ testID: 'reader-settings-tab-focus' })).toHaveLength(0);
@@ -97,8 +97,8 @@ describe('ReaderSettingsSheet', () => {
 
     await pressTab(tree, 'words');
     let json = text(tree);
-    expect(json).toContain('Difficulty underlines');
-    expect(json).toContain('Underline almost-known words too');
+    expect(json).toContain('Difficulty colors');
+    expect(json).toContain('Color almost-known words too');
     expect(json).not.toContain('Fade marks');
     expect(json).toContain('Pinyin');
     expect(json).toContain('Translation under words');
@@ -133,9 +133,9 @@ describe('ReaderSettingsSheet', () => {
     expect(props.onSettingChange).toHaveBeenCalledWith('pinyinAnnotations', true);
 
     // The difficulty underline switch maps onto levelMarkStyle.
-    const marksSwitch = findByLabel(tree, 'Difficulty underlines')[0];
+    const marksSwitch = findByLabel(tree, 'Difficulty colors')[0];
     expect(marksSwitch.props.accessibilityState).toEqual({ checked: true });
-    await press(tree, 'Difficulty underlines');
+    await press(tree, 'Difficulty colors');
     expect(props.onSettingChange).toHaveBeenCalledWith('levelMarkStyle', 'off');
     await act(async () => tree.unmount());
   });
@@ -160,7 +160,7 @@ describe('ReaderSettingsSheet', () => {
     });
     await pressTab(tree, 'words');
     const json = text(tree);
-    expect(json).toContain('Difficulty underlines');
+    expect(json).toContain('Difficulty colors');
     expect(json).not.toContain('Pinyin');
     expect(json).not.toContain('Translation under words');
     await act(async () => tree.unmount());

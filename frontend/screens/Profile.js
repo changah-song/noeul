@@ -46,6 +46,7 @@ import ProfileAvatar from '../components/shared/ProfileAvatar';
 import ReaderGuide from '../components/Guide/ReaderGuide';
 import LevelCard from '../components/shared/LevelCard';
 import SyncStatusRow from '../components/shared/SyncStatusRow';
+import WordStatsCard from '../components/shared/WordStatsCard';
 
 const getProfileColors = (themeColors) => ({
     bg: themeColors.bgPage,
@@ -372,6 +373,14 @@ const Profile = ({ user, signOut, updateUsername, navigation }) => {
                         />
                     </>
                 ) : null}
+
+                <Text style={styles.sectionLabel}>{t('wordStats.title')}</Text>
+                <WordStatsCard
+                    ownerId={activeOwnerId}
+                    profileId={activeProfileId}
+                    language={targetLanguage}
+                    navigation={navigation}
+                />
 
                 <Text style={styles.sectionLabel}>{t('profile.sectionLearning')}</Text>
                 <View style={styles.card}>

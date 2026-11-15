@@ -399,6 +399,32 @@ private func normalizeParagraphGaps(_ layouts: [ReaderBlockLayout]) {
 
 // MARK: - Pagination
 
+// Chapters already laid out, by layout settings and chapter. The window moves
+// one chapter at a time, so at a chapter boundary only the chapter coming in
+// is laid out, not all three again. Used on the layout queue only.
+final class ReaderChapterLayoutCache {
+  // The window's three chapters and the one just left.
+  private let limit = 4
+  private var pages: [String: [ReaderPage]] = [:]
+  private var recent: [String] = []
+
+  func pages(for chapter: ReaderChapter, layoutKey: String, config: ReaderLayoutConfig) -> [ReaderPage] {
+    let key = "\(layoutKey)|\(chapter.layoutSignature)"
+    if let cached = pages[key] {
+      recent.removeAll { $0 == key }
+      recent.append(key)
+      return cached
+    }
+    let built = paginateChapter(chapter, config: config)
+    pages[key] = built
+    recent.append(key)
+    while recent.count > limit {
+      pages[recent.removeFirst()] = nil
+    }
+    return built
+  }
+}
+
 func paginateChapter(_ chapter: ReaderChapter, config: ReaderLayoutConfig) -> [ReaderPage] {
   let layouts = chapter.blocks.map { layoutBlock($0, config: config) }
   normalizeParagraphGaps(layouts)

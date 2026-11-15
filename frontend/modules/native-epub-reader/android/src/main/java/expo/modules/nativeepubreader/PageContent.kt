@@ -100,6 +100,26 @@ data class UserHighlight(
   val noteId: String? = null
 )
 
+// The exact character the reader is at: the first one on the page (or the
+// first visible line when scrolling), as an offset into its block's whole
+// text. Unlike a page number it survives a relayout (font size, line height,
+// rotation). lineFraction is how far the top of the viewport sits into that
+// line when scrolling, so restoring into an unchanged layout doesn't move.
+data class ReadingAnchor(
+  val spineIndex: Int?,
+  val blockId: String,
+  val offset: Int,
+  val lineFraction: Float = 0f
+)
+
+// "You were here": the line the reader was on before a relayout moved it down
+// the page, marked for a moment (see EpubPageView.drawResumeMark).
+data class ResumeMark(
+  val blockId: String,
+  val offset: Int,
+  val startedAtMs: Long
+)
+
 // A focused sentence span in focus (sentence beam) mode. Offsets are local to
 // the block's plain text.
 data class FocusRange(
@@ -121,7 +141,13 @@ data class WordHit(
   // A tap inside a marked phrase ("gave up"): `text` and `range` are the
   // phrase's, this is the single word that was tapped ("gave"), so the card
   // can offer it too. Empty for a plain word.
-  val phraseWord: String = ""
+  val phraseWord: String = "",
+  // The character under the finger, as a source offset in the block (-1 when
+  // unknown). JS uses it to tell a tap on a link from a tap on a word.
+  val tapSourceOffset: Int = -1,
+  // A second tap on the word that is already selected (its panel is open):
+  // nothing is looked up again, the reader is saving the word.
+  val again: Boolean = false
 )
 
 // The sentence whose translation is pinned at the top of the reader: drawn

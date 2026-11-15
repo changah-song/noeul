@@ -12,6 +12,7 @@ import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.net.Uri
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -42,12 +43,21 @@ private const val TAP_BAND_SLACK_DP = 5f
 // Focus (sentence beam) mode rendering constants, mirroring the design spec:
 // unfocused sentences sit at 22% opacity and focus shifts animate over 300ms.
 private const val FOCUS_DIM_ALPHA = 0.22f
+// How much of the page colour is laid over the text outside the tapped
+// word's sentence while its panel is open (that text keeps 1 - this).
+private const val SENTENCE_FOCUS_VEIL = 0.6f
+// How far a tapped level word's colour settles back toward the ink.
+private const val TAPPED_LEVEL_SETTLE = 0.6f
 private const val FOCUS_TRANSITION_DURATION_MS = 300L
 // Shortened transition used while the reader is stepping rapidly through
 // sentences, so consecutive beam moves don't queue up behind slow animations.
 private const val FOCUS_TRANSITION_FAST_DURATION_MS = 140L
 // How long the text selection's boxes take to slide to a new word.
 private const val SELECTION_SLIDE_MS = 160L
+// The "you were here" mark after a relayout: eases in, holds, fades out.
+private const val RESUME_MARK_IN_MS = 180f
+private const val RESUME_MARK_HOLD_MS = 1700f
+private const val RESUME_MARK_OUT_MS = 700f
 // Slight second draw offset (dp) that emulates the focused sentence's heavier
 // font weight without re-laying out the text.
 private const val FOCUS_EMPHASIS_OFFSET_DP = 0.3f
@@ -180,7 +190,6 @@ class EpubPageView(context: Context) : View(context) {
       field = value
       invalidate()
     }
-  private val contextSentencePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
   // Called with a highlight's id when its note icon (in the margin) is tapped.
   var noteIconTapped: ((String) -> Unit)? = null
   // Where the note icons were drawn this frame, in view coordinates.
@@ -224,6 +233,15 @@ class EpubPageView(context: Context) : View(context) {
       invalidate()
     }
   private val spokenWordPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+  // The line the reader was on before a relayout (a font size change) moved
+  // it down the page: marked for a moment, then it fades. Set by the owner.
+  var resumeMark: ResumeMark? = null
+    set(value) {
+      if (field == value) return
+      field = value
+      invalidate()
+    }
+  private val resumeMarkPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
   // Listening in paged mode: the sentence being read, washed a paler blue
   // than the word under the voice.
   var listenSentences: List<ContextSentence> = emptyList()
@@ -827,27 +845,6 @@ class EpubPageView(context: Context) : View(context) {
     }?.second
   }
 
-  // A faint wash of the ink behind the sentence whose translation is pinned,
-  // under everything else on the line.
-  private fun drawContextSentence(canvas: Canvas, block: PageBlock, layout: StaticLayout) {
-    val sentence = contextSentence ?: return
-    val currentPage = page ?: return
-    if (sentence.blockId != block.blockId) return
-    if (sentence.spineIndex != null && currentPage.spineIndex != null && sentence.spineIndex != currentPage.spineIndex) return
-    val textLength = blockTextForSelection(block).length
-    if (textLength <= 0) return
-    val localStart = (sentence.sourceStartOffset - block.sourceStartOffset).coerceIn(0, textLength)
-    val localEnd = (sentence.sourceEndOffset - block.sourceStartOffset).coerceIn(localStart, textLength)
-    if (localStart >= localEnd) return
-    val ink = themePalette.bodyTextColor
-    // Grey, so the tapped word's brown box stands out on it.
-    val fullAlpha = if (Color.luminance(themePalette.backgroundColor) < 0.4f) 0x1C else 0x14
-    val alpha = (fullAlpha * contextSentenceFade.coerceIn(0f, 1f)).toInt()
-    if (alpha <= 0) return
-    contextSentencePaint.color = Color.argb(alpha, Color.red(ink), Color.green(ink), Color.blue(ink))
-    drawTextSelectionHighlight(canvas, block, layout, localStart, localEnd, textLength, contextSentencePaint)
-  }
-
   // Offsets are into the whole block's text: a page's slice of a block
   // draws only its own part.
   private fun drawSpokenWord(canvas: Canvas, block: PageBlock, layout: StaticLayout) {
@@ -887,8 +884,48 @@ class EpubPageView(context: Context) : View(context) {
     }
   }
 
+  // A bar in the margin beside the line, and a light wash over it from the
+  // character the reader was at. Eases in, holds, then fades away.
+  private fun drawResumeMark(canvas: Canvas, block: PageBlock, layout: StaticLayout) {
+    val mark = resumeMark ?: return
+    if (mark.blockId != block.blockId || layout.lineCount <= 0) return
+    val textLength = blockTextForSelection(block).length
+    val localOffset = mark.offset - block.sourceStartOffset
+    if (localOffset < 0 || localOffset >= textLength) return
+    val elapsed = (SystemClock.uptimeMillis() - mark.startedAtMs).toFloat()
+    val strength = when {
+      elapsed < 0f -> 0f
+      elapsed < RESUME_MARK_IN_MS -> elapsed / RESUME_MARK_IN_MS
+      elapsed < RESUME_MARK_IN_MS + RESUME_MARK_HOLD_MS -> 1f
+      else -> 1f - (elapsed - RESUME_MARK_IN_MS - RESUME_MARK_HOLD_MS) / RESUME_MARK_OUT_MS
+    }
+    if (elapsed >= RESUME_MARK_IN_MS + RESUME_MARK_HOLD_MS + RESUME_MARK_OUT_MS) return
+    readAnimationPending = true
+    if (strength <= 0f) return
+
+    val accent = selectionAccentColor()
+    val line = layout.getLineForOffset(localOffset)
+    val lineEnd = layout.getLineVisibleEnd(line).coerceIn(localOffset, textLength)
+    resumeMarkPaint.color = Color.argb(
+      (0x2E * strength).roundToInt(), Color.red(accent), Color.green(accent), Color.blue(accent)
+    )
+    drawTextSelectionHighlight(canvas, block, layout, localOffset, lineEnd, textLength, resumeMarkPaint)
+
+    val baseline = layout.getLineBaseline(line).toFloat()
+    val paint = block.textPaint ?: layout.paint
+    val barWidth = dp(3f).toFloat()
+    val barRight = -dp(7f).toFloat()
+    resumeMarkPaint.color = Color.argb(
+      (0xFF * strength).roundToInt(), Color.red(accent), Color.green(accent), Color.blue(accent)
+    )
+    canvas.drawRoundRect(
+      barRight - barWidth, baseline + paint.ascent(), barRight, baseline + paint.descent(),
+      barWidth, barWidth, resumeMarkPaint
+    )
+  }
+
   private fun drawBlockContent(canvas: Canvas, block: PageBlock, layout: StaticLayout) {
-    drawContextSentence(canvas, block, layout)
+    drawResumeMark(canvas, block, layout)
     drawListenSentences(canvas, block, layout)
     drawSpokenWord(canvas, block, layout)
     activeHighlightPaint.color = activePaintColor()
@@ -896,12 +933,191 @@ class EpubPageView(context: Context) : View(context) {
     if (activeSelectionKind != ActiveSelectionKind.TEXT) {
       drawTextHighlights(canvas, block, layout, activeSelectionRanges, activeHighlightPaint)
     }
-    drawTextHighlights(canvas, block, layout, levelRanges, levelMarkPaint)
     drawTextHighlights(canvas, block, layout, savedHighlightRanges, savedHighlightPaint)
-    layout.draw(canvas)
+    drawBlockText(canvas, block, layout)
     if (showPinyin || showGloss) {
       drawAnnotations(canvas, block, layout)
     }
+    drawContextSentenceFocus(canvas, block, layout)
+  }
+
+  // ── Tinted words ──────────────────────────────────────────────────────────
+  // Words above the reader's level are drawn in one of three colours (easy,
+  // mid, hard) instead of being underlined, and the tapped word is drawn in
+  // the page colour on its solid ink box. The layout's text has one colour, so
+  // the block is drawn in passes: everything but the tinted words first, then
+  // each colour's words through a clip of their line boxes.
+  private val tintPaths = LinkedHashMap<Int, Path>()
+  private val tintPathPool = ArrayList<Path>()
+  private var tintPathsUsed = 0
+  private val tintUnionPath = Path()
+
+  private fun tintPathFor(color: Int): Path = tintPaths.getOrPut(color) {
+    if (tintPathsUsed >= tintPathPool.size) tintPathPool.add(Path())
+    tintPathPool[tintPathsUsed++].also { it.rewind() }
+  }
+
+  // One of the three level colours for a word's weight (0 nearly known, 1 well
+  // above the reader). A word the reader has tapped settles most of the way
+  // back to the ink: it has been dealt with, but still shows where it was.
+  private fun levelTextColor(range: TextRange): Int {
+    val weight = (range.levelWeight ?: 1f).coerceIn(0f, 1f)
+    val base = when {
+      weight < 1f / 3f -> levelUnderlineEasyColor
+      weight < 2f / 3f -> levelUnderlineMidColor
+      else -> levelUnderlineHardColor
+    }
+    val settled = tapDissolve(range)
+    return if (settled <= 0f) base else lerpColor(base, themePalette.bodyTextColor, TAPPED_LEVEL_SETTLE * settled)
+  }
+
+  // The boxes of the lines a range of the block's text covers, added to
+  // `path`. With `wave`, only as far across each line as the word-help wave
+  // has reached (while one plays), so the colour sweeps in as the underlines did.
+  private fun addRangeLineBoxes(
+    path: Path,
+    layout: StaticLayout,
+    localStart: Int,
+    localEnd: Int,
+    textLength: Int,
+    wave: Boolean = false
+  ): Boolean {
+    val sweepReveal = frameReveal?.takeIf { wave && it.underlines }
+    val safeStart = localStart.coerceIn(0, textLength)
+    val safeEnd = localEnd.coerceIn(safeStart, textLength)
+    if (safeStart >= safeEnd || layout.lineCount <= 0) return false
+    val startLine = layout.getLineForOffset(safeStart)
+    val endLine = layout.getLineForOffset(max(safeStart, safeEnd - 1))
+    var added = false
+    for (line in startLine..endLine) {
+      val lineStart = max(safeStart, layout.getLineStart(line))
+      val visibleLineEnd = layout.getLineVisibleEnd(line)
+      val lineEnd = min(safeEnd, visibleLineEnd)
+      if (lineStart >= lineEnd) continue
+      val startX = layout.getPrimaryHorizontal(lineStart)
+      // The x of a line's last offset is the start of the next line (see
+      // drawLevelUnderline): take the line's right edge there.
+      val endX = if (lineEnd >= visibleLineEnd) layout.getLineRight(line) else layout.getPrimaryHorizontal(lineEnd)
+      val left = min(startX, endX)
+      val top = layout.getLineTop(line).toFloat()
+      val bottom = layout.getLineBottom(line).toFloat()
+      val right = if (sweepReveal == null) {
+        max(startX, endX)
+      } else {
+        val sweep = RevealWave.underlineSweep(sweepReveal.elapsedMs, revealLineFraction(layout.getLineBaseline(line).toFloat()))
+        RevealWave.clippedRight(left, max(startX, endX), sweep * layout.width) ?: continue
+      }
+      if (right <= left) continue
+      path.addRect(left, top, right, bottom, Path.Direction.CW)
+      added = true
+    }
+    return added
+  }
+
+  private fun drawBlockText(canvas: Canvas, block: PageBlock, layout: StaticLayout) {
+    val currentPage = page
+    val textLength = blockTextForSelection(block).length
+    if (currentPage == null || textLength <= 0) {
+      layout.draw(canvas)
+      return
+    }
+    tintPaths.clear()
+    tintPathsUsed = 0
+    val blockSourceStart = block.sourceStartOffset
+    val blockSourceEnd = blockSourceStart + textLength
+    fun onThisPage(range: TextRange) =
+      range.pageIndex == currentPage.pageIndex && range.spineIndex == currentPage.spineIndex
+
+    // The tapped word, in the page colour on its ink box.
+    val tappedRanges = if (activeSelectionKind == ActiveSelectionKind.WORD && !isSelectionMode) {
+      rangesForBlock(activeSelectionRanges, block.blockId).filter(::onThisPage)
+    } else {
+      emptyList()
+    }
+    tappedRanges.forEach { range ->
+      val localStart = max(range.sourceStartOffset, blockSourceStart) - blockSourceStart
+      val localEnd = min(range.sourceEndOffset, blockSourceEnd) - blockSourceStart
+      addRangeLineBoxes(tintPathFor(themePalette.backgroundColor), layout, localStart, localEnd, textLength)
+    }
+
+    // Words above the reader's level, by colour.
+    rangesForBlock(levelRanges, block.blockId).forEach { range ->
+      if (range.annotationOnly || !onThisPage(range)) return@forEach
+      if (tappedRanges.any { it.sourceStartOffset < range.sourceEndOffset && range.sourceStartOffset < it.sourceEndOffset }) {
+        return@forEach
+      }
+      val localStart = max(range.sourceStartOffset, blockSourceStart) - blockSourceStart
+      val localEnd = min(range.sourceEndOffset, blockSourceEnd) - blockSourceStart
+      if (localStart >= localEnd) return@forEach
+      addRangeLineBoxes(tintPathFor(levelTextColor(range)), layout, localStart, localEnd, textLength, wave = true)
+    }
+
+    tintUnionPath.rewind()
+    tintPaths.values.forEach { tintUnionPath.addPath(it) }
+    if (tintUnionPath.isEmpty) {
+      layout.draw(canvas)
+      return
+    }
+
+    canvas.save()
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      canvas.clipOutPath(tintUnionPath)
+    } else {
+      @Suppress("DEPRECATION")
+      canvas.clipPath(tintUnionPath, android.graphics.Region.Op.DIFFERENCE)
+    }
+    layout.draw(canvas)
+    canvas.restore()
+
+    val textPaint = layout.paint
+    val inkColor = textPaint.color
+    tintPaths.forEach { (color, path) ->
+      if (path.isEmpty) return@forEach
+      canvas.save()
+      canvas.clipPath(path)
+      textPaint.color = color
+      layout.draw(canvas)
+      canvas.restore()
+    }
+    textPaint.color = inkColor
+  }
+
+  // While a word's panel is open, the rest of the page steps back so the
+  // word's sentence (the one translated at the top) is the thing in focus: a
+  // veil of the page colour over the block, with the sentence cut out of it.
+  // Nothing is painted on the sentence itself. Focus mode has its own beam.
+  private val sentenceFocusPath = Path()
+  private val sentenceVeilPaint = Paint().apply { style = Paint.Style.FILL }
+
+  private fun drawContextSentenceFocus(canvas: Canvas, block: PageBlock, layout: StaticLayout) {
+    val sentence = contextSentence ?: return
+    if (focusModeEnabled) return
+    val currentPage = page ?: return
+    val alpha = (255 * SENTENCE_FOCUS_VEIL * contextSentenceFade.coerceIn(0f, 1f)).roundToInt()
+    if (alpha <= 0) return
+    val textLength = blockTextForSelection(block).length
+    sentenceFocusPath.rewind()
+    val holdsSentence = sentence.blockId == block.blockId &&
+      (sentence.spineIndex == null || currentPage.spineIndex == null || sentence.spineIndex == currentPage.spineIndex)
+    if (holdsSentence && textLength > 0) {
+      val localStart = (sentence.sourceStartOffset - block.sourceStartOffset).coerceIn(0, textLength)
+      val localEnd = (sentence.sourceEndOffset - block.sourceStartOffset).coerceIn(localStart, textLength)
+      addRangeLineBoxes(sentenceFocusPath, layout, localStart, localEnd, textLength)
+    }
+    val (above, below) = annotationOverhang(block)
+    val bg = pageBackgroundColor
+    sentenceVeilPaint.color = Color.argb(alpha, Color.red(bg), Color.green(bg), Color.blue(bg))
+    canvas.save()
+    if (!sentenceFocusPath.isEmpty) {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        canvas.clipOutPath(sentenceFocusPath)
+      } else {
+        @Suppress("DEPRECATION")
+        canvas.clipPath(sentenceFocusPath, android.graphics.Region.Op.DIFFERENCE)
+      }
+    }
+    canvas.drawRect(-dp(8f).toFloat(), -above, layout.width + dp(8f).toFloat(), layout.height + below, sentenceVeilPaint)
+    canvas.restore()
   }
 
   // Annotation rows drawn into the space the paginator reserved between lines:
@@ -1418,6 +1634,10 @@ class EpubPageView(context: Context) : View(context) {
             (!focusModeEnabled && activeSelectionKind != null && activeSelectionRanges.isNotEmpty())
           if (panelOpen) {
             if (!focusModeEnabled && hitTestActiveSelectionHighlight(event.x, event.y)) {
+              // A second tap on the word whose panel is open: saves it.
+              if (activeSelectionKind == ActiveSelectionKind.WORD) {
+                hitTestText(event.x, event.y)?.let { onWordSelected?.invoke(it.copy(again = true)) }
+              }
               isTapCandidate = false
               return true
             }
@@ -2043,6 +2263,11 @@ class EpubPageView(context: Context) : View(context) {
 
       val localOffset = layout.getOffsetForHorizontal(line, localX)
       val blockText = blockTextForSelection(block)
+      // `localOffset` is the nearest caret; the character under the finger is
+      // the one before it when the caret sits to the finger's right.
+      val tappedChar = if (
+        localOffset > layout.getLineStart(line) && layout.getPrimaryHorizontal(localOffset) > localX
+      ) localOffset - 1 else localOffset
       // Chinese: the underline and the gloss under a word come from the
       // server's segmentation of the book (厮杀 is one word); Android's word
       // breaker splits words it doesn't know (厮 + 杀). A tap inside a marked
@@ -2109,7 +2334,8 @@ class EpubPageView(context: Context) : View(context) {
         sentence = sentenceForToken(block, tokenRange),
         sentenceSourceStart = sentenceBounds?.first ?: -1,
         sentenceSourceEnd = sentenceBounds?.second ?: -1,
-        phraseWord = phraseWord
+        phraseWord = phraseWord,
+        tapSourceOffset = block.sourceStartOffset + tappedChar
       )
     }
 
@@ -3288,7 +3514,11 @@ class EpubPageView(context: Context) : View(context) {
     }
 
     val probe = (block.sourceStartOffset + localStart).coerceIn(0, source.length)
-    val match = block.sentenceRanges.firstOrNull { probe in it.first..(it.last + 1) }
+    // A sentence that starts right where the previous one ends (no space, as
+    // in Chinese) owns that offset; the previous one only takes it as its end
+    // when no sentence starts there.
+    val match = block.sentenceRanges.firstOrNull { probe in it }
+      ?: block.sentenceRanges.firstOrNull { probe == it.last + 1 }
     if (match != null) {
       val start = match.first.coerceIn(0, source.length)
       val end = (match.last + 1).coerceIn(start, source.length)

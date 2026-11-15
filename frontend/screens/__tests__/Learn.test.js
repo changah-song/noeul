@@ -67,7 +67,6 @@ jest.mock('../../services/preferencesCloudSync', () => ({
 }));
 jest.mock('../../services/api/hanjaRelated', () => ({ fetchHanjaRelated: jest.fn() }));
 jest.mock('../../services/userDataSyncQueue', () => ({ requestUserDataSync: jest.fn() }));
-jest.mock('../../services/dailyProgress', () => ({ incrementWordsStudied: jest.fn() }));
 jest.mock('../../services/localOwnerCoordinator', () => ({ isCurrentSyncGeneration: () => true }));
 
 const { Animated } = require('react-native');

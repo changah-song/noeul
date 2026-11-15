@@ -3,7 +3,6 @@ import {
     Animated,
     Easing,
     Modal,
-    PanResponder,
     Pressable,
     StyleSheet,
     Text,
@@ -14,7 +13,7 @@ import {
 import { Feather } from '@expo/vector-icons';
 import { Slider } from 'react-native-elements';
 import { useTranslation } from '../../hooks/useTranslation';
-import { fontFamilies } from '../../theme';
+import { elevation, fontFamilies, layout } from '../../theme';
 import { ANNOTATION_SCOPES } from '../../services/readerAnnotations';
 import {
     DEFAULT_BOOK_READER_SETTINGS,
@@ -31,26 +30,19 @@ import {
 } from '../../services/readerSettings';
 import {
     ResetLink,
-    SHEET_PADDING,
     SegmentedControl,
     SegmentedTabs,
     SettingRow,
-    SheetHandle,
-    SheetHeader,
     Stepper,
     ToggleSwitch,
     Checkbox,
     createReaderSettingsControlStyles,
-    createSheetChromeStyles,
 } from './ReaderSettingsControls';
 
-// Share of the window the sheet occupies. Fixed (not content-sized) so every
-// tab opens at the same height and long tabs scroll inside the sheet.
-export const SHEET_HEIGHT_RATIO = 0.68;
-// Drag past this share of the sheet (or flick faster than DISMISS_VELOCITY)
-// dismisses it; anything less springs back.
-const DISMISS_DRAG_RATIO = 0.22;
-const DISMISS_VELOCITY = 0.6;
+// The most of the window the popup may take; a longer tab scrolls inside it.
+export const POPUP_MAX_HEIGHT_RATIO = 0.7;
+const POPUP_WIDTH = 316;
+const POPUP_PADDING = 16;
 
 export const SETTINGS_TABS = ['text', 'words'];
 
@@ -68,13 +60,12 @@ const nearestLineSpacing = (value) => READER_LINE_SPACING_STEPS[nearestLineSpaci
 const scopeOrDefault = (value, fallback) => (ANNOTATION_SCOPES.includes(value) ? value : fallback);
 
 /**
- * ReaderSettingsSheet — the reader's settings, as a bottom sheet (slides up
- * over a dimmed page; dismissed by the backdrop, the back button, the close
- * button or a swipe down on its header). Replaces the dropdown that used to
- * hang off the ☰ button.
+ * ReaderSettingsSheet — the reader's settings, as a popup that drops from
+ * the ☰ button at the top right (the same kind of popup as the contents under
+ * the title). The page stays in view behind it; a tap outside it or the back
+ * button closes it. It is as tall as its tab, up to a share of the screen.
  *
  * Layout, top to bottom:
- *   grabber · serif title + close X (the shared sheet chrome)
  *   `actions` (surface-specific rows such as Checkpoints or Edit lyrics)
  *   segmented tabs: Text | Words
  *   scrolling tab body, each ending in a small reset-to-default icon
@@ -109,9 +100,8 @@ const ReaderSettingsSheet = ({
 }) => {
     const { t } = useTranslation();
     const { height: windowHeight } = useWindowDimensions();
-    const sheetHeight = Math.round(windowHeight * SHEET_HEIGHT_RATIO);
-    const styles = useMemo(() => createStyles(colors, sheetHeight), [colors, sheetHeight]);
-    const chrome = useMemo(() => createSheetChromeStyles(colors, insets), [colors, insets]);
+    const popupMaxHeight = Math.round(windowHeight * POPUP_MAX_HEIGHT_RATIO);
+    const styles = useMemo(() => createStyles(colors, popupMaxHeight), [colors, popupMaxHeight]);
     const controlStyles = useMemo(() => createReaderSettingsControlStyles(colors), [colors]);
     const [activeTab, setActiveTab] = useState(SETTINGS_TABS.includes(initialTab) ? initialTab : 'text');
     // Opened for a particular tab (Profile's "Underlines feel off?"): show it.
@@ -132,68 +122,32 @@ const ReaderSettingsSheet = ({
         }).start();
     }, [tabFade]);
 
-    // Keep the sheet mounted through its exit animation, then unmount.
+    // Keep the popup mounted through its exit animation, then unmount.
     const [mounted, setMounted] = useState(visible);
     const slideAnim = useRef(new Animated.Value(0)).current;
-    const dragY = useRef(new Animated.Value(0)).current;
-    const sheetHeightRef = useRef(sheetHeight);
-    sheetHeightRef.current = sheetHeight;
 
     useEffect(() => {
         if (visible) {
             setMounted(true);
-            dragY.setValue(0);
             Animated.timing(slideAnim, {
                 toValue: 1,
-                duration: 280,
+                duration: 180,
                 easing: Easing.out(Easing.cubic),
                 useNativeDriver: true,
             }).start();
         } else {
             Animated.timing(slideAnim, {
                 toValue: 0,
-                duration: 200,
+                duration: 130,
                 easing: Easing.in(Easing.cubic),
                 useNativeDriver: true,
             }).start(({ finished }) => {
                 if (finished) {
                     setMounted(false);
-                    dragY.setValue(0);
                 }
             });
         }
-    }, [visible, slideAnim, dragY]);
-
-    const onCloseRef = useRef(onClose);
-    onCloseRef.current = onClose;
-
-    // Swipe down on the sheet's header (handle, title, actions, tabs) drags it
-    // along and dismisses it past the threshold. The tab body is a ScrollView,
-    // which keeps its own vertical gesture, so the two never fight.
-    const panResponder = useMemo(() => PanResponder.create({
-        onMoveShouldSetPanResponder: (_evt, gesture) => (
-            gesture.dy > 8 && gesture.dy > Math.abs(gesture.dx) * 1.5
-        ),
-        onPanResponderMove: (_evt, gesture) => {
-            dragY.setValue(Math.max(0, gesture.dy));
-        },
-        onPanResponderRelease: (_evt, gesture) => {
-            const shouldDismiss = gesture.dy > sheetHeightRef.current * DISMISS_DRAG_RATIO
-                || gesture.vy > DISMISS_VELOCITY;
-            if (shouldDismiss) {
-                onCloseRef.current?.();
-                return;
-            }
-            Animated.spring(dragY, {
-                toValue: 0,
-                bounciness: 4,
-                useNativeDriver: true,
-            }).start();
-        },
-        onPanResponderTerminate: () => {
-            Animated.spring(dragY, { toValue: 0, bounciness: 4, useNativeDriver: true }).start();
-        },
-    }), [dragY]);
+    }, [visible, slideAnim]);
 
     const underlineLegendColors = useMemo(
         () => buildLegendGradient(
@@ -242,10 +196,8 @@ const ReaderSettingsSheet = ({
         label: value === 'all' ? t('read.annotationScopeAll') : t('read.annotationScopeUnderlined'),
     }));
 
-    const sheetTranslateY = Animated.add(
-        slideAnim.interpolate({ inputRange: [0, 1], outputRange: [sheetHeight, 0] }),
-        dragY,
-    );
+    // Drops a few points out of the header as it fades in.
+    const popupTranslateY = slideAnim.interpolate({ inputRange: [0, 1], outputRange: [-8, 0] });
 
     const renderTextTab = () => (
         <>
@@ -450,17 +402,19 @@ const ReaderSettingsSheet = ({
                     accessibilityRole="button"
                     accessibilityLabel={t('common.close')}
                 />
-                <Animated.View style={[chrome.sheet, styles.sheet, { transform: [{ translateY: sheetTranslateY }] }]}>
-                    <View {...panResponder.panHandlers}>
-                        <SheetHandle styles={chrome} />
-                        <SheetHeader
-                            styles={chrome}
-                            colors={colors}
-                            title={title}
-                            onClose={onClose}
-                            closeLabel={t('common.close')}
-                        />
-
+                <Animated.View
+                    accessibilityViewIsModal
+                    accessibilityLabel={title}
+                    style={[
+                        styles.popup,
+                        {
+                            top: (insets?.top ?? 0) + layout.readerHeaderHeight + 2,
+                            opacity: slideAnim,
+                            transform: [{ translateY: popupTranslateY }],
+                        },
+                    ]}
+                >
+                    <View>
                         {actions.length > 0 ? (
                             <View style={styles.actions}>
                                 {actions.map((action) => (
@@ -518,27 +472,37 @@ const ReaderSettingsSheet = ({
     );
 };
 
-const createStyles = (colors, sheetHeight = 520) => StyleSheet.create({
+const createStyles = (colors, popupMaxHeight = 520) => StyleSheet.create({
     overlay: {
         flex: 1,
-        justifyContent: 'flex-end',
     },
+    // Barely there: the page stays readable behind the popup.
     scrim: {
         ...StyleSheet.absoluteFillObject,
-        backgroundColor: colors.overlay,
+        backgroundColor: colors.readerTocScrim,
     },
     backdrop: {
         ...StyleSheet.absoluteFillObject,
     },
-    sheet: {
-        height: sheetHeight,
+    popup: {
+        position: 'absolute',
+        right: 12,
+        width: POPUP_WIDTH,
+        maxWidth: '92%',
+        maxHeight: popupMaxHeight,
+        borderRadius: 16,
+        borderWidth: StyleSheet.hairlineWidth,
+        borderColor: colors.readerBorder,
+        backgroundColor: colors.readerSurface,
+        overflow: 'hidden',
+        ...elevation.readerToc,
     },
     actions: {
-        marginTop: 4,
-        paddingHorizontal: SHEET_PADDING,
+        paddingTop: 2,
+        paddingHorizontal: POPUP_PADDING,
     },
     actionRow: {
-        minHeight: 52,
+        minHeight: 46,
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'space-between',
@@ -563,15 +527,17 @@ const createStyles = (colors, sheetHeight = 520) => StyleSheet.create({
     },
     tabs: {
         marginTop: 12,
-        marginHorizontal: SHEET_PADDING,
+        marginHorizontal: POPUP_PADDING,
     },
+    // As tall as the tab's rows; it only scrolls once the popup is at its ceiling.
     body: {
-        flex: 1,
+        flexGrow: 0,
+        flexShrink: 1,
     },
     bodyContent: {
-        paddingHorizontal: SHEET_PADDING,
-        paddingTop: 6,
-        paddingBottom: SHEET_PADDING,
+        paddingHorizontal: POPUP_PADDING,
+        paddingTop: 4,
+        paddingBottom: 10,
     },
     legend: {
         paddingBottom: 14,

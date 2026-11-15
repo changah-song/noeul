@@ -42,6 +42,9 @@ struct ReaderWordHit {
   let rect: CGRect
   // Inside a marked phrase: the single word under the finger.
   let phraseWord: String?
+  // The character under the finger, in the block's text. JS uses it to tell
+  // a tap on a link from a tap on a word.
+  let tapOffset: Int
 }
 
 // How marks are drawn; set by the reader view on every page.
@@ -52,18 +55,31 @@ struct ReaderMarkOptions {
   var tappedAt: [String: Double] = [:]
   // Saved words whose strength just dropped: term -> (strength before, start ms).
   var savedFades: [String: (from: CGFloat, at: Double)] = [:]
-  // The tapped word's sentence, washed faintly; fades out from `contextFadeAt`.
+  // The tapped word's sentence: while its panel is open the rest of the page
+  // steps back around it (nothing is painted on the sentence itself). The
+  // focus comes in from `contextShownAt` and fades out from `contextFadeAt`.
+  // Off in focus mode, which has its own beam.
   var contextSentence: (spineIndex: Int, range: ReaderSourceRange)?
+  var contextShownAt: Double?
   var contextFadeAt: Double?
+  var contextDimsPage = true
   // Listening in paged mode: the sentence being read, washed light blue.
   var listenSentence: (spineIndex: Int, ranges: [ReaderSourceRange])?
   // The word the voice is reading.
   var spokenRange: (spineIndex: Int, range: ReaderSourceRange)?
+  // "You were here": the line the reader was on before a relayout (a font
+  // size change) moved it down the page. Marked from `at` (ms), then fades.
+  var resumeMark: (spineIndex: Int, blockId: String, offset: Int, at: Double)?
   // Word help sweeping in (RevealWave).
   var reveal: ReaderReveal?
 }
 
 func nowMs() -> Double { Date().timeIntervalSince1970 * 1000 }
+
+// The "you were here" mark after a relayout: eases in, holds, fades out.
+private let resumeMarkInMs: Double = 180
+private let resumeMarkHoldMs: Double = 1700
+private let resumeMarkOutMs: Double = 700
 
 private let imageCache = NSCache<NSString, UIImage>()
 
@@ -79,6 +95,12 @@ private let pixelSize: CGFloat = 3
 private let tapDissolveMs: Double = 700
 private let savedFadeMs: Double = 900
 private let contextFadeMs: Double = 260
+private let contextFadeInMs: Double = 180
+// How much of the page colour lies over the text outside the tapped word's
+// sentence (that text keeps 1 - this).
+private let sentenceFocusVeil: CGFloat = 0.6
+// How far a tapped level word's colour settles back toward the ink.
+private let tappedLevelSettle: CGFloat = 0.6
 private let marqueePauseMs: Double = 1400
 private let marqueeFrameMs: Double = 40
 private let senseTurnMs: Double = 3200
@@ -195,13 +217,30 @@ final class ReaderPageView: UIView {
     }
   }
 
-  // Each block in Android's order: context wash, spoken wash, word box, level
-  // underlines, saved shade + underline, text, annotations. Returns ms until
+  // Each block in Android's order: spoken wash, word box, saved shade +
+  // underline, text (level words and the tapped word tinted), annotations,
+  // then the veil that sets the tapped word's sentence apart. Returns ms until
   // the next animation frame is needed.
   private func drawItems(of page: ReaderPage, in rect: CGRect, context: CGContext) -> Double {
     var nextFrameMs = Double.infinity
     let now = nowMs()
     let band = rect.insetBy(dx: 0, dy: -48)
+    let levelColors = [palette.levelUnderlineEasy, palette.levelUnderlineMid, palette.levelUnderlineHard]
+
+    var veil: CGFloat = 0
+    if marks.contextSentence != nil && marks.contextDimsPage {
+      if let start = marks.contextFadeAt {
+        veil = CGFloat(max(0, 1 - (now - start) / contextFadeMs))
+      } else if let shown = marks.contextShownAt {
+        veil = CGFloat(min(1, max(0, (now - shown) / contextFadeInMs)))
+      } else {
+        veil = 1
+      }
+      if veil > 0 && veil < 1 { nextFrameMs = min(nextFrameMs, 16) }
+      // A fade-in that hasn't drawn its first frame yet still needs the next one.
+      if veil == 0 && marks.contextFadeAt == nil { nextFrameMs = min(nextFrameMs, 16) }
+    }
+
     for item in page.items {
       let itemRect = CGRect(x: 0, y: origin.y + item.y, width: bounds.width, height: item.height)
       guard itemRect.intersects(band) else { continue }
@@ -211,17 +250,6 @@ final class ReaderPageView: UIView {
       }
       let blockId = item.layout.block.id
 
-      if let wash = marks.contextSentence, wash.spineIndex == page.spineIndex, wash.range.blockId == blockId {
-        var fade: CGFloat = 1
-        if let start = marks.contextFadeAt {
-          fade = CGFloat(max(0, 1 - (now - start) / contextFadeMs))
-          if fade > 0 { nextFrameMs = min(nextFrameMs, 16) }
-        }
-        if fade > 0 {
-          palette.bodyText.withAlphaComponent((palette.isDark ? 0x1C : 0x14) / 255 * fade).setFill()
-          fillBoxes(for: wash.range.range, in: item)
-        }
-      }
       if let listen = marks.listenSentence, listen.spineIndex == page.spineIndex {
         (palette.isDark ? UIColor(red: 0x5B / 255, green: 0x9B / 255, blue: 0xE6 / 255, alpha: 0x2A / 255)
                         : UIColor(red: 0x9C / 255, green: 0xCB / 255, blue: 0xFF / 255, alpha: 0x33 / 255)).setFill()
@@ -234,21 +262,72 @@ final class ReaderPageView: UIView {
                         : UIColor(red: 0x9C / 255, green: 0xCB / 255, blue: 0xFF / 255, alpha: 0x73 / 255)).setFill()
         fillBoxes(for: spoken.range.range, in: item)
       }
+      // A bar in the margin beside the line the reader was on, and a light
+      // wash over it from the character they were at.
+      if let mark = marks.resumeMark, mark.spineIndex == page.spineIndex, mark.blockId == blockId,
+         let lineIndex = item.layout.lines.lastIndex(where: { $0.range.location <= mark.offset }),
+         item.lineRange.contains(lineIndex) {
+        let elapsed = now - mark.at
+        if elapsed < resumeMarkInMs + resumeMarkHoldMs + resumeMarkOutMs {
+          let strength: CGFloat
+          if elapsed < resumeMarkInMs {
+            strength = CGFloat(max(0, elapsed / resumeMarkInMs))
+            nextFrameMs = min(nextFrameMs, 16)
+          } else if elapsed < resumeMarkInMs + resumeMarkHoldMs {
+            strength = 1
+            nextFrameMs = min(nextFrameMs, max(16, resumeMarkInMs + resumeMarkHoldMs - elapsed))
+          } else {
+            strength = CGFloat(1 - (elapsed - resumeMarkInMs - resumeMarkHoldMs) / resumeMarkOutMs)
+            nextFrameMs = min(nextFrameMs, 16)
+          }
+          if strength > 0 {
+            let line = item.layout.lines[lineIndex]
+            let washed = NSRange(location: mark.offset, length: max(0, NSMaxRange(line.range) - mark.offset))
+            palette.selectionHandle.withAlphaComponent(0.18 * strength).setFill()
+            fillBoxes(for: washed, in: item)
+            palette.selectionHandle.withAlphaComponent(strength).setFill()
+            let bar = CGRect(x: origin.x - 10, y: origin.y + item.lineTop(lineIndex), width: 3, height: line.naturalHeight)
+            UIBezierPath(roundedRect: bar, cornerRadius: 1.5).fill()
+          }
+        }
+      }
+
+      // Words drawn in a colour of their own: the tapped word in the page
+      // colour on its solid ink box, and the words above the reader's level
+      // in one of three colours (in place of an underline).
+      var tints: [(color: UIColor, rects: [CGRect])] = []
+      var tappedParts: [NSRange] = []
       if let selection, selection.kind == .word, selection.spineIndex == page.spineIndex {
         palette.activeHighlight.setFill()
         for part in selection.ranges where part.blockId == blockId {
           fillBoxes(for: part.range, in: item)
+          tappedParts.append(part.range)
         }
+        let rects = tappedParts.flatMap { lineBoxes(for: $0, in: item, sweep: nil) }
+        if !rects.isEmpty { tints.append((palette.background, rects)) }
       }
       let sweep = underlineSweep(now: now)
       if sweep != nil { nextFrameMs = min(nextFrameMs, 16) }
+      var levelRects: [[CGRect]] = [[], [], []]
       for range in page.highlights.level where range.blockId == blockId && !range.annotationOnly {
+        if tappedParts.contains(where: { NSIntersectionRange($0, range.range).length > 0 }) { continue }
+        let rects = lineBoxes(for: range.range, in: item, sweep: sweep)
+        guard !rects.isEmpty else { continue }
+        let weight = min(max(range.weight, 0), 1)
+        let bucket = weight < 1.0 / 3 ? 0 : (weight < 2.0 / 3 ? 1 : 2)
+        // A tapped word settles most of the way back to the ink.
         let progress = tapProgress(range, now: now)
         if progress > 0 && progress < 1 { nextFrameMs = min(nextFrameMs, 16) }
-        drawUnderline(range.range, in: item, color: levelUnderlineColor(weight: range.weight, reinforced: range.reinforced, palette: palette),
-                      thickness: 1.4 + 0.8 * min(max(range.weight, 0), 1), roundCap: true, dissolve: progress, context: context,
-                      sweep: sweep)
+        if progress <= 0 {
+          levelRects[bucket].append(contentsOf: rects)
+        } else {
+          tints.append((lerpColor(levelColors[bucket], palette.bodyText, tappedLevelSettle * progress), rects))
+        }
       }
+      for (bucket, rects) in levelRects.enumerated() where !rects.isEmpty {
+        tints.append((levelColors[bucket], rects))
+      }
+
       for range in page.highlights.saved where range.blockId == blockId {
         let shown = savedStrength(range, now: now, nextFrameMs: &nextFrameMs)
         guard shown > 0.01 else { continue }
@@ -257,13 +336,77 @@ final class ReaderPageView: UIView {
         drawUnderline(range.range, in: item, color: palette.savedHighlight.withAlphaComponent(0.85 * shown),
                       thickness: 2, roundCap: false, dissolve: 0, context: context)
       }
-      drawLines(of: item, context: context, offsetX: 0)
+      drawText(of: item, tints: tints, context: context)
       if marks.showPinyin || marks.showGloss {
         let levels = page.highlights.level.filter { $0.blockId == blockId }
         nextFrameMs = min(nextFrameMs, drawAnnotations(levels, in: item, context: context, now: now))
       }
+
+      if veil > 0, let focus = marks.contextSentence {
+        let size = item.layout.fontSize
+        let above = marks.showPinyin ? 0.9 * size : 0
+        let below = marks.showGloss ? 0.95 * size : 0
+        let cover = CGRect(x: 0, y: itemRect.minY - above, width: bounds.width, height: itemRect.height + above + below)
+        context.saveGState()
+        context.clip(to: cover)
+        context.beginTransparencyLayer(auxiliaryInfo: nil)
+        palette.background.withAlphaComponent(sentenceFocusVeil * veil).setFill()
+        context.fill(cover)
+        if focus.spineIndex == page.spineIndex, focus.range.blockId == blockId {
+          // The sentence is cut out of the veil, annotation rows included.
+          context.setBlendMode(.clear)
+          for hole in beamRects(for: focus.range.range, in: item) { context.fill(hole) }
+        }
+        context.endTransparencyLayer()
+        context.restoreGState()
+      }
     }
     return nextFrameMs
+  }
+
+  // The block's text. With tinted words it is drawn in passes: everything but
+  // those words first, then each colour's words (the glyphs are drawn into a
+  // layer of their own and filled with the colour).
+  private func drawText(of item: ReaderPageItem, tints: [(color: UIColor, rects: [CGRect])], context: CGContext) {
+    guard !tints.isEmpty else {
+      drawLines(of: item, context: context, offsetX: 0)
+      return
+    }
+    context.saveGState()
+    context.addRect(context.boundingBoxOfClipPath)
+    for tint in tints { context.addRects(tint.rects) }
+    context.clip(using: .evenOdd)
+    drawLines(of: item, context: context, offsetX: 0)
+    context.restoreGState()
+
+    for tint in tints {
+      context.saveGState()
+      context.clip(to: tint.rects)
+      context.beginTransparencyLayer(auxiliaryInfo: nil)
+      drawLines(of: item, context: context, offsetX: 0)
+      context.setBlendMode(.sourceIn)
+      tint.color.setFill()
+      for rect in tint.rects { context.fill(rect) }
+      context.endTransparencyLayer()
+      context.restoreGState()
+    }
+  }
+
+  // The full line boxes (line top to the next line) a range of the block's
+  // text covers, for clipping its glyphs. With `sweep`, only as far across
+  // each line as the word-help wave has reached.
+  private func lineBoxes(for range: NSRange, in item: ReaderPageItem, sweep: ((CGFloat) -> CGFloat)?) -> [CGRect] {
+    lineSpans(for: range, in: item).compactMap { span in
+      let top = origin.y + item.lineTop(span.index)
+      var right = span.right
+      if let sweep {
+        let reach = origin.x + sweep(top) * contentWidth
+        guard reach > span.left else { return nil }
+        right = min(right, reach)
+      }
+      guard right > span.left else { return nil }
+      return CGRect(x: span.left, y: top, width: right - span.left, height: lineBottom(span.index, in: item) - top)
+    }
   }
 
   private func savedStrength(_ range: ReaderHighlightRange, now: Double, nextFrameMs: inout Double) -> CGFloat {
@@ -433,23 +576,29 @@ final class ReaderPageView: UIView {
     var rects: [CGRect] = []
     for item in page.items where item.layout.imageFrame == nil {
       for part in ranges where part.blockId == item.layout.block.id {
-        for span in lineSpans(for: part.range, in: item) {
-          let top = origin.y + item.lineTop(span.index)
-          let line = item.layout.lines[span.index]
-          let size = item.layout.fontSize
-          let above = marks.showPinyin ? 0.9 * size : 0
-          let below = marks.showGloss ? 0.95 * size : 0
-          // The text exactly; the pinyin and gloss rows a little wider, so a
-          // wide annotation isn't cut at the word's edge.
-          rects.append(CGRect(x: span.left, y: top, width: span.right - span.left, height: lineBottom(span.index, in: item) - top))
-          if above > 0 {
-            rects.append(CGRect(x: span.left - 8, y: top - above, width: span.right - span.left + 16, height: above))
-          }
-          if below > 0 {
-            let rowTop = top + line.ascent + line.descent
-            rects.append(CGRect(x: span.left - 8, y: rowTop, width: span.right - span.left + 16, height: below))
-          }
-        }
+        rects.append(contentsOf: beamRects(for: part.range, in: item))
+      }
+    }
+    return rects
+  }
+
+  private func beamRects(for range: NSRange, in item: ReaderPageItem) -> [CGRect] {
+    var rects: [CGRect] = []
+    for span in lineSpans(for: range, in: item) {
+      let top = origin.y + item.lineTop(span.index)
+      let line = item.layout.lines[span.index]
+      let size = item.layout.fontSize
+      let above = marks.showPinyin ? 0.9 * size : 0
+      let below = marks.showGloss ? 0.95 * size : 0
+      // The text exactly; the pinyin and gloss rows a little wider, so a
+      // wide annotation isn't cut at the word's edge.
+      rects.append(CGRect(x: span.left, y: top, width: span.right - span.left, height: lineBottom(span.index, in: item) - top))
+      if above > 0 {
+        rects.append(CGRect(x: span.left - 8, y: top - above, width: span.right - span.left + 16, height: above))
+      }
+      if below > 0 {
+        let rowTop = top + line.ascent + line.descent
+        rects.append(CGRect(x: span.left - 8, y: rowTop, width: span.right - span.left + 16, height: below))
       }
     }
     return rects
@@ -856,7 +1005,7 @@ final class ReaderPageView: UIView {
         let spans = lineSpans(for: token, in: item).filter { $0.index == index }
         if let span = spans.first, point.x < span.left - 4 || point.x > span.right + 4 { return nil }
         let rect = boxes(for: token, in: item).first ?? .zero
-        return ReaderWordHit(item: item, range: token, rect: rect, phraseWord: phraseWord)
+        return ReaderWordHit(item: item, range: token, rect: rect, phraseWord: phraseWord, tapOffset: offset)
       }
     }
     return nil

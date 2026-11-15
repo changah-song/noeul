@@ -64,7 +64,10 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 //        countedShare): 0 at the bottom of the scale, so each Korean
 //        frequency tier seeds its own, higher level (older Korean picks are
 //        read as the same word count, see legacySeedTheta)
-export const LEVEL_ENGINE_VERSION = '2.5';
+//   2.6  the level moves at most a small step a day once the reader is
+//        established (dailyMoveLimit), whatever the number of signals or
+//        refits; a word check or a picked level still sets it outright
+export const LEVEL_ENGINE_VERSION = '2.6';
 
 // Belief about the reader's level.
 export const PRIOR_VARIANCE = 2.0;        // a reader we know nothing about (sd ≈ 1.4)
@@ -231,6 +234,48 @@ export const noisyBinaryStep = ({
     return { mean: m + delta, variance: postVariance, delta, pKnown: pk, pObserved };
 };
 
+// ─── A stable level ───────────────────────────────────────────────────────────
+//
+// A reader's real level changes over weeks, not within an afternoon, but the
+// estimate is noisy: one session of easy or hard text, a run of taps, or a
+// refit that lands a little elsewhere could each move it, and several a day
+// added up to a band. So reading and reviews may move the level only so far
+// from where it stood when the day began. The fit still says where the level
+// is heading; the level walks there a day at a time.
+//
+// A new reader is the exception: their level is a guess, so it may move
+// freely at first, and the allowance halves every DAILY_MOVE_HALF_EVENTS
+// signals down to DAILY_MOVE_SETTLED. A word check or a picked level is a
+// deliberate measurement and is never held back.
+export const DAILY_MOVE_NEW = 1;
+export const DAILY_MOVE_SETTLED = 0.05;   // about a band in three weeks, at most
+export const DAILY_MOVE_HALF_EVENTS = 300;
+
+/** How far the level may move in a day for a reader with `eventCount` signals. */
+export const dailyMoveLimit = (eventCount) => Math.max(
+    DAILY_MOVE_SETTLED,
+    DAILY_MOVE_NEW * 0.5 ** (Math.max(0, Number(eventCount) || 0) / DAILY_MOVE_HALF_EVENTS),
+);
+
+const dayOf = (at) => new Date(at).toISOString().slice(0, 10);
+
+/**
+ * The day's anchor: where the level stood when the day (UTC) began and how
+ * far it may move from there. The allowance is fixed for the day, so signals
+ * arriving during it never pull the level back.
+ */
+const anchorFor = (state, at) => {
+    const day = dayOf(at);
+    const anchor = state?.anchor;
+    if (anchor && anchor.day === day && Number.isFinite(Number(anchor.theta)) && Number(anchor.limit) > 0) {
+        return { theta: Number(anchor.theta), day, limit: Number(anchor.limit) };
+    }
+    return { theta: Number(state?.theta) || 0, day, limit: dailyMoveLimit(state?.eventCount) };
+};
+
+/** A fresh anchor at a level that was just measured (word check, picked level). */
+const anchorAt = (theta, at, eventCount) => ({ theta, day: dayOf(at), limit: dailyMoveLimit(eventCount) });
+
 /** Variance regained since the last signal, capped at the prior. */
 export const driftVariance = (variance, lastAt, now, perDay = DRIFT_PER_DAY, cap = PRIOR_VARIANCE) => {
     const v = Number(variance);
@@ -279,18 +324,25 @@ const mixture = (hypotheses) => {
     return { mean, variance: Math.max(MIN_VARIANCE, second - mean * mean), rate };
 };
 
-// lookup_model is the hypotheses array, or (after a refit) { hypotheses,
-// knownTapRate }.
+// lookup_model is the hypotheses array, or { hypotheses, knownTapRate (after
+// a refit), anchor (the day's starting level, see dailyMoveLimit) }.
 const parseLookupModel = (raw) => {
     try {
         const value = typeof raw === 'string' ? JSON.parse(raw) : raw;
         if (value && !Array.isArray(value) && typeof value === 'object') {
             const rate = Number(value.knownTapRate);
-            return { hypotheses: parseHypotheses(value.hypotheses), knownTapRate: Number.isFinite(rate) ? rate : null };
+            const anchor = value.anchor;
+            const anchorOk = anchor && typeof anchor.day === 'string'
+                && Number.isFinite(Number(anchor.theta)) && Number(anchor.limit) > 0;
+            return {
+                hypotheses: parseHypotheses(value.hypotheses),
+                knownTapRate: value.knownTapRate != null && Number.isFinite(rate) ? rate : null,
+                anchor: anchorOk ? { theta: Number(anchor.theta), day: anchor.day, limit: Number(anchor.limit) } : null,
+            };
         }
-        return { hypotheses: parseHypotheses(value), knownTapRate: null };
+        return { hypotheses: parseHypotheses(value), knownTapRate: null, anchor: null };
     } catch {
-        return { hypotheses: null, knownTapRate: null };
+        return { hypotheses: null, knownTapRate: null, anchor: null };
     }
 };
 
@@ -318,11 +370,15 @@ const roundHypotheses = (hypotheses) => (hypotheses || []).map((h) => ({
  * The habits as stored in profile_ability.lookup_model (rounded JSON), with
  * the learned P(look up | known) once a refit has set one.
  */
-export const serializeHypotheses = (hypotheses, knownTapRate = null) => (
-    Number.isFinite(Number(knownTapRate)) && knownTapRate != null
-        ? JSON.stringify({ hypotheses: roundHypotheses(hypotheses), knownTapRate: Math.round(knownTapRate * 1e4) / 1e4 })
-        : JSON.stringify(roundHypotheses(hypotheses))
-);
+export const serializeHypotheses = (hypotheses, knownTapRate = null, anchor = null) => {
+    const hasRate = Number.isFinite(Number(knownTapRate)) && knownTapRate != null;
+    if (!hasRate && !anchor) return JSON.stringify(roundHypotheses(hypotheses));
+    return JSON.stringify({
+        hypotheses: roundHypotheses(hypotheses),
+        ...(hasRate ? { knownTapRate: Math.round(knownTapRate * 1e4) / 1e4 } : {}),
+        ...(anchor ? { anchor: { theta: Math.round(anchor.theta * 1e4) / 1e4, day: anchor.day, limit: anchor.limit } } : {}),
+    });
+};
 
 /**
  * readerState — the engine's view of a profile_ability row, with defaults for
@@ -343,6 +399,7 @@ export const readerState = (row) => {
         variance,
         hypotheses: model.hypotheses || freshHypotheses(level, variance),
         knownTapRate: model.knownTapRate,
+        anchor: model.anchor,
         guessYes: Number(row?.guess_yes) || 0,
         guessTotal: Number(row?.guess_total) || 0,
         lastEventAt: row?.last_event_at ?? row?.updated_at ?? null,
@@ -456,11 +513,29 @@ export const applySignal = (state, signal = {}) => {
         });
         after = mixture(hypotheses);
     }
+    // Reading and reviews move the level only so far in a day (see "A stable
+    // level"). A word check is a measurement: the level follows it, and the
+    // day starts over from there.
+    let anchor;
+    if (signal.type === 'check') {
+        anchor = anchorAt(after.mean, at, base.eventCount + 1);
+    } else {
+        anchor = anchorFor(base, at);
+        const held = clamp(after.mean, anchor.theta - anchor.limit, anchor.theta + anchor.limit);
+        if (held !== after.mean) {
+            const excess = after.mean - held;
+            hypotheses.forEach((h) => {
+                h.mean = clamp(h.mean - excess, LEVEL_THETA_MIN, LEVEL_THETA_MAX);
+            });
+            after = mixture(hypotheses);
+        }
+    }
     const next = {
         ...base,
         hypotheses,
         theta: after.mean,
         variance: after.variance,
+        anchor,
         lastEventAt: at,
         eventCount: base.eventCount + 1,
     };
@@ -483,29 +558,33 @@ export const applySignal = (state, signal = {}) => {
     };
 };
 
-// The most one refit moves an established level. A refit's estimate is
-// itself unsure by more than a band (sd ~0.5-0.8), so applying it outright
-// swung the label between neighbouring bands from day to day (HSK 5 one day,
-// HSK 6 the next) and re-graded the book under the reader. Real progress still
-// arrives, a step per refit; jitter mostly doesn't.
-export const REFIT_MAX_STEP = 0.15;
+// A refit's estimate is itself unsure by more than a band (sd ~0.5-0.8), so
+// applying it outright swung the label between neighbouring bands from day to
+// day (HSK 5 one day, HSK 6 the next) and re-graded the book under the
+// reader. An established level moves toward the fit within the day's
+// allowance (dailyMoveLimit), however many refits run that day. Real progress
+// still arrives, a step a day; jitter mostly doesn't.
 
 /**
  * applyRefit — set the level from a batch refit (services/levelRefit.js):
  * every habit's belief moves to the fitted level and uncertainty, the habits
  * are re-weighed around the fitted lookup rate, and the learned P(look up |
  * known) is kept for the online updates that follow. An established level
- * moves at most `maxStep` toward the fit (REFIT_MAX_STEP).
+ * moves toward the fit within the day's allowance (dailyMoveLimit).
  */
-export const applyRefit = (state, fit, { at, maxStep = REFIT_MAX_STEP } = {}) => {
+export const applyRefit = (state, fit, { at } = {}) => {
     const fitted = clamp(Number(fit.theta), LEVEL_THETA_MIN, LEVEL_THETA_MAX);
     const previous = Number(state?.theta);
+    const when = at ? new Date(at).toISOString() : new Date().toISOString();
     // A level we know next to nothing about yet (still near the
     // PRIOR_VARIANCE a fresh reader starts with) takes the fit as it is.
     const settled = Number.isFinite(previous) && Number(state?.variance) < 1;
-    const theta = settled && Number.isFinite(maxStep)
-        ? clamp(previous + clamp(fitted - previous, -maxStep, maxStep), LEVEL_THETA_MIN, LEVEL_THETA_MAX)
-        : fitted;
+    const anchor = settled ? anchorFor(state, when) : anchorAt(fitted, when, state?.eventCount);
+    const theta = clamp(
+        clamp(fitted, anchor.theta - anchor.limit, anchor.theta + anchor.limit),
+        LEVEL_THETA_MIN,
+        LEVEL_THETA_MAX,
+    );
     const variance = Math.max(MIN_VARIANCE, Number(fit.variance));
     const spread = 0.06;
     const hypotheses = LOOKUP_RATES.map((rate, i) => ({
@@ -522,6 +601,7 @@ export const applyRefit = (state, fit, { at, maxStep = REFIT_MAX_STEP } = {}) =>
         theta,
         variance,
         knownTapRate: Number(fit.knownTapRate),
+        anchor,
         lastEventAt: at ? new Date(at).toISOString() : (state?.lastEventAt ?? new Date().toISOString()),
     };
 };
@@ -547,12 +627,15 @@ export const seedState = (state, { theta, variance = SEED_VARIANCE, at } = {}) =
     const hypotheses = (state?.hypotheses || freshHypotheses(level, variance)).map((h) => ({
         ...h, mean: level, variance,
     }));
+    const when = at ? new Date(at).toISOString() : new Date().toISOString();
     return {
         ...state,
         hypotheses,
         theta: level,
         variance,
-        lastEventAt: at ? new Date(at).toISOString() : new Date().toISOString(),
+        // A picked level is where the day starts over from.
+        anchor: anchorAt(level, when, state?.eventCount),
+        lastEventAt: when,
     };
 };
 

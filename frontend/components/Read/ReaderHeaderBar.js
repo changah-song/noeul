@@ -126,6 +126,49 @@ export const ReaderProgressButton = memo(({
 ));
 ReaderProgressButton.displayName = 'ReaderProgressButton';
 
+// The book's title over the chapter being read, with a down chevron: it
+// shows where you are and opens the contents. Fills the space between the
+// back button and the right-hand buttons.
+export const ReaderTitleButton = memo(({
+    styles,
+    themeColors,
+    bookTitle,
+    chapterTitle,
+    open,
+    disabled,
+    onPress,
+    accessibilityLabel,
+}) => (
+    <Pressable
+        disabled={disabled}
+        onPress={onPress}
+        accessibilityRole="button"
+        accessibilityState={{ disabled: !!disabled, expanded: !!open }}
+        accessibilityLabel={accessibilityLabel}
+        style={({ pressed }) => ([
+            styles.titleCluster,
+            pressed && !disabled && styles.progressClusterPressed,
+        ])}
+    >
+        {/* A one-chapter book names its chapter after itself: say it once. */}
+        {bookTitle && bookTitle !== chapterTitle ? (
+            <Text numberOfLines={1} style={styles.titleBook}>{bookTitle}</Text>
+        ) : null}
+        <View style={styles.titleChapterRow}>
+            <Text numberOfLines={1} style={styles.titleChapter}>{chapterTitle}</Text>
+            {disabled ? null : (
+                <Feather
+                    name={open ? 'chevron-up' : 'chevron-down'}
+                    size={16}
+                    color={themeColors.textSecondary}
+                    style={styles.titleChevron}
+                />
+            )}
+        </View>
+    </Pressable>
+));
+ReaderTitleButton.displayName = 'ReaderTitleButton';
+
 export const ReaderFullscreenButton = memo(({ styles, themeColors, onPress, accessibilityLabel }) => (
     <TouchableOpacity
         style={styles.headerIconButton}

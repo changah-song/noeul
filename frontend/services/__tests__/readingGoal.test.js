@@ -7,6 +7,8 @@ import {
   goalStats,
   IDLE_AFTER_MS,
   loadReadingDays,
+  loadReadingGoal,
+  mergeReadingDays,
   monthDays,
   noteReadingActivity,
   recentDaySlots,
@@ -14,6 +16,7 @@ import {
   startReadingClock,
   stopReadingClock,
   subscribeGoalReached,
+  sunsetStage,
 } from '../readingGoal';
 
 const met = (ms = 600000) => ({ ms, metAt: '2026-01-01T00:00:00Z' });
@@ -122,6 +125,73 @@ describe('the reading clock', () => {
   });
 });
 
+// The log must never shrink: these are the ways it used to be able to.
+describe('keeping the day log safe', () => {
+  const MAIN_KEY = '@ff/user-data/user-1/reading-days';
+  const BACKUP_KEY = '@ff/user-data/user-1/reading-days-backup';
+  const history = { '2026-10-27': met(), '2026-10-28': met() };
+
+  const readFor = async (seconds) => {
+    await startReadingClock('user-1');
+    noteReadingActivity();
+    for (let second = 0; second < seconds; second += 1) {
+      jest.setSystemTime(Date.now() + 1000);
+      __tickReadingClock();
+    }
+    stopReadingClock();
+    // Let the save (now asynchronous) finish.
+    await Promise.resolve();
+    await Promise.resolve();
+  };
+
+  beforeEach(async () => {
+    await AsyncStorage.clear();
+    __resetReadingClock();
+    jest.useFakeTimers({ now: new Date('2026-10-29T10:00:00') });
+  });
+  afterEach(() => {
+    stopReadingClock();
+    jest.restoreAllMocks();
+    jest.useRealTimers();
+  });
+
+  it('merges two copies day by day: the longer time, the goal if either has it', () => {
+    const merged = mergeReadingDays(
+      { '2026-10-28': { ms: 60000 }, '2026-10-29': { ms: 700000, metAt: '2026-10-29T09:00:00.000Z' } },
+      { '2026-10-28': { ms: 650000, metAt: '2026-10-28T20:00:00.000Z' }, '2026-10-29': { ms: 30000 }, junk: 5 }
+    );
+    expect(merged).toEqual({
+      '2026-10-28': { ms: 650000, metAt: '2026-10-28T20:00:00.000Z' },
+      '2026-10-29': { ms: 700000, metAt: '2026-10-29T09:00:00.000Z' },
+    });
+  });
+
+  it('keeps a backup copy and recovers from it when the log is unreadable', async () => {
+    await AsyncStorage.setItem(MAIN_KEY, JSON.stringify(history));
+    await loadReadingGoal('user-1'); // writes today's backup
+    await AsyncStorage.setItem(MAIN_KEY, '{"2026-10-27": {"ms": 6000'); // cut off mid-write
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+    __resetReadingClock();
+    await readFor(30);
+    const days = await loadReadingDays('user-1');
+    expect(Object.keys(days).sort()).toEqual(['2026-10-27', '2026-10-28', '2026-10-29']);
+    expect(goalStats(days, '2026-10-29').dayStreak).toBe(2);
+    expect(JSON.parse(await AsyncStorage.getItem(BACKUP_KEY))).toMatchObject(history);
+  });
+
+  it('does not save over the log when it could not be read', async () => {
+    await AsyncStorage.setItem(MAIN_KEY, JSON.stringify(history));
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+    // The first read fails (once); the storage mock answers normally after.
+    AsyncStorage.multiGet.mockRejectedValueOnce(new Error('storage busy'));
+    await readFor(30);
+    const days = await loadReadingDays('user-1');
+    // The old days are still there, and today's reading was added to them.
+    expect(days).toMatchObject(history);
+    expect(days['2026-10-29'].ms).toBeGreaterThan(0);
+  });
+});
+
 describe('Home dots and the calendar', () => {
   const today = '2026-10-29';
 
@@ -140,5 +210,40 @@ describe('Home dots and the calendar', () => {
     expect(cells.find((cell) => cell?.key === today).state).toBe('today');
     expect(cells.find((cell) => cell?.key === '2026-10-30').state).toBe('future');
     expect(cells.length % 7).toBe(0);
+  });
+});
+
+describe('the sunset past the goal', () => {
+  const MIN = 60000;
+  const goal = 10 * MIN;
+
+  it('moves on a stage for every 15 minutes past the goal, up to three stars', () => {
+    // [minutes read, stage]: not yet, golden hour, sunset, dusk, then 1–3 stars.
+    const expected = [[9, 0], [10, 1], [24, 1], [25, 2], [40, 3], [55, 4], [70, 5], [85, 6], [240, 6]];
+    expected.forEach(([minutes, stage]) => {
+      expect(sunsetStage(minutes * MIN, goal)).toBe(stage);
+    });
+  });
+
+  it('judges each calendar day by the goal it had that day', () => {
+    const days = {
+      // Goal of 5 that day: 25 minutes is 20 past it, so sunset.
+      '2026-10-01': { ...met(25 * MIN), goalMs: 5 * MIN },
+      // No goal recorded: the current goal (10) is used, so 25 past is sunset too.
+      '2026-10-02': met(35 * MIN),
+      '2026-10-03': { ms: 90 * MIN },
+    };
+    const cells = monthDays(days, 2026, 9, '2026-10-29', goal);
+    const byKey = (key) => cells.find((cell) => cell?.key === key);
+    expect(byKey('2026-10-01').stage).toBe(2);
+    expect(byKey('2026-10-02').stage).toBe(2);
+    // Read for long but the goal wasn't marked as reached: no sunset.
+    expect(byKey('2026-10-03').stage).toBe(0);
+    expect(byKey('2026-10-01').ms).toBe(25 * MIN);
+  });
+
+  it('gives today\'s stage in the reading snapshot', async () => {
+    await loadReadingGoal('sunset-owner');
+    expect(getReadingSnapshot().sunsetStage).toBe(0);
   });
 });

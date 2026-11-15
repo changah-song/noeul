@@ -156,6 +156,20 @@ export const storyRange = (spine = [], toc = [], bounds = null) => {
   if (measured) return measured;
 
   const titles = tocTitlesBySpine(toc);
+  // Chapters the book's own pages number under a contents entry (a Bible:
+  // "Genesis 1" … under "Genesis"; services/tocLinkedSections.js). They are
+  // the story: it runs from the first to the last of them, whatever follows
+  // (a study Bible's notes, maps and indexes are most of its files).
+  const numbered = [];
+  const collectNumbered = (items) => (items || []).forEach((item) => {
+    if (item?.chapter === true && Number.isInteger(item?.spineIndex) && item.spineIndex < count) {
+      numbered.push(item.spineIndex);
+    }
+    collectNumbered(item?.subitems);
+  });
+  collectNumbered(toc);
+  const firstNumbered = numbered.length ? Math.min(...numbered) : -1;
+  const lastNumbered = numbered.length ? Math.max(...numbered) : -1;
   const label = (index) => [titles[index] || spine[index]?.title || '', fileStem(spine[index]), spine[index]?.idref || ''];
   // Chapters ("Chapter 1", "I.", "Book One") are the story even when their
   // file name says something else.
@@ -165,8 +179,8 @@ export const storyRange = (spine = [], toc = [], bounds = null) => {
 
   const weights = spine.map(itemWeight);
   const total = weights.reduce((sum, weight) => sum + weight, 0);
-  let firstChapter = -1;
-  for (let index = 0; index < count; index += 1) {
+  let firstChapter = firstNumbered;
+  for (let index = 0; firstChapter < 0 && index < count; index += 1) {
     if (isChapter(index)) {
       firstChapter = index;
       break;
@@ -187,6 +201,7 @@ export const storyRange = (spine = [], toc = [], bounds = null) => {
     const leftover = weights.slice(start, firstChapter).reduce((sum, weight) => sum + weight, 0);
     if (leftover < TITLE_LEFTOVER_BYTES) start = firstChapter;
   }
+  if (lastNumbered > start) return { start, end: lastNumbered };
   let end = count - 1;
   while (end > start && isBack(end)) end -= 1;
   return { start, end };
@@ -197,6 +212,43 @@ const spanFor = (range, index) => {
   const from = index === range.start ? clamp01(range.startFraction ?? 0) : 0;
   const to = index === range.end ? clamp01(range.endFraction ?? 1) : 1;
   return [from, Math.max(to, from)];
+};
+
+// The story's weight before each of its chapters (before[i] is what comes
+// before spine item start + i; one more entry holds the whole), worked out
+// once per spine and range. Summing the spine again for every position made
+// each chapter turn stall for over a second in a book of thousands of files.
+const storyWeightCache = new WeakMap();
+
+const storyWeights = (spine, bounds) => {
+  const { start, end } = bounds;
+  const cached = storyWeightCache.get(spine);
+  if (
+    cached
+    && cached.start === start
+    && cached.end === end
+    && cached.startFraction === bounds.startFraction
+    && cached.endFraction === bounds.endFraction
+  ) {
+    return cached;
+  }
+
+  const count = Math.max(end - start + 1, 0);
+  const before = new Float64Array(count + 1);
+  for (let offset = 0; offset < count; offset += 1) {
+    const [from, to] = spanFor(bounds, start + offset);
+    before[offset + 1] = before[offset] + itemWeight(spine[start + offset]) * (to - from);
+  }
+  const weights = {
+    start,
+    end,
+    startFraction: bounds.startFraction,
+    endFraction: bounds.endFraction,
+    before,
+    total: before[count],
+  };
+  storyWeightCache.set(spine, weights);
+  return weights;
 };
 
 /**
@@ -222,19 +274,12 @@ export const storyProgressAt = (spine, range, spineIndex, chapterFraction = 0) =
   const { start, end } = bounds;
   if (spineIndex < start) return 0;
   if (spineIndex > end) return 1;
-  let total = 0;
-  let before = 0;
-  for (let index = start; index <= end; index += 1) {
-    const [from, to] = spanFor(bounds, index);
-    const weight = itemWeight(spine[index]) * (to - from);
-    if (index < spineIndex) before += weight;
-    total += weight;
-  }
+  const { before, total } = storyWeights(spine, bounds);
   const within = clamp01(chapterFraction);
   const [from, to] = spanFor(bounds, spineIndex);
   const inside = Math.min(Math.max(within, from), to) - from;
   if (total <= 0) return within >= to ? 1 : 0;
-  const value = (before + inside * itemWeight(spine[spineIndex])) / total;
+  const value = (before[spineIndex - start] + inside * itemWeight(spine[spineIndex])) / total;
   return clamp01(value);
 };
 
@@ -246,24 +291,24 @@ export const positionForStoryProgress = (spine, range, fraction) => {
   if (!Array.isArray(spine) || spine.length === 0) return null;
   const bounds = range || { start: 0, end: spine.length - 1 };
   const { start, end } = bounds;
-  const value = clamp01(fraction);
-  let total = 0;
-  for (let index = start; index <= end; index += 1) {
-    const [from, to] = spanFor(bounds, index);
-    total += itemWeight(spine[index]) * (to - from);
+  const { before, total } = storyWeights(spine, bounds);
+  const target = clamp01(fraction) * total;
+  // The first chapter the point falls inside: the last one whose start is at
+  // or before it, past any chapters of no weight.
+  let low = 0;
+  let high = end - start;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (target < before[middle + 1]) high = middle;
+    else low = middle + 1;
   }
-  let target = value * total;
-  for (let index = start; index <= end; index += 1) {
-    const [from, to] = spanFor(bounds, index);
-    const size = itemWeight(spine[index]);
-    const weight = size * (to - from);
-    if (target < weight || index === end) {
-      const chapterFraction = from + (weight > 0 ? Math.min(target, weight) / size : 0);
-      return { spineIndex: index, chapterFraction: Math.min(Math.max(chapterFraction, from), to) };
-    }
-    target -= weight;
-  }
-  return { spineIndex: end, chapterFraction: spanFor(bounds, end)[1] };
+  const index = start + low;
+  const [from, to] = spanFor(bounds, index);
+  const size = itemWeight(spine[index]);
+  const weight = size * (to - from);
+  const into = target - before[low];
+  const chapterFraction = from + (weight > 0 ? Math.min(Math.max(into, 0), weight) / size : 0);
+  return { spineIndex: index, chapterFraction: Math.min(Math.max(chapterFraction, from), to) };
 };
 
 /**
@@ -342,7 +387,9 @@ export const chapterMarks = (spine, range, toc = [], { fractionFor } = {}) => {
     }
     return marks;
   }
-  const placed = entries.map((entry) => {
+  // Placed only when asked for: a book with thousands of entries under its
+  // chapters (a Bible) is marked by its top level alone.
+  const place = (list) => list.map((entry) => {
     const fraction = entry.anchor && typeof fractionFor === 'function'
       ? fractionFor(entry.spineIndex, entry.anchor)
       : null;
@@ -366,6 +413,6 @@ export const chapterMarks = (spine, range, toc = [], { fractionFor } = {}) => {
   // The chapters are the top level of the contents, unless the top level is
   // only wrappers and front matter (a "Contents" entry holding the lessons):
   // then every level.
-  const top = tidy(placed.filter((mark) => mark.depth === 0));
-  return top.length >= 2 ? top : tidy(placed);
+  const top = tidy(place(entries.filter((entry) => entry.depth === 0)));
+  return top.length >= 2 ? top : tidy(place(entries));
 };
