@@ -411,7 +411,7 @@ const Auth = ({
  * AuthModal — <Auth> as a full-screen modal that slides up. Used by Profile's
  * "Sign in" / "Create account" and onboarding's "I already have an account".
  */
-export const AuthModal = ({ visible, mode = 'signin', onClose, onAuthenticated, showApple = false }) => (
+export const AuthModal = ({ visible, mode = 'signin', onClose, onAuthenticated, showApple = true }) => (
   <Modal
     visible={visible}
     animationType="slide"
