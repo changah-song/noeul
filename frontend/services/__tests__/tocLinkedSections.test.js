@@ -1,4 +1,5 @@
 import { addLinkedSections, linksInMarkup, tocAncestors, tocGroups } from '../tocLinkedSections';
+import { storyRange } from '../storyRange';
 
 const spineOf = (paths) => paths.map((path, index) => ({ index, path }));
 const entry = (title, spineIndex, depth = 0) => ({
@@ -56,6 +57,23 @@ describe('addLinkedSections', () => {
         // The link's own target is kept, so the jump lands where the book says.
         expect(out[3].href).toBe('NLT/01-Gen-001.html#vs-Gen.1.1');
         expect(out[3].disabled).toBe(false);
+        // Numbered pages straight under an entry are the book's chapters.
+        expect(out.map((item) => Boolean(item.chapter))).toEqual([false, false, false, true, true, false, true, true]);
+    });
+
+    it('measures progress over the numbered chapters, not the reference pages after them', async () => {
+        const { readFile } = reader({
+            ...files,
+            'Notes/index.html': '<a href="gen.html">Genesis Notes</a><a href="exod.html">Exodus Notes</a>',
+            'Notes/gen.html': '<a href="gen1.html">1</a><a href="gen2.html">2</a>',
+        });
+        const withNotes = spineOf([
+            ...spine.map((item) => item.path),
+            'Notes/index.html', 'Notes/gen.html', 'Notes/gen1.html', 'Notes/gen2.html', 'Notes/exod.html',
+        ]);
+        const out = await addLinkedSections([...toc, entry('Study Guide', 8)], withNotes, readFile);
+        // From Genesis 1 (after the book's "Introduction") to Exodus 2.
+        expect(storyRange(withNotes, out)).toEqual({ start: 3, end: 7 });
     });
 
     it('reads nothing when the contents already list every file', async () => {

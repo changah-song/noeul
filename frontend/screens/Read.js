@@ -143,6 +143,7 @@ import { blankNoteMarkers, linkAtOffset, resolveLinkTarget } from '../services/r
 import {
     anchorFraction,
     chapterMarks,
+    numberedChapterRange,
     positionForStoryProgress,
     storyBoundsForBook,
     storyProgress,
@@ -468,9 +469,11 @@ const storyRangeForSpine = (spine, toc, curated = false, bounds = null) => {
     if (!Array.isArray(spine) || spine.length === 0) return null;
     const cached = storyRangeCache.get(spine);
     if (cached && cached.toc === toc && cached.curated === curated && cached.bounds === bounds) return cached.range;
+    // A reader's own book that numbers its chapters (a Bible) is measured
+    // over those chapters, not over the notes and indexes around them.
     const range = curated
         ? storyRange(spine, Array.isArray(toc) ? toc : [], bounds)
-        : { start: leadingCoverCount(spine), end: spine.length - 1 };
+        : (numberedChapterRange(spine, toc) || { start: leadingCoverCount(spine), end: spine.length - 1 });
     storyRangeCache.set(spine, { toc, curated, bounds, range });
     return range;
 };
@@ -4204,7 +4207,13 @@ const Read = ({
         // hold the whole book.
         const from = Math.floor(fileText.length * Math.min(Math.max(position.chapterFraction || 0, 0), 1));
         const text = fileText.slice(from > 0 ? fileText.lastIndexOf(' ', from) + 1 : 0).slice(0, 420);
-        const title = localizeGeneratedSectionLabel(mark?.title || titleForTocItem(tocItem), t);
+        // A contents entry for a later file than the mark is the nearer name
+        // (the marks of a Bible are its books; the entry is "Genesis 25").
+        const entryIsNearer = tocItem && mark && tocItem.spineIndex > mark.spineIndex;
+        const title = localizeGeneratedSectionLabel(
+            (entryIsNearer ? titleForTocItem(tocItem) : mark?.title) || titleForTocItem(tocItem),
+            t
+        );
         return { title, text, chapter: title };
     }, [flattenedToc, readerSpine, scrubberChapters, scrubberRange, t]);
     const scrubberTargetRef = useRef(null);

@@ -143,6 +143,29 @@ const rangeFromBounds = (spine, bounds) => {
 };
 
 /**
+ * numberedChapterRange — `{ start, end }` from the first to the last chapter
+ * the book's own pages number under a contents entry (a Bible: "Genesis 1" …
+ * under "Genesis"; services/tocLinkedSections.js), or null when it has none.
+ * Those chapters are the book itself, whatever comes before or after them: a
+ * study Bible's notes, maps and indexes are most of its files.
+ */
+export const numberedChapterRange = (spine = [], toc = []) => {
+  const count = Array.isArray(spine) ? spine.length : 0;
+  let start = -1;
+  let end = -1;
+  const visit = (items) => (items || []).forEach((item) => {
+    const index = item?.spineIndex;
+    if (item?.chapter === true && Number.isInteger(index) && index >= 0 && index < count) {
+      if (start < 0 || index < start) start = index;
+      if (index > end) end = index;
+    }
+    visit(item?.subitems);
+  });
+  visit(Array.isArray(toc) ? toc : []);
+  return start >= 0 && end > start ? { start, end } : null;
+};
+
+/**
  * storyRange — `{ start, end }` spine indexes of the story (inclusive), or
  * the whole spine when nothing can be told apart. With measured `bounds`
  * (storyBoundsForBook) it also carries `startFraction` / `endFraction` (how
@@ -156,20 +179,10 @@ export const storyRange = (spine = [], toc = [], bounds = null) => {
   if (measured) return measured;
 
   const titles = tocTitlesBySpine(toc);
-  // Chapters the book's own pages number under a contents entry (a Bible:
-  // "Genesis 1" … under "Genesis"; services/tocLinkedSections.js). They are
-  // the story: it runs from the first to the last of them, whatever follows
-  // (a study Bible's notes, maps and indexes are most of its files).
-  const numbered = [];
-  const collectNumbered = (items) => (items || []).forEach((item) => {
-    if (item?.chapter === true && Number.isInteger(item?.spineIndex) && item.spineIndex < count) {
-      numbered.push(item.spineIndex);
-    }
-    collectNumbered(item?.subitems);
-  });
-  collectNumbered(toc);
-  const firstNumbered = numbered.length ? Math.min(...numbered) : -1;
-  const lastNumbered = numbered.length ? Math.max(...numbered) : -1;
+  // A book whose own pages number its chapters: the story is those chapters.
+  const numbered = numberedChapterRange(spine, toc);
+  const firstNumbered = numbered ? numbered.start : -1;
+  const lastNumbered = numbered ? numbered.end : -1;
   const label = (index) => [titles[index] || spine[index]?.title || '', fileStem(spine[index]), spine[index]?.idref || ''];
   // Chapters ("Chapter 1", "I.", "Book One") are the story even when their
   // file name says something else.
@@ -348,7 +361,9 @@ export const anchorFraction = (blocks, anchor) => {
 // The contents entries, flattened, with their depth (0 = top level).
 const tocEntries = (toc = []) => {
   const out = [];
-  const visit = (items, depth) => (items || []).forEach((item) => {
+  const visit = (items, nesting) => (items || []).forEach((item) => {
+    // EPUB contents come as one flat list with each entry's depth on it.
+    const depth = Number.isFinite(Number(item?.depth)) ? Math.max(0, Number(item.depth)) : nesting;
     if (Number.isInteger(item?.spineIndex)) {
       out.push({
         spineIndex: item.spineIndex,
