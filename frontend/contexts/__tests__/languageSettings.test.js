@@ -13,7 +13,10 @@ jest.mock('../../services/preferencesCloudSync', () => ({ getTimestampMs: () => 
 jest.mock('../../services/profilesCloudSync', () => ({}));
 jest.mock('../../services/userDataSyncQueue', () => ({ requestUserDataSync: jest.fn() }));
 jest.mock('../../services/Database', () => ({}));
-jest.mock('../../theme/tokens', () => ({ ThemeProvider: ({ children }) => children }));
+jest.mock('../../theme/tokens', () => ({
+  ...jest.requireActual('../../theme/tokens'),
+  ThemeProvider: ({ children }) => children,
+}));
 
 const { applyLanguageSettingsPatch, normalizeLanguageSettings } = require('../AppContext');
 
@@ -59,4 +62,29 @@ it('reads settings saved before the preference existed as the learner’s choice
 it('keeps Korean for a Korean speaker learning English', () => {
   const settings = normalizeLanguageSettings({ target_language: 'en', interface_language: 'ko' });
   expect(pick(settings)).toEqual({ targetLanguage: 'en', interfaceLanguage: 'ko', preferredInterfaceLanguage: 'ko' });
+});
+
+// The theme is stored twice: `themeMode` (light / sepia / dark) and the older
+// `isDarkMode`, which a build from before sepia still reads and writes.
+describe('theme mode', () => {
+  it('reads settings saved before sepia existed from isDarkMode', () => {
+    expect(normalizeLanguageSettings({ isDarkMode: true }).themeMode).toBe('dark');
+    expect(normalizeLanguageSettings({ isDarkMode: false }).themeMode).toBe('light');
+    expect(normalizeLanguageSettings({}).themeMode).toBe('light');
+  });
+
+  it('keeps sepia, which counts as not dark', () => {
+    const settings = normalizeLanguageSettings({ themeMode: 'sepia', isDarkMode: false });
+    expect(settings.themeMode).toBe('sepia');
+    expect(settings.isDarkMode).toBe(false);
+  });
+
+  it('trusts isDarkMode when an older build changed it and left themeMode behind', () => {
+    expect(normalizeLanguageSettings({ themeMode: 'sepia', isDarkMode: true }).themeMode).toBe('dark');
+    expect(normalizeLanguageSettings({ themeMode: 'dark', isDarkMode: false }).themeMode).toBe('light');
+  });
+
+  it('ignores a theme name it does not know', () => {
+    expect(normalizeLanguageSettings({ themeMode: 'neon' }).themeMode).toBe('light');
+  });
 });

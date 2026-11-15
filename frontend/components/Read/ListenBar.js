@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, Easing, StyleSheet, Text, TouchableOpacity, View, useWindowDimensions } from 'react-native';
+import { Animated, Easing, Linking, StyleSheet, Text, TouchableOpacity, View, useWindowDimensions } from 'react-native';
 import { Feather, MaterialCommunityIcons, MaterialIcons } from '@expo/vector-icons';
 import { useTranslation } from '../../hooks/useTranslation';
 import useReduceMotion from '../../hooks/useReduceMotion';
@@ -15,6 +15,9 @@ import { formatNumber } from '../../services/interfaceLanguage';
 // With an `origin` (the play button's spot: { bottom, right, size }) it grows
 // out of that button when it opens, and shrinks back into it when `open`
 // goes false; otherwise it fades. `onExited` hears when it's gone.
+//
+// `credit` ({ credit, creditUrl }) is the online voice's required credit,
+// shown small above the bar's right end while that voice reads.
 const OPEN_MS = 380;
 const CLOSE_MS = 300;
 const ListenBar = ({
@@ -32,6 +35,7 @@ const ListenBar = ({
     onToggleExplain,
     onToggleTranslate,
     onClose,
+    credit = null,
     bottom,
     translateY,
     styles,
@@ -238,6 +242,25 @@ const ListenBar = ({
                     </Animated.View>
                 </Animated.View>
             </Animated.View>
+            {credit ? (
+                <Animated.View style={[localStyles.creditWrap, { opacity: appear }]}>
+                    <Text
+                        style={[
+                            localStyles.credit,
+                            {
+                                color: themeColors.textTertiary,
+                                // On a chip of the bar's own colour, so it reads over the page.
+                                backgroundColor: StyleSheet.flatten(styles.listenBar)?.backgroundColor,
+                            },
+                        ]}
+                        onPress={() => Linking.openURL(credit.creditUrl).catch(() => {})}
+                        accessibilityRole="link"
+                        suppressHighlighting
+                    >
+                        {credit.credit}
+                    </Text>
+                </Animated.View>
+            ) : null}
         </Animated.View>
     );
 };
@@ -248,6 +271,20 @@ const localStyles = StyleSheet.create({
         alignSelf: 'stretch',
         flexDirection: 'row',
         alignItems: 'center',
+    },
+    creditWrap: {
+        position: 'absolute',
+        bottom: '100%',
+        right: 18,
+        paddingBottom: 6,
+    },
+    credit: {
+        fontSize: 11,
+        lineHeight: 14,
+        paddingHorizontal: 8,
+        paddingVertical: 3,
+        borderRadius: 9,
+        overflow: 'hidden',
     },
     seed: {
         position: 'absolute',

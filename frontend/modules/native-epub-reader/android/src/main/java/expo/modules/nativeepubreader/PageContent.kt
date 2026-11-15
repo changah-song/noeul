@@ -203,6 +203,34 @@ internal fun isReaderTokenChar(char: Char): Boolean {
 internal fun isLatinLetter(char: Char): Boolean =
   char in 'A'..'Z' || char in 'a'..'z' || (char.code in 0x00C0..0x024F && char.isLetter())
 
+// A verse number glued to the word after it ("26Then", "4and"), as Bibles
+// print them. A tap on the word picks the word alone, and a tap on the number
+// the number, so the word can still be looked up. Same rule as listen mode
+// (services/listenVerseNumbers.js): words that really start with a number,
+// "2nd", "10am", "5km", "3D", stay whole. Returns the part of the token at
+// `start`..`end` under `probe`, or null when the token isn't one of these.
+private val GLUED_NUMBER_UNITS = setOf(
+  "st", "nd", "rd", "th", "s", "am", "pm", "x", "k", "m", "g", "h", "d",
+  "km", "kg", "mg", "ml", "cm", "mm", "lb", "lbs", "oz", "ft", "in", "mi",
+  "mph", "kph", "hr", "hrs", "min", "mins", "sec", "secs", "ms",
+  "kb", "mb", "gb", "tb", "px", "pt", "fps", "kw", "kwh", "hz", "khz", "mhz", "ghz"
+)
+
+internal fun splitGluedVerseNumber(text: CharSequence, start: Int, end: Int, probe: Int): IntRange? {
+  var digitsEnd = start
+  while (digitsEnd < end && text[digitsEnd] in '0'..'9') digitsEnd += 1
+  val digits = digitsEnd - start
+  if (digits !in 1..3 || digitsEnd >= end) return null
+  var lettersEnd = digitsEnd
+  while (lettersEnd < end && isLatinLetter(text[lettersEnd])) lettersEnd += 1
+  val word = text.subSequence(digitsEnd, lettersEnd).toString()
+  if (word.isEmpty()) return null
+  val capitalised = word.length >= 2 && word[0].isUpperCase() && word[1].isLowerCase()
+  val smallWord = word.length >= 3 && word.all { it.isLowerCase() } && word !in GLUED_NUMBER_UNITS
+  if (!capitalised && !smallWord) return null
+  return if (probe >= digitsEnd) digitsEnd until end else start until digitsEnd
+}
+
 // An apostrophe or hyphen inside an English word (don't, well-known) belongs
 // to the word: a tap on either half picks the whole word.
 internal fun isInWordPunctuationAt(text: CharSequence, index: Int): Boolean {

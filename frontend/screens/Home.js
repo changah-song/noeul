@@ -90,6 +90,7 @@ import {
     updateUserPreferenceFields,
 } from '../services/preferencesCloudSync';
 import { readEpubMetadata } from '../services/epubMetadata';
+import { bookFileDetails } from '../services/bookFileDetails';
 import { readPdfMetadata } from '../services/pdfMetadata';
 import { getPublicDomainBooks } from '../services/publicDomainBooks';
 import { beginBookOpening, endBookOpening } from '../services/bookOpening';
@@ -1013,17 +1014,39 @@ const readPublicLibraryBookMetadataPatch = async (book, uri) => {
         || book?.publicLibraryStoragePath?.split('/').pop()
         || book?.title
         || '';
-    const metadata = format === 'pdf'
-        ? await readPdfMetadata(uri, fallbackName)
-        : await readEpubMetadata(uri, fallbackName);
+    // Read from the file once; later launches reuse the saved answer for as
+    // long as the file is the same (services/bookFileDetails.js).
+    const { metadata, coverColors } = await bookFileDetails({
+        key: book?.storagePath || book?.publicLibraryStoragePath || book?.publicLibraryId || null,
+        uri,
+        read: async () => {
+            const fromFile = format === 'pdf'
+                ? await readPdfMetadata(uri, fallbackName)
+                : await readEpubMetadata(uri, fallbackName);
+            const fileCover = fromFile?.cover ?? book?.cover ?? null;
+            const colors = fileCover
+                ? await extractBookCoverColors({
+                    coverUri: fileCover,
+                    fallbackColor: book?.coverAccentColor || book?.coverColor,
+                    cacheKey: `public-library:${book?.publicLibraryId || book?.storagePath || uri}`,
+                })
+                : {};
+            return {
+                // What decides whether this read is worth saving.
+                cover: fromFile?.cover ?? null,
+                wordCount: fromFile?.wordCount ?? null,
+                metadata: {
+                    title: fromFile?.title ?? null,
+                    author: fromFile?.author ?? null,
+                    cover: fromFile?.cover ?? null,
+                    wordCount: fromFile?.wordCount ?? null,
+                    language: fromFile?.language ?? null,
+                },
+                coverColors: colors,
+            };
+        },
+    });
     const cover = metadata?.cover ?? book?.cover ?? null;
-    const coverColors = cover
-        ? await extractBookCoverColors({
-            coverUri: cover,
-            fallbackColor: book?.coverAccentColor || book?.coverColor,
-            cacheKey: `public-library:${book?.publicLibraryId || book?.storagePath || uri}`,
-        })
-        : {};
 
     return {
         cover,

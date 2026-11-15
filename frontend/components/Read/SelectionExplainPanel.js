@@ -4,7 +4,7 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { useTranslation } from '../../hooks/useTranslation';
 import { streamExplainInContext } from '../../services/api/explainInContext';
 import { getUserFacingErrorMessage } from '../../i18n/userFacing';
-import { fontFamilies, spacing, useTheme } from '../../theme';
+import { fontFamilies, panelLift, spacing, useTheme } from '../../theme';
 import GrammarView from './GrammarView';
 
 const clean = (value) => (typeof value === 'string' ? value.trim() : '');
@@ -164,11 +164,7 @@ const createStyles = (colors) => StyleSheet.create({
         borderWidth: StyleSheet.hairlineWidth,
         borderBottomWidth: 0,
         borderColor: colors.border,
-        shadowColor: colors.shadow,
-        shadowOffset: { width: 0, height: -10 },
-        shadowOpacity: 1,
-        shadowRadius: 30,
-        elevation: 10,
+        ...panelLift(colors, 'up'),
         maxHeight: 560,
     },
     header: {

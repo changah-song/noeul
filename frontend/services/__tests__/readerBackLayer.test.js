@@ -15,6 +15,11 @@ describe('readerBackLayer', () => {
         expect(readerBackLayer({ showMenu: true, lookupOpen: true, isFullscreen: true })).toBe('menu');
     });
 
+    it('goes back from a followed link before dropping fullscreen', () => {
+        expect(readerBackLayer({ linkReturn: true, isFullscreen: true })).toBe('linkReturn');
+        expect(readerBackLayer({ lookupOpen: true, linkReturn: true })).toBe('lookup');
+    });
+
     it('drops fullscreen last', () => {
         expect(readerBackLayer({ isFullscreen: true })).toBe('fullscreen');
     });

@@ -13,7 +13,8 @@ import {
 import { Feather } from '@expo/vector-icons';
 import { Slider } from 'react-native-elements';
 import { useTranslation } from '../../hooks/useTranslation';
-import { elevation, fontFamilies, layout } from '../../theme';
+import { THEME_MODES, elevation, fontFamilies, layout } from '../../theme';
+import { useAppContext } from '../../contexts/AppContext';
 import { ANNOTATION_SCOPES } from '../../services/readerAnnotations';
 import {
     DEFAULT_BOOK_READER_SETTINGS,
@@ -70,7 +71,8 @@ const scopeOrDefault = (value, fallback) => (ANNOTATION_SCOPES.includes(value) ?
  *   segmented tabs: Text | Words
  *   scrolling tab body, each ending in a small reset-to-default icon
  *
- *   Text  — font size, line spacing, page turns (horizontal / vertical icons)
+ *   Text  — font size, line spacing, appearance (light / sepia / dark),
+ *           page turns (horizontal / vertical icons)
  *   Words — difficulty underlines (+ threshold legend), pinyin (+ scope,
  *           Chinese only), translation under words (+ scope)
  *
@@ -99,6 +101,11 @@ const ReaderSettingsSheet = ({
     initialTab = 'text',
 }) => {
     const { t } = useTranslation();
+    // The theme belongs to the whole app, so it is read from the app here
+    // rather than from this surface's own settings.
+    const { themeMode: appThemeMode } = useAppContext();
+    const themeMode = THEME_MODES.includes(appThemeMode) ? appThemeMode : 'light';
+    const setThemeMode = (mode) => onSettingChange('themeMode', mode);
     const { height: windowHeight } = useWindowDimensions();
     const popupMaxHeight = Math.round(windowHeight * POPUP_MAX_HEIGHT_RATIO);
     const styles = useMemo(() => createStyles(colors, popupMaxHeight), [colors, popupMaxHeight]);
@@ -223,6 +230,16 @@ const ReaderSettingsSheet = ({
                     atMax={lineSpacing >= LINE_SPACING_MAX}
                     decreaseLabel={t('read.decreaseLineSpacing')}
                     increaseLabel={t('read.increaseLineSpacing')}
+                />
+            </SettingRow>
+            <SettingRow styles={controlStyles} label={t('profile.appearance')}>
+                <SegmentedControl
+                    styles={controlStyles}
+                    colors={colors}
+                    value={themeMode}
+                    onChange={setThemeMode}
+                    accessibilityLabel={t('profile.appearance')}
+                    options={THEME_MODES.map((mode) => ({ value: mode, label: t(`profile.${mode}`) }))}
                 />
             </SettingRow>
             <SettingRow styles={controlStyles} label={t('read.settingsPageTurns')} last>

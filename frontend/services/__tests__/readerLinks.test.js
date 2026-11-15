@@ -4,6 +4,7 @@ import {
     linkRangesForBlock,
     resolveLinkTarget,
     silentRangesForBlock,
+    wordBesideNoteMarkers,
 } from '../readerLinks';
 
 // A block the way epubMetadata builds it: spans with offsets, text joined.
@@ -48,6 +49,11 @@ describe('silentRangesForBlock', () => {
     it('silences a short raised label but keeps a linked word', () => {
         const block = blockOf('b', [['Go'], ['a', '#fna', ['sup', 'a']], [' to '], ['Chapter 2', 'c2.xhtml'], ['.']]);
         expect(silentRangesForBlock(block)).toEqual([{ start: 2, end: 3 }]);
+    });
+
+    it('silences a one-letter link that is not raised', () => {
+        const block = blockOf('b', [['a', '#fna'], ['In the beginning '], ['ㄱ', '#fnb'], ['God made '], ['天', 'g.xhtml#sky'], ['.']]);
+        expect(silentRangesForBlock(block)).toEqual([{ start: 0, end: 1 }, { start: 18, end: 19 }]);
     });
 
     it('leaves a block that is only links alone', () => {
@@ -109,5 +115,24 @@ describe('resolveLinkTarget', () => {
         expect(resolveLinkTarget('mailto:a@example.com', { spine, spineIndex: 0 })).toBeNull();
         expect(resolveLinkTarget('missing.xhtml#x', { spine, spineIndex: 0 })).toBeNull();
         expect(resolveLinkTarget('', { spine, spineIndex: 0 })).toBeNull();
+    });
+});
+
+describe('wordBesideNoteMarkers', () => {
+    // "aIn the beginning": the note letter "a" is a link glued to "In".
+    const block = blockOf('b', [['a', '#fna'], ['In the beginning']]);
+
+    it('drops a note letter the tapped word ran into', () => {
+        expect(wordBesideNoteMarkers(block, 0, 3, 2)).toEqual({ start: 1, end: 3, text: 'In' });
+    });
+
+    it('leaves a word with no marker in it alone', () => {
+        expect(wordBesideNoteMarkers(block, 4, 7, 5)).toBeNull();
+        expect(wordBesideNoteMarkers(block, 0, 3, undefined)).toBeNull();
+    });
+
+    it('keeps a linked word that is not a marker', () => {
+        const linked = blockOf('b', [['Go'], ['Chapter', 'c2.xhtml'], ['s']]);
+        expect(wordBesideNoteMarkers(linked, 0, 2, 1)).toBeNull();
     });
 });

@@ -10,7 +10,7 @@ import {
     normalizeBookLanguage,
     normalizeInterfaceLanguageCode,
 } from '../../../constants/languages';
-import { fontFamilies, useTheme } from '../../../theme';
+import { fontFamilies, panelLift, useTheme } from '../../../theme';
 import TranslationContent from './TranslationContent';
 import DictionaryContent from './DictionaryContent';
 
@@ -357,18 +357,27 @@ const TopSection = ({
     return (
         <Animated.View
             style={[
+                styles.lift,
+                isTopPlacement && styles.liftTop,
+                isTranslationMode && styles.liftTranslation,
+                isTopPlacement && isTranslationMode && styles.liftTranslationTop,
+                sheetSizeStyle,
+                { backgroundColor: panelColors.background },
+                {
+                    opacity,
+                    transform: [{ translateY: sheetTranslateY }],
+                },
+            ]}
+        >
+        <View
+            style={[
                 styles.sheet,
                 isTopPlacement && styles.sheetTop,
                 !isTranslationMode ? styles.sheetDictionary : styles.sheetTranslationBase,
                 isTopPlacement && !isTranslationMode && styles.sheetDictionaryTop,
                 isTopPlacement && isTranslationMode && styles.sheetTranslationTop,
-                sheetSizeStyle,
                 { paddingBottom: sheetBottomPadding },
                 { backgroundColor: panelColors.background, borderColor: panelColors.border },
-                {
-                    opacity,
-                    transform: [{ translateY: sheetTranslateY }],
-                },
             ]}
         >
             {isTranslationMode ? (
@@ -440,13 +449,44 @@ const TopSection = ({
             </View>
 
             {isTopPlacement && !isTranslationMode ? renderGrabber('bottom') : null}
+        </View>
         </Animated.View>
     );
 };
 
 const createStyles = (colors) => StyleSheet.create({
+    // The shadow lives on this outer view and the clipping on the sheet
+    // inside it: one view can't do both on iOS, where clipping cuts the
+    // shadow off. It carries the sheet's shape so the shadow follows it.
+    lift: {
+        borderTopLeftRadius: 24,
+        borderTopRightRadius: 24,
+        ...panelLift(colors, 'up'),
+    },
+    liftTop: {
+        borderTopLeftRadius: 0,
+        borderTopRightRadius: 0,
+        borderBottomLeftRadius: 24,
+        borderBottomRightRadius: 24,
+        ...panelLift(colors, 'down'),
+    },
+    // The sentence translation is a floating card, not a sheet.
+    liftTranslation: {
+        marginHorizontal: 12,
+        marginBottom: 16,
+        borderTopLeftRadius: 18,
+        borderTopRightRadius: 18,
+        borderBottomLeftRadius: 18,
+        borderBottomRightRadius: 18,
+        ...panelLift(colors, 'down'),
+    },
+    liftTranslationTop: {
+        marginTop: 8,
+        marginBottom: 0,
+    },
     sheet: {
-        marginHorizontal: 0,
+        flexShrink: 1,
+        minHeight: 0,
         paddingHorizontal: 24,
         paddingTop: 12,
         paddingBottom: DICTIONARY_BOTTOM_PADDING,
@@ -458,11 +498,6 @@ const createStyles = (colors) => StyleSheet.create({
         borderWidth: StyleSheet.hairlineWidth,
         borderColor: colors.border,
         borderBottomWidth: 0,
-        shadowColor: colors.shadow,
-        shadowOffset: { width: 0, height: -10 },
-        shadowOpacity: 1,
-        shadowRadius: 30,
-        elevation: 10,
         overflow: 'hidden',
     },
     sheetTop: {
@@ -472,7 +507,6 @@ const createStyles = (colors) => StyleSheet.create({
         borderBottomRightRadius: 24,
         borderTopWidth: 0,
         borderBottomWidth: StyleSheet.hairlineWidth,
-        shadowOffset: { width: 0, height: 10 },
     },
     sheetDictionary: {
         paddingHorizontal: 0,
@@ -481,10 +515,7 @@ const createStyles = (colors) => StyleSheet.create({
     sheetDictionaryTop: {
         paddingTop: TOP_PLACEMENT_DICTIONARY_TOP_PADDING,
     },
-    // The sentence translation is a floating card, not a sheet.
     sheetTranslationBase: {
-        marginHorizontal: 12,
-        marginBottom: 16,
         paddingHorizontal: 14,
         paddingTop: 8,
         borderTopLeftRadius: 18,
@@ -493,14 +524,8 @@ const createStyles = (colors) => StyleSheet.create({
         borderBottomRightRadius: 18,
         borderWidth: StyleSheet.hairlineWidth,
         borderBottomWidth: StyleSheet.hairlineWidth,
-        shadowColor: colors.shadow,
-        shadowOffset: { width: 0, height: 12 },
-        shadowOpacity: 1,
-        shadowRadius: 32,
     },
     sheetTranslationTop: {
-        marginTop: 8,
-        marginBottom: 0,
         borderTopWidth: StyleSheet.hairlineWidth,
     },
     translationHeader: {

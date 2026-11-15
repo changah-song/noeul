@@ -92,6 +92,17 @@ describe('ReaderSettingsSheet', () => {
     await act(async () => tree.unmount());
   });
 
+  it('offers the three themes on the Text tab and reports the one picked', async () => {
+    const { tree, props } = await renderSheet();
+    expect(text(tree)).toContain('Appearance');
+
+    await press(tree, 'Sepia');
+    expect(props.onSettingChange).toHaveBeenCalledWith('themeMode', 'sepia');
+    await press(tree, 'Dark');
+    expect(props.onSettingChange).toHaveBeenCalledWith('themeMode', 'dark');
+    await act(async () => tree.unmount());
+  });
+
   it('switches tabs and shows each tab\'s rows', async () => {
     const { tree } = await renderSheet();
 

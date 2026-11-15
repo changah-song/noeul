@@ -13,3 +13,5 @@ slim_en_dict.py
 requirements-dev.in
 requirements-dev.txt
 requirements.in
+woof_model/
+woof_cache/

@@ -44,6 +44,7 @@ export const colorPairs = {
   ocrScrim: pair('rgba(27, 28, 28, 0.42)', 'rgba(17, 21, 28, 0.68)'),
   readerTocScrim: pair('rgba(27, 28, 28, 0.10)', 'rgba(17, 21, 28, 0.58)'),
   shadow: pair('rgba(27, 28, 28, 0.08)', 'rgba(17, 21, 28, 0.36)'),
+  panelShadow: pair('rgba(27, 28, 28, 0.16)', 'rgba(0, 0, 0, 0.5)'),
   overlay: pair('rgba(27, 28, 28, 0.32)', 'rgba(17, 21, 28, 0.64)'),
   white: pair('#ffffff', '#1b1c1c'),
   black: pair('#11151c'),
@@ -89,8 +90,107 @@ const resolveColors = (mode = 'light') => Object.fromEntries(
   Object.entries(colorPairs).map(([key, value]) => [key, value[mode] ?? value.light])
 );
 
+// Sepia is the light theme on warm paper: cream surfaces and brown ink in
+// place of the greys. Anything not listed here keeps its light value.
+const SEPIA_INK = '#43352a';
+const SEPIA_PAPER = '#f4ecd8';
+const SEPIA_SURFACE = '#fbf5e6';
+const sepiaOverrides = {
+  backgroundWarm: SEPIA_PAPER,
+  backgroundCool: SEPIA_PAPER,
+  bgPage: SEPIA_PAPER,
+  surface: SEPIA_SURFACE,
+  surfaceCard: '#f9f2e2',
+  surfaceMuted: '#eae0c8',
+  surfaceAssist: '#eee5cf',
+  surfaceSelected: '#eae0c8',
+  surfaceElevated: SEPIA_SURFACE,
+  surfaceStrong: '#dfd3b8',
+  border: '#dfd3b8',
+  borderStrong: '#c4b594',
+  divider: '#e6dcc4',
+  frame: '#b3a488',
+  dotInactive: '#d3c6a8',
+  text: '#3b2f25',
+  textSecondary: '#574839',
+  textMuted: '#6b5a48',
+  textTertiary: '#766451',
+  textSubtle: '#a3927a',
+  inkSlate: SEPIA_INK,
+  inkPressed: '#2a2019',
+  inkSlateDeep: '#33271e',
+  accent: SEPIA_INK,
+  accentStrong: SEPIA_INK,
+  accentDeep: '#33271e',
+  accentSoft: 'rgba(67, 53, 42, 0.10)',
+  accentMuted: 'rgba(67, 53, 42, 0.18)',
+  success: SEPIA_INK,
+  warning: '#766451',
+  ocrScrim: 'rgba(59, 47, 37, 0.42)',
+  readerTocScrim: 'rgba(59, 47, 37, 0.10)',
+  shadow: 'rgba(59, 47, 37, 0.08)',
+  panelShadow: 'rgba(59, 47, 37, 0.16)',
+  overlay: 'rgba(59, 47, 37, 0.32)',
+  white: SEPIA_SURFACE,
+
+  readerPaper: SEPIA_PAPER,
+  readerSurface: SEPIA_SURFACE,
+  readerBodyInk: '#3b2f25',
+  readerMutedInk: '#766451',
+  readerSubtleInk: '#a3927a',
+  readerHairline: '#e6dcc4',
+  readerBorder: '#dfd3b8',
+  readerUnknownUnderline: '#766451',
+  readerSavedUnderline: '#766451',
+  // A shade darker than on white paper, to keep 4.5:1 on the cream.
+  readerLevelUnderlineEasy: '#256b36',
+  readerLevelUnderlineMid: '#96480c',
+  readerLevelUnderlineHard: '#a32828',
+  readerTappedWordSurfaceBg: '#dcc19c',
+  readerTappedWordSurfaceText: '#3b2f25',
+  readerSavedWordSurfaceBg: SEPIA_INK,
+  readerSavedWordSurfaceText: SEPIA_SURFACE,
+  readerTappedWordBg: SEPIA_INK,
+  readerTappedWordText: SEPIA_SURFACE,
+  readerTappedWordHighlight: '#4043352a',
+  readerTextSelectionHighlight: '#1243352a',
+  readerSavedChipBg: '#eae0c8',
+  readerSavedChipText: SEPIA_INK,
+  readerProgressTrack: '#e6dcc4',
+  readerProgressFill: SEPIA_INK,
+  readerEdgeRule: '#c4b594',
+  readerEdgeButtonBg: SEPIA_INK,
+  readerEdgeButtonText: SEPIA_SURFACE,
+  readerPlaceholder: '#b9aa8c',
+};
+
 export const lightColors = resolveColors('light');
 export const darkColors = resolveColors('dark');
+export const sepiaColors = { ...lightColors, ...sepiaOverrides };
+
+export const THEME_MODES = ['light', 'sepia', 'dark'];
+const colorsByMode = { light: lightColors, sepia: sepiaColors, dark: darkColors };
+
+// The theme a stored settings object asks for. `themeMode` is the newer field;
+// `isDarkMode` is the older one, and a build from before sepia changes only
+// that. So when the two disagree, isDarkMode is the fresher answer.
+export const resolveThemeMode = ({ themeMode, isDarkMode } = {}, fallback = 'light') => {
+  const hasMode = THEME_MODES.includes(themeMode);
+  if (typeof isDarkMode === 'boolean') {
+    if (hasMode && (themeMode === 'dark') === isDarkMode) {
+      return themeMode;
+    }
+    return isDarkMode ? 'dark' : 'light';
+  }
+  return hasMode ? themeMode : fallback;
+};
+
+// Accepts a mode name, or the older true / false for dark / light.
+const toThemeMode = (mode) => {
+  if (mode === true) return 'dark';
+  return THEME_MODES.includes(mode) ? mode : 'light';
+};
+
 let activeColors = lightColors;
 
 export const colors = new Proxy(lightColors, {
@@ -205,11 +305,13 @@ const createLayout = (themeColors) => ({
 
 export const layout = createLayout(colors);
 
-export const createTheme = (isDarkMode = false) => {
-  const themeColors = isDarkMode ? darkColors : lightColors;
+export const createTheme = (modeOrIsDark = 'light') => {
+  const mode = toThemeMode(modeOrIsDark);
+  const themeColors = colorsByMode[mode];
 
   return {
-    isDarkMode: Boolean(isDarkMode),
+    mode,
+    isDarkMode: mode === 'dark',
     colors: themeColors,
     t: themeColors,
     radii,
@@ -222,9 +324,10 @@ export const theme = createTheme(false);
 
 const ThemeContext = createContext(theme);
 
-export const ThemeProvider = ({ isDarkMode = false, children }) => {
-  activeColors = isDarkMode ? darkColors : lightColors;
-  const value = useMemo(() => createTheme(isDarkMode), [isDarkMode]);
+export const ThemeProvider = ({ mode, isDarkMode = false, children }) => {
+  const themeMode = toThemeMode(mode ?? isDarkMode);
+  activeColors = colorsByMode[themeMode];
+  const value = useMemo(() => createTheme(themeMode), [themeMode]);
 
   return (
     <ThemeContext.Provider value={value}>

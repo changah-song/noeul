@@ -2,7 +2,11 @@ import { colors, radii, elevation, layout, useTheme, createTheme, ThemeProvider,
 import { spacing, insets } from './spacing';
 import { fontFamilies, typeScale, lineHeights, textStyles } from './typography';
 
-export { colors, radii, elevation, layout, useTheme, createTheme, ThemeProvider, createNativeReaderThemeTokens } from './tokens';
+export { panelLift } from './panelLift';
+export {
+  colors, radii, elevation, layout, useTheme, createTheme, ThemeProvider, createNativeReaderThemeTokens,
+  THEME_MODES, resolveThemeMode,
+} from './tokens';
 export { spacing, insets } from './spacing';
 export { fontFamilies, typeScale, lineHeights, textStyles } from './typography';
 

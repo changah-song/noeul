@@ -66,7 +66,38 @@ func tokenRange(in text: NSString, at offset: Int) -> NSRange? {
   while end < length && isPart(end) { end += 1 }
   while start < end && text.character(at: start) == wordJoiner { start += 1 }
   while end > start && text.character(at: end - 1) == wordJoiner { end -= 1 }
+  if let part = gluedVerseNumberPart(in: text, start: start, end: end, probe: probe) { return part }
   return end > start ? NSRange(location: start, length: end - start) : nil
+}
+
+// A verse number glued to the word after it ("26Then", "4and"), as Bibles
+// print them. A tap on the word picks the word alone, and a tap on the number
+// the number, so the word can still be looked up. Same rule as listen mode
+// (services/listenVerseNumbers.js) and the Android reader: words that really
+// start with a number, "2nd", "10am", "5km", "3D", stay whole.
+private let gluedNumberUnits: Set<String> = [
+  "st", "nd", "rd", "th", "s", "am", "pm", "x", "k", "m", "g", "h", "d",
+  "km", "kg", "mg", "ml", "cm", "mm", "lb", "lbs", "oz", "ft", "in", "mi",
+  "mph", "kph", "hr", "hrs", "min", "mins", "sec", "secs", "ms",
+  "kb", "mb", "gb", "tb", "px", "pt", "fps", "kw", "kwh", "hz", "khz", "mhz", "ghz",
+]
+
+private func gluedVerseNumberPart(in text: NSString, start: Int, end: Int, probe: Int) -> NSRange? {
+  var digitsEnd = start
+  while digitsEnd < end && (0x30...0x39).contains(text.character(at: digitsEnd)) { digitsEnd += 1 }
+  let digits = digitsEnd - start
+  guard (1...3).contains(digits), digitsEnd < end else { return nil }
+  var lettersEnd = digitsEnd
+  while lettersEnd < end && isLatinLetter(text.character(at: lettersEnd)) { lettersEnd += 1 }
+  let word = text.substring(with: NSRange(location: digitsEnd, length: lettersEnd - digitsEnd))
+  let chars = Array(word)
+  guard !chars.isEmpty else { return nil }
+  let capitalised = chars.count >= 2 && chars[0].isUppercase && chars[1].isLowercase
+  let smallWord = chars.count >= 3 && chars.allSatisfy { $0.isLowercase } && !gluedNumberUnits.contains(word)
+  guard capitalised || smallWord else { return nil }
+  return probe >= digitsEnd
+    ? NSRange(location: digitsEnd, length: end - digitsEnd)
+    : NSRange(location: start, length: digits)
 }
 
 // Segment the run of ideographs around `probe` into words.

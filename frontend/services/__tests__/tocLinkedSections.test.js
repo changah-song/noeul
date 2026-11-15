@@ -23,6 +23,23 @@ describe('linksInMarkup', () => {
             { href: 'b.html', label: '3' },
         ]);
     });
+
+    it('skips anchors that are not links and reads the links around them', () => {
+        expect(linksInMarkup(
+            '<A HREF="a.html">One</A ><a id="v1"/><abbr>x</abbr><a name="n">no</a>'
+            + '<a class="c" href="b.html"><b>Two</b></a><a href="c.html">never closed'
+        )).toEqual([
+            { href: 'a.html', label: 'One' },
+            { href: 'b.html', label: 'Two' },
+        ]);
+    });
+
+    it('reads a page of thousands of links', () => {
+        const page = Array.from({ length: 5000 }, (_, i) => `<p><a id="k${i}"></a><a href="c${i}.html">${i}</a></p>`).join('\n');
+        const links = linksInMarkup(page);
+        expect(links).toHaveLength(5000);
+        expect(links[4999]).toEqual({ href: 'c4999.html', label: '4999' });
+    });
 });
 
 describe('addLinkedSections', () => {
