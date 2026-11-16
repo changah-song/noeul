@@ -411,27 +411,35 @@ $$;
 
 -- 6. Nightly job -------------------------------------------------------------
 --
--- Needs pg_cron and pg_net, and two Vault secrets:
---   project_url             https://<project-ref>.supabase.co
---   storage_cleanup_secret  the same value as the process-storage-cleanup
---                           function's STORAGE_CLEANUP_SECRET
+-- Removes every user-books file that no live book uses: files of deleted
+-- books, of books outside a reader's recent ones, and files whose row is
+-- gone. Files changed in the last hour are left alone (an upload whose row
+-- isn't written yet). Deleting goes through the Storage API (pg_net), since
+-- deleting rows in storage.objects would leave the files behind.
+--
+-- Needs pg_cron, pg_net and two Vault secrets:
+--   project_url        https://<project-ref>.supabase.co
+--   service_role_key   the project's secret (service_role) key
 
 create extension if not exists pg_cron with schema pg_catalog;
 create extension if not exists pg_net with schema extensions;
 
-create or replace function public.run_book_storage_cleanup()
-returns void
+create or replace function public.run_book_storage_cleanup(max_files integer default 1000)
+returns integer
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 declare
   reader record;
+  unused record;
   project_url text;
-  cleanup_secret text;
+  service_key text;
+  headers jsonb;
+  requested integer := 0;
 begin
-  -- Every reader with more stored files than their limit (older app versions
-  -- upload every book; guests from before this change).
+  -- Readers over their limit (older app versions upload every book; guests
+  -- from before this change).
   for reader in
     select b.user_id
     from public.user_books b
@@ -442,43 +450,62 @@ begin
     perform public.trim_user_book_files(reader.user_id);
   end loop;
 
-  -- Never remove a file a live book still uses.
-  update public.storage_cleanup_jobs j
-  set processed_at = now(),
-      reason = coalesce(j.reason, '') || ' (cancelled: in use)'
-  where j.processed_at is null
-    and j.bucket_id = 'user-books'
-    and exists (
+  select decrypted_secret into project_url
+  from vault.decrypted_secrets where name = 'project_url';
+  select decrypted_secret into service_key
+  from vault.decrypted_secrets where name = 'service_role_key';
+
+  if project_url is null or service_key is null then
+    raise warning 'run_book_storage_cleanup: Vault secrets project_url / service_role_key are missing';
+    return 0;
+  end if;
+
+  -- New-style secret keys go in apikey only; a legacy service_role JWT also
+  -- as the bearer token.
+  headers := case
+    when service_key like 'sb_%' then jsonb_build_object('apikey', service_key)
+    else jsonb_build_object('apikey', service_key, 'Authorization', 'Bearer ' || service_key)
+  end;
+
+  for unused in
+    select o.name
+    from storage.objects o
+    where o.bucket_id = 'user-books'
+      and coalesce(o.updated_at, o.created_at) < now() - interval '1 hour'
+      and not exists (
+        select 1
+        from public.user_books b
+        where b.deleted_at is null
+          and ((b.file_stored and b.file_path = o.name) or b.cover_path = o.name)
+      )
+    order by o.created_at
+    limit greatest(max_files, 0)
+  loop
+    perform net.http_delete(
+      url := rtrim(project_url, '/') || '/storage/v1/object/user-books/' || unused.name,
+      headers := headers
+    );
+    requested := requested + 1;
+  end loop;
+
+  -- The queue is bookkeeping now: everything in it is covered above.
+  update public.storage_cleanup_jobs
+  set processed_at = now()
+  where processed_at is null
+    and bucket_id = 'user-books'
+    and not exists (
       select 1
       from public.user_books b
       where b.deleted_at is null
-        and ((b.file_stored and b.file_path = j.object_path) or b.cover_path = j.object_path)
+        and ((b.file_stored and b.file_path = object_path) or b.cover_path = object_path)
     );
 
-  select decrypted_secret into project_url
-  from vault.decrypted_secrets where name = 'project_url';
-  select decrypted_secret into cleanup_secret
-  from vault.decrypted_secrets where name = 'storage_cleanup_secret';
-
-  if project_url is null or cleanup_secret is null then
-    raise warning 'run_book_storage_cleanup: Vault secrets project_url / storage_cleanup_secret are missing';
-    return;
-  end if;
-
-  -- The function removes up to 500 files per call.
-  perform net.http_post(
-    url := project_url || '/functions/v1/process-storage-cleanup',
-    headers := jsonb_build_object(
-      'Content-Type', 'application/json',
-      'x-cleanup-secret', cleanup_secret
-    ),
-    body := jsonb_build_object('limit', 500)
-  );
+  return requested;
 end;
 $$;
 
-revoke all on function public.run_book_storage_cleanup() from public, anon, authenticated;
+revoke all on function public.run_book_storage_cleanup(integer) from public, anon, authenticated;
 
--- 03:00 in Korea.
-select cron.unschedule(jobid) from cron.job where jobname = 'book-storage-cleanup';
-select cron.schedule('book-storage-cleanup', '0 18 * * *', $$select public.run_book_storage_cleanup()$$);
+-- Scheduled separately, once the Vault secrets are in place:
+--   select cron.schedule('book-storage-cleanup', '0 18 * * *',
+--     $$select public.run_book_storage_cleanup()$$);   -- 03:00 in Korea
