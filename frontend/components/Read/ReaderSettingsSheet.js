@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import skipWhileHidden from './skipWhileHidden';
 import {
     Animated,
     Easing,
@@ -626,4 +627,4 @@ const createStyles = (colors, popupMaxHeight = 520, popupWidth = POPUP_WIDTH) =>
     },
 });
 
-export default ReaderSettingsSheet;
+export default memo(ReaderSettingsSheet, skipWhileHidden);

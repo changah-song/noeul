@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import skipWhileHidden from './skipWhileHidden';
 import { Modal, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -462,4 +463,4 @@ const styles = StyleSheet.create({
     },
 });
 
-export default React.memo(TocDrawer);
+export default React.memo(TocDrawer, skipWhileHidden);

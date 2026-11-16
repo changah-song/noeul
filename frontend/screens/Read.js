@@ -823,6 +823,14 @@ const Read = ({
     // The voice was stopped for a lookup panel and goes on when it closes.
     const resumeAfterPanelRef = useRef(false);
     const sendFocusNavRef = useRef(null);
+    // The lookup panel's height. Kept in a ref: it changes as the panel
+    // mounts and again as its definition arrives, and as state each change
+    // rendered the whole reader. Focus mode alone needs it in a render (the
+    // native text and the arrows lift above the panel), so the state copy
+    // follows only there; the play button's lift is animated straight from
+    // the ref (syncPlayButtonLiftRef).
+    const lookupPanelHeightRef = useRef(0);
+    const syncPlayButtonLiftRef = useRef(null);
     const [lookupPanelHeight, setLookupPanelHeight] = useState(0);
     // Focus info (sentence index/total) updates on every beam step. It is kept
     // in a ref and pushed to a single subscriber (FocusControls) instead of
@@ -1349,7 +1357,18 @@ const Read = ({
     const focusModeRef = useRef(false);
     useEffect(() => {
         focusModeRef.current = focusMode;
+        // Focus mode coming on with a panel already up: its height is needed now.
+        if (focusMode) setLookupPanelHeight(lookupPanelHeightRef.current);
     }, [focusMode]);
+    const handleLookupPanelLayout = useCallback((event) => {
+        const height = event?.nativeEvent?.layout?.height ?? 0;
+        lookupPanelHeightRef.current = height;
+        if (focusModeRef.current) {
+            setLookupPanelHeight(height);
+        } else {
+            syncPlayButtonLiftRef.current?.();
+        }
+    }, []);
     // A lookup panel is up: the dictionary, or the AI explanation (only ever
     // one of them).
     const lookupOpen = Boolean(highlightedWord) || Boolean(textSelection);
@@ -1362,6 +1381,18 @@ const Read = ({
     const followLinkRef = useRef(null);
     const trimNoteMarkersRef = useRef(null);
     const [saveToggleToken, setSaveToggleToken] = useState(0);
+    // Word-tap database writes held back until the lookup has resolved (see
+    // handleNativeWordSelected). Also run when the reader closes.
+    const pendingContextWritesRef = useRef([]);
+    const pendingContextTimerRef = useRef(null);
+    const flushPendingContextWrites = useCallback(() => {
+        clearTimeout(pendingContextTimerRef.current);
+        pendingContextTimerRef.current = null;
+        const writes = pendingContextWritesRef.current;
+        pendingContextWritesRef.current = [];
+        writes.forEach((write) => write());
+    }, []);
+    useEffect(() => flushPendingContextWrites, [flushPendingContextWrites]);
     const handleNativeWordSelected = useCallback((event = {}) => {
         let text = typeof event.text === 'string' ? event.text.trim() : '';
         if (!text) {
@@ -1402,9 +1433,10 @@ const Read = ({
             previous.some((term) => term.text === text) ? previous : [...previous, { text, at: Date.now() }]
         ));
         // Looking a saved word up again brings its faded highlight back.
-        if (savedSurfacesRef.current.has(text)) {
-            onSavedWordLookedUp(highlightSurfaceWordsRef.current.get(text) || text);
-        }
+        // (After the lookup, with the other tap-time writes below.)
+        const savedWordLookedUp = savedSurfacesRef.current.has(text)
+            ? (highlightSurfaceWordsRef.current.get(text) || text)
+            : null;
 
         setIsNativeSelection(false);
         // The dictionary takes the AI explanation's place: one panel at a time.
@@ -1416,21 +1448,32 @@ const Read = ({
         });
         setPinnedSentence(sentence || text);
 
-        recordVocabContextForSurface({
-            ownerId: activeOwnerId,
-            surface: text,
-            sentence,
-            sourceBookUri: currentBook,
-            sourceBookTitle: activeBook?.title ?? null,
-            language: activeBookLanguage,
-        }).then((context) => {
-            if (context) {
-                requestUserDataSync('reader-selected-vocab-context');
-            }
-        }).catch((error) => {
-            console.warn('[Read] Failed to record vocab context:', error?.message ?? error);
+        // The sentence the word was met in, kept for its card. Written once the
+        // panel has its definition (or shortly after, if it never reports):
+        // started here, it ran in the database's line ahead of the lookup.
+        const seenAt = new Date().toISOString();
+        const sourceBookTitle = activeBook?.title ?? null;
+        pendingContextWritesRef.current.push(() => {
+            if (savedWordLookedUp) onSavedWordLookedUp(savedWordLookedUp);
+            recordVocabContextForSurface({
+                ownerId: activeOwnerId,
+                surface: text,
+                sentence,
+                sourceBookUri: currentBook,
+                sourceBookTitle,
+                seenAt,
+                language: activeBookLanguage,
+            }).then((context) => {
+                if (context) {
+                    requestUserDataSync('reader-selected-vocab-context');
+                }
+            }).catch((error) => {
+                console.warn('[Read] Failed to record vocab context:', error?.message ?? error);
+            });
         });
-    }, [activeBook?.title, activeBookLanguage, activeOwnerId, currentBook]);
+        clearTimeout(pendingContextTimerRef.current);
+        pendingContextTimerRef.current = setTimeout(flushPendingContextWrites, 2000);
+    }, [activeBook?.title, activeBookLanguage, activeOwnerId, currentBook, flushPendingContextWrites]);
 
     // `fromTap`: the page itself was tapped on blank space. With nothing open
     // that brings the controls back from full screen (reading on hides them).
@@ -4286,6 +4329,9 @@ const Read = ({
     const pendingScrubSeekRef = useRef(null);
     const handleSelectBookmarkRef = useRef(handleSelectBookmark);
     handleSelectBookmarkRef.current = handleSelectBookmark;
+    const handleScrubberBookmark = useCallback((item) => {
+        handleSelectBookmarkRef.current?.(item.bookmark);
+    }, []);
     const handleScrubberTarget = useCallback((fraction) => {
         const position = positionForStoryProgress(readerSpine, scrubberRange, fraction);
         if (!position || scrubberTargetRef.current === position.spineIndex) return;
@@ -5180,22 +5226,31 @@ const Read = ({
         locationPromptShown ? locationPromptHeight : 0
     );
     const playButtonRest = PAGE_SCRUBBER_HEIGHT + insets.bottom + PLAY_BUTTON_GAP;
-    let playButtonLiftTarget = 0;
-    if (lookupOpen && !shouldPlaceLookupAtTop) {
-        playButtonLiftTarget = Math.max(0, lookupPanelHeight + PLAY_BUTTON_GAP - playButtonRest);
-    } else if (noticeHeight > 0) {
+    const playButtonLiftTargetFor = (panelHeight) => {
+        if (lookupOpen && !shouldPlaceLookupAtTop) {
+            return Math.max(0, panelHeight + PLAY_BUTTON_GAP - playButtonRest);
+        }
         // The notice sits 16 above the scrubber; the button a gap above it.
-        playButtonLiftTarget = 16 + noticeHeight;
-    }
+        return noticeHeight > 0 ? 16 + noticeHeight : 0;
+    };
+    const playButtonLiftTarget = playButtonLiftTargetFor(lookupPanelHeightRef.current);
     const playButtonLift = useRef(new Animated.Value(0)).current;
-    useEffect(() => {
+    const playButtonLiftedToRef = useRef(0);
+    const liftPlayButtonTo = (target) => {
+        if (playButtonLiftedToRef.current === target) return;
+        playButtonLiftedToRef.current = target;
         Animated.timing(playButtonLift, {
-            toValue: -playButtonLiftTarget,
+            toValue: -target,
             duration: reduceMotion ? 0 : 280,
             easing: CHROME_EASING,
             useNativeDriver: true,
         }).start();
-    }, [playButtonLift, playButtonLiftTarget, reduceMotion]);
+    };
+    // The panel's height changing (no render: see lookupPanelHeightRef).
+    syncPlayButtonLiftRef.current = () => liftPlayButtonTo(playButtonLiftTargetFor(lookupPanelHeightRef.current));
+    useEffect(() => {
+        liftPlayButtonTo(playButtonLiftTarget);
+    }, [playButtonLiftTarget, reduceMotion]); // eslint-disable-line react-hooks/exhaustive-deps
     const playPresence = usePresence(playButtonShown, { duration: 200, reduceMotion });
     const playButtonScale = useMemo(() => playPresence.progress.interpolate({
         inputRange: [0, 1],
@@ -5431,7 +5486,7 @@ const Read = ({
                         describe={describeScrubberPoint}
                         onDragTarget={handleScrubberTarget}
                         onSeek={handleScrubberSeek}
-                        onSelectBookmark={(item) => handleSelectBookmark(item.bookmark)}
+                        onSelectBookmark={handleScrubberBookmark}
                         savedAt={heldSpot ? heldSpot.progress : null}
                         onReturnToSaved={returnToHeldSpot}
                         bottomInset={insets.bottom}
@@ -5579,9 +5634,7 @@ const Read = ({
                 pointerEvents="box-none"
             >
                 <View
-                    onLayout={(event) => {
-                        setLookupPanelHeight(event?.nativeEvent?.layout?.height ?? 0);
-                    }}
+                    onLayout={handleLookupPanelLayout}
                     {...(shouldPlaceLookupAtTop ? {} : lookupPanResponder.panHandlers)}
                 >
                     <TopSection
@@ -5602,6 +5655,7 @@ const Read = ({
                         savedWords={savedWordsList}
                         levelMarkFor={currentBook ? levelMarkFor : null}
                         saveToggleToken={saveToggleToken}
+                        onLookupResolved={flushPendingContextWrites}
                         translationVisualState={translationBannerVisualState}
                     />
                     {textSelection ? renderSelectionExplain() : null}

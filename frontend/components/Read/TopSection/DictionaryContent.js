@@ -420,23 +420,29 @@ const DictionaryContent = ({
         setShowPhraseWord(false);
     }, [highlightedWord, phraseWord, targetLanguage]);
 
+    const hasLookedUpRef = useRef(false);
     useEffect(() => {
-        setCachedResults(null);
-        setNeedsLiveFetch(false);
-        setStemWordList([]);
-        setDictionaryData([]);
-        setLiveError(null);
-        setIsLiveLoading(false);
-        setExtraDefs({});
-        setZhReadings({});
-        zhReadingsFetchRef.current = new Set();
-        setLiveEntryMeta({});
-        romanizationsRef.current = {};
-        setRomanizations({});
-        setExpandedCached({});
-        setExpandedWords([]);
-        setRelatedKnownByWord({});
-        setActiveWordIndex(0);
+        // The first word finds everything already blank; clearing it again
+        // would only render the panel a second time before its lookup.
+        if (hasLookedUpRef.current) {
+            setCachedResults(null);
+            setNeedsLiveFetch(false);
+            setStemWordList([]);
+            setDictionaryData([]);
+            setLiveError(null);
+            setIsLiveLoading(false);
+            setExtraDefs({});
+            setZhReadings({});
+            zhReadingsFetchRef.current = new Set();
+            setLiveEntryMeta({});
+            romanizationsRef.current = {};
+            setRomanizations({});
+            setExpandedCached({});
+            setExpandedWords([]);
+            setRelatedKnownByWord({});
+            setActiveWordIndex(0);
+        }
+        hasLookedUpRef.current = true;
 
         if (!lookupWord) return;
 

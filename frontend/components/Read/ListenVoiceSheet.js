@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import skipWhileHidden from './skipWhileHidden';
 import {
     ActivityIndicator,
     Animated,
@@ -493,4 +494,4 @@ const createStyles = (colors, maxHeight = 560) => StyleSheet.create({
     },
 });
 
-export default ListenVoiceSheet;
+export default memo(ListenVoiceSheet, skipWhileHidden);

@@ -113,6 +113,35 @@ describe('legacy expo-sqlite adapter', () => {
     expect(order).toEqual(['a', 'b', 'c']);
   });
 
+  it('runs an urgent read ahead of the transactions still waiting', async () => {
+    await setup();
+    // Let the setup transaction close, so 'a' below is the one running.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const order = [];
+    const write = (v) =>
+      new Promise((resolve, reject) => {
+        db.transaction(
+          (tx) => tx.executeSql('INSERT INTO t (v) VALUES (?)', [v], () => order.push(v)),
+          reject,
+          resolve
+        );
+      });
+    const read = (label) =>
+      new Promise((resolve, reject) => {
+        db.urgentReadTransaction(
+          (tx) => tx.executeSql('SELECT v FROM t', [], () => order.push(label)),
+          reject,
+          resolve
+        );
+      });
+    // 'a' starts at once and is not interrupted; the reads pass 'b' and 'c'
+    // and keep their own order.
+    const writes = ['a', 'b', 'c'].map(write);
+    await Promise.resolve();
+    await Promise.all([...writes, read('read-1'), read('read-2')]);
+    expect(order).toEqual(['a', 'read-1', 'read-2', 'b', 'c']);
+  });
+
   it('binds booleans as the text the old Android module stored, and undefined as NULL', async () => {
     await setup();
     await exec('INSERT INTO t (v, flag) VALUES (?, ?)', ['a', true]);
