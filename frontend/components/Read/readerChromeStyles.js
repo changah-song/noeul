@@ -269,8 +269,13 @@ export const createReaderChromeStyles = (themeColors) => StyleSheet.create({
         shadowRadius: 30,
         elevation: 8,
     },
+    // Previous, next and close give up a little width when the bar is short
+    // of room (a narrow phone, a wider speed label), so the close button stays
+    // inside the bar.
     listenButton: {
         width: 40,
+        minWidth: 28,
+        flexShrink: 1,
         height: 44,
         borderRadius: 20,
         alignItems: 'center',
@@ -329,6 +334,8 @@ export const createReaderChromeStyles = (themeColors) => StyleSheet.create({
     },
     listenCloseButton: {
         width: 40,
+        minWidth: 28,
+        flexShrink: 1,
         height: 44,
         alignItems: 'center',
         justifyContent: 'center',

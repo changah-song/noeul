@@ -59,7 +59,7 @@ import ListenVoiceSheet from '../components/Read/ListenVoiceSheet';
 import VocabLevelModal from '../components/shared/VocabLevelModal';
 import { hasVocabSizeGrid } from '../services/vocabSizeLevels';
 import { cloudVoiceFor, createListenPlayer, voiceLocaleFor, voiceSampleFor, LISTEN_PITCHES, LISTEN_RATES } from '../services/listenPlayer';
-import { remainingFrom, spokenRangeAt } from '../services/listenSpokenWord';
+import { remainingFrom, spokenRangeAt, voicedSentence } from '../services/listenSpokenWord';
 import {
     PREPROCESS_VERSION,
     deleteBookBookmark,
@@ -139,8 +139,7 @@ import useSavedWordFades from '../hooks/useSavedWordFades';
 import { ONBOARDING_FLOW_SEEN_KEY } from './Onboarding';
 import { getSyncStatus, markSyncPending, subscribeSyncStatus } from '../services/syncStatus';
 import { activeTocIndex, blockIdForAnchor, tocAnchorFromHref } from '../services/tocAnchors';
-import { blankNoteMarkers, linkAtOffset, resolveLinkTarget, wordBesideNoteMarkers } from '../services/readerLinks';
-import { blankGluedVerseNumbers } from '../services/listenVerseNumbers';
+import { linkAtOffset, resolveLinkTarget, wordBesideNoteMarkers } from '../services/readerLinks';
 import {
     anchorFraction,
     chapterMarks,
@@ -4521,9 +4520,15 @@ const Read = ({
         );
         const earlyNext = knownNext();
         const earlyNextText = earlyNext?.moved ? cleanListenText(earlyNext.text) : '';
-        // An online voice fetches the next sentence's audio while this one plays.
+        // An online voice fetches the next sentence's audio while this one
+        // plays: the words it will be asked to say, not the sentence as printed.
+        const voicedFor = (payload) => voicedSentence(payload?.text, {
+            segments: payload?.segments,
+            blocks: chapterBlocksForReaderPackage(nativeReaderPackageRef.current),
+            language: ctx.language,
+        });
         if (earlyNextText) {
-            player.prefetch([{ text: earlyNextText, ...listenVoiceFor(prefs, ctx.targetLocale) }]);
+            player.prefetch([{ text: voicedFor(earlyNext).voiced, ...listenVoiceFor(prefs, ctx.targetLocale) }]);
         }
         const nextTranslation = prefs.translateSentences && earlyNextText
             ? chapterTranslations.translate(earlyNextText, ctx.language, ctx.interfaceLanguage).catch(() => '')
@@ -4570,19 +4575,9 @@ const Read = ({
         // remember it, so play after a pause starts from that word. Offsets
         // from the engine are into `rest`; the view's segments index the
         // uncleaned text.
-        const leading = rawText.length - rawText.trimStart().length;
-        // Note markers (the "1" or "*" of a footnote link) are not read: they
-        // become spaces, so the engine's offsets still match the page. In an
-        // English book so do verse numbers glued to a word ("26Then").
-        const unmarked = blankNoteMarkers(
-            rawText,
-            event.segments,
-            chapterBlocksForReaderPackage(nativeReaderPackageRef.current)
-        );
-        const voiced = (String(ctx.language || '').toLowerCase().startsWith('en')
-            ? blankGluedVerseNumbers(unmarked)
-            : unmarked
-        ).slice(leading, leading + text.length);
+        // Note markers and glued verse numbers are not read: they are spaces
+        // in `voiced`, so the engine's offsets still match the page.
+        const { leading, voiced } = voicedFor(event);
         const rest = remainingFrom(voiced, prepared.from);
         listenReachedRef.current = { key, offset: rest.base };
         setSpokenRange(null);

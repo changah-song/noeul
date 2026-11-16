@@ -2,7 +2,7 @@ import { Audio } from 'expo-av';
 import * as FileSystem from 'expo-file-system/legacy';
 import { BASE_URL } from '../config';
 import { getAccessToken } from './api/client';
-import { withListenTimeout } from './listenDelay';
+import { listenDelay, withListenTimeout } from './listenDelay';
 
 // Listen mode's online voices: the backend turns one sentence into audio
 // (GET /speak/, backend/woof_tts.py) and this plays the file. The voice ids
@@ -16,6 +16,9 @@ const CACHE_FOLDER = `${FileSystem.cacheDirectory || ''}listen-voice/`;
 // A sentence's audio arrives in a second or two; past this the phone's own
 // voice reads it instead.
 const FETCH_TIMEOUT_MS = 12000;
+// The server makes one sentence at a time, so a sentence fetched ahead waits
+// this long for the one being read to be asked for, and then for its audio.
+const PREFETCH_HOLD_MS = 200;
 // Playback that never reports an end (a file the player cannot open) must
 // not hold the reader on one sentence for ever.
 const PLAY_TIMEOUT_MIN_MS = 20000;
@@ -55,7 +58,9 @@ const download = async (url, fileUri, { refresh = false } = {}) => {
 const inFlight = new Map();
 
 // The local file holding `text` read by `voiceName`; fetched once, then reused.
-export const fetchSpeech = (text, voiceName) => {
+export const fetchSpeech = (rawText, voiceName) => {
+  // The server reads runs of spaces as one; so one file for both.
+  const text = String(rawText || '').replace(/\s+/g, ' ').trim();
   const fileUri = `${CACHE_FOLDER}${speechFileName(text, voiceName)}`;
   const pending = inFlight.get(fileUri);
   if (pending) return pending;
@@ -92,9 +97,13 @@ export const createCloudSpeaker = () => {
   };
 
   return {
-    // Fetch ahead of time; failures are left for speak() to meet again.
+    // Fetch ahead of time, behind the sentence being read; failures are left
+    // for speak() to meet again.
     prefetch(text, voiceName) {
-      fetchSpeech(text, voiceName).catch(() => {});
+      listenDelay(PREFETCH_HOLD_MS)
+        .then(() => Promise.allSettled([...inFlight.values()]))
+        .then(() => fetchSpeech(text, voiceName))
+        .catch(() => {});
     },
 
     // Play `text` in `voiceName`. Resolves 'finish', 'cancel' (stop() was

@@ -185,7 +185,7 @@ const ListenBar = ({
                                     accessibilityLabel={`${t('read.listenVoiceTitle')}, ${t('read.listenSpeed', { rate: rateLabel })}`}
                                 >
                                     <MaterialCommunityIcons name="waveform" size={15} color={themeColors.inkSlate} />
-                                    <Text style={styles.listenSpeedLabel}>{rateLabel}</Text>
+                                    <Text style={styles.listenSpeedLabel} maxFontSizeMultiplier={1.2}>{rateLabel}</Text>
                                 </TouchableOpacity>
                                 <TouchableOpacity
                                     style={[styles.listenToggle, explainWords ? styles.listenToggleActive : null]}

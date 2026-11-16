@@ -1,7 +1,31 @@
+import { blankNoteMarkers } from './readerLinks';
+import { blankGluedVerseNumbers } from './listenVerseNumbers';
+
 // Listen mode follows the voice word by word: the engine reports offsets in
 // the text it was handed, and the reader view lights words by block-local
 // offsets. These helpers translate between the two, and pick up a sentence
 // again where a pause left it.
+
+
+// What the voice says for a focus payload's `rawText`: `text` is the sentence
+// trimmed, `leading` the spaces trimmed off its front, and `voiced` the same
+// stretch with what is not read aloud turned to spaces. Note markers (the "1"
+// or "*" of a footnote link) are not read, and in an English book neither are
+// verse numbers glued to a word ("26Then"). `voiced` is as long as `text`, so
+// the engine's offsets still match the page.
+//
+// The sentence being read and the next one fetched ahead for an online voice
+// both come through here: asked for with different words, the audio fetched
+// ahead would never be the audio played.
+export const voicedSentence = (rawText, { segments, blocks, language } = {}) => {
+    const raw = typeof rawText === 'string' ? rawText : '';
+    const text = raw.trim();
+    const leading = raw.length - raw.trimStart().length;
+    const unmarked = blankNoteMarkers(raw, segments, blocks);
+    const english = String(language || '').toLowerCase().startsWith('en');
+    const voiced = (english ? blankGluedVerseNumbers(unmarked) : unmarked).slice(leading, leading + text.length);
+    return { text, leading, voiced };
+};
 
 // The view range for the stretch [from, to) of the read text. `segments` come
 // with the focus payload, one per sentence: { blockId, start, end, at } with

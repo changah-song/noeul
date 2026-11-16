@@ -43,6 +43,8 @@ import {
 // The most of the window the popup may take; a longer tab scrolls inside it.
 export const POPUP_MAX_HEIGHT_RATIO = 0.7;
 const POPUP_WIDTH = 316;
+// On a narrow phone, the most of the window's width it may take.
+const POPUP_MAX_WIDTH_RATIO = 0.92;
 const POPUP_PADDING = 16;
 
 export const SETTINGS_TABS = ['text', 'words'];
@@ -106,9 +108,15 @@ const ReaderSettingsSheet = ({
     const { themeMode: appThemeMode } = useAppContext();
     const themeMode = THEME_MODES.includes(appThemeMode) ? appThemeMode : 'light';
     const setThemeMode = (mode) => onSettingChange('themeMode', mode);
-    const { height: windowHeight } = useWindowDimensions();
+    const { width: windowWidth, height: windowHeight } = useWindowDimensions();
     const popupMaxHeight = Math.round(windowHeight * POPUP_MAX_HEIGHT_RATIO);
-    const styles = useMemo(() => createStyles(colors, popupMaxHeight), [colors, popupMaxHeight]);
+    // In points, from the window: a percentage of the modal can come out as
+    // zero on Android when the modal opens again, and the popup is not there.
+    const popupWidth = Math.min(POPUP_WIDTH, Math.round(windowWidth * POPUP_MAX_WIDTH_RATIO));
+    const styles = useMemo(
+        () => createStyles(colors, popupMaxHeight, popupWidth),
+        [colors, popupMaxHeight, popupWidth]
+    );
     const controlStyles = useMemo(() => createReaderSettingsControlStyles(colors), [colors]);
     const [activeTab, setActiveTab] = useState(SETTINGS_TABS.includes(initialTab) ? initialTab : 'text');
     // Opened for a particular tab (Profile's "Underlines feel off?"): show it.
@@ -489,7 +497,7 @@ const ReaderSettingsSheet = ({
     );
 };
 
-const createStyles = (colors, popupMaxHeight = 520) => StyleSheet.create({
+const createStyles = (colors, popupMaxHeight = 520, popupWidth = POPUP_WIDTH) => StyleSheet.create({
     overlay: {
         flex: 1,
     },
@@ -504,8 +512,7 @@ const createStyles = (colors, popupMaxHeight = 520) => StyleSheet.create({
     popup: {
         position: 'absolute',
         right: 12,
-        width: POPUP_WIDTH,
-        maxWidth: '92%',
+        width: popupWidth,
         maxHeight: popupMaxHeight,
         borderRadius: 16,
         borderWidth: StyleSheet.hairlineWidth,

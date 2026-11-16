@@ -1,4 +1,4 @@
-const { spokenRangeAt, remainingFrom } = require('../listenSpokenWord');
+const { spokenRangeAt, remainingFrom, voicedSentence } = require('../listenSpokenWord');
 
 // Two sentences read as one text: "Hello there." (block a, 10..22) then
 // "Bye now." (block b, 0..8), joined with a space, so "Bye" sits at 13.
@@ -45,5 +45,33 @@ describe('remainingFrom', () => {
         expect(remainingFrom('Hi.', 0)).toEqual({ text: 'Hi.', base: 0 });
         expect(remainingFrom('Hi.', 99)).toEqual({ text: '', base: 3 });
         expect(remainingFrom('Hi.', undefined)).toEqual({ text: 'Hi.', base: 0 });
+    });
+});
+
+describe('voicedSentence', () => {
+    it('drops a glued verse number in an English book and keeps the length', () => {
+        const out = voicedSentence(' 26Then God said, "Let us make man." ', { language: 'en' });
+        expect(out.text).toBe('26Then God said, "Let us make man."');
+        expect(out.leading).toBe(1);
+        expect(out.voiced).toBe('  Then God said, "Let us make man."');
+        expect(out.voiced).toHaveLength(out.text.length);
+    });
+
+    it('gives the same words for a sentence read now and one fetched ahead', () => {
+        // The current sentence arrives as the focus payload, the next one as
+        // that payload's `next`: both must name the same audio.
+        const payload = { text: '27So God created man', segments: [] };
+        const now = voicedSentence(payload.text, { segments: payload.segments, blocks: [], language: 'en-US' });
+        const ahead = voicedSentence(payload.text, { segments: payload.segments, blocks: [], language: 'en-US' });
+        expect(remainingFrom(now.voiced, 0).text).toBe('So God created man');
+        expect(ahead.voiced.trim()).toBe(remainingFrom(now.voiced, 0).text);
+    });
+
+    it('leaves the numbers of another language alone', () => {
+        expect(voicedSentence('26Then God said', { language: 'ko' }).voiced).toBe('26Then God said');
+    });
+
+    it('is empty for a missing sentence', () => {
+        expect(voicedSentence(undefined)).toEqual({ text: '', leading: 0, voiced: '' });
     });
 });
