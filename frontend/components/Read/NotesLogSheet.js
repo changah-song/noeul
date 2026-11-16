@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { memo, useEffect, useMemo, useRef, useState } from 'react';
+import skipWhileHidden from './skipWhileHidden';
 import {
     View,
     Text,
@@ -388,4 +389,4 @@ const createStyles = (colors) => StyleSheet.create({
     },
 });
 
-export default NotesLogSheet;
+export default memo(NotesLogSheet, skipWhileHidden);

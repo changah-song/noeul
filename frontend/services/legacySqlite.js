@@ -6,7 +6,8 @@
 // promise API. Rather than rewrite every query, this module reproduces the
 // old behavior on top of it:
 //
-// - Transactions run one at a time, in the order they were requested.
+// - Transactions run one at a time, in the order they were requested
+//   (urgentReadTransaction, an addition, goes to the front of the line).
 // - A write transaction is wrapped in BEGIN / END, and rolled back if a
 //   statement fails and its error callback doesn't return false (or a
 //   callback throws). The transaction's error callback then gets the error.
@@ -138,16 +139,26 @@ export const createLegacyDatabase = (run) => {
     running = false;
   };
 
-  const enqueue = (readOnly) => (callback, onError, onSuccess) => {
+  // `urgent`: goes ahead of everything still waiting (behind other urgent
+  // ones, so those keep their order). The transaction already running is
+  // never interrupted.
+  const enqueue = (readOnly, urgent = false) => (callback, onError, onSuccess) => {
     if (typeof callback !== 'function') {
       throw new Error('The callback provided as parameter 1 is not a function.');
     }
-    queue.push({
+    const task = {
       readOnly,
+      urgent,
       callback,
       onError: onError || noop,
       onSuccess: onSuccess || noop,
-    });
+    };
+    if (urgent) {
+      const firstWaiting = queue.findIndex((queued) => !queued.urgent);
+      queue.splice(firstWaiting === -1 ? queue.length : firstWaiting, 0, task);
+    } else {
+      queue.push(task);
+    }
     // Start on a later tick, like WebSQL, so callers finish their own setup first.
     Promise.resolve().then(drain);
   };
@@ -155,6 +166,10 @@ export const createLegacyDatabase = (run) => {
   return {
     transaction: enqueue(false),
     readTransaction: enqueue(true),
+    // A read the reader is waiting on (a tapped word's lookup): it does not
+    // wait behind queued background writes. Only for reads that don't depend
+    // on a write requested just before them.
+    urgentReadTransaction: enqueue(true, true),
   };
 };
 

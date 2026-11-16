@@ -12,6 +12,9 @@ export const LOOKUP_ACTIONS = {
     saved: 1,
 };
 
+// How long a closed card's log waits before it is written (see flush).
+const LOG_DELAY_MS = 1500;
+
 // A card left open longer than this was put down, not read.
 const MAX_OPEN_SECONDS = 600;
 
@@ -46,9 +49,14 @@ const useLookupDetail = ({ word, ownerId, language, sourceBookUri }) => {
         const event = lookupDetailEvent(openRef.current, Date.now(), scopeRef.current);
         openRef.current = null;
         if (event) {
-            logInteractionEvent(event).catch((error) => {
-                console.warn('[useLookupDetail] Failed to log lookup detail:', error);
-            });
+            // Written a moment later: a card usually closes because another
+            // word was tapped, and this write must not sit in the database's
+            // line ahead of that word's lookup. The event carries its own times.
+            setTimeout(() => {
+                logInteractionEvent(event).catch((error) => {
+                    console.warn('[useLookupDetail] Failed to log lookup detail:', error);
+                });
+            }, LOG_DELAY_MS);
         }
     }, []);
 

@@ -57,6 +57,12 @@ import { mergeVocabRows, vocabMergeKey } from './vocabMerge';
 // NOTE: Change the db filename here if you ever need to reset all tables by
 // wiping the old database (e.g., rename to 'app_v2.db' to start fresh).
 const db = SQLite.openDatabase('fluentfable.db');
+// A tapped word's lookup: read-only (no BEGIN / END around it) and ahead of
+// queued background writes, so the panel doesn't wait on logging or a
+// chapter being indexed.
+const lookupRead = (callback, onError, onSuccess) => (
+  (db.urgentReadTransaction || db.transaction)(callback, onError, onSuccess)
+);
 const BOOK_INDEX_MIGRATION_KEY = 'book_index_migration_v2';
 const DICTIONARY_CACHE_MIGRATION_KEY = 'dictionary_cache_migration_v1';
 const DICTIONARY_CACHE_LANGUAGE_MIGRATION_KEY = 'dictionary_cache_language_migration_v1';
@@ -8289,7 +8295,7 @@ export const lookupCacheByStems = (stems, scopeOrInterfaceLanguage = 'en', optio
     const placeholders = stems.map(() => '?').join(',');
     const stemOrder = new Map(stems.map((stem, index) => [stem, index]));
     const scope = normalizeDictionaryCacheScope(scopeOrInterfaceLanguage, options);
-    db.transaction(tx => {
+    lookupRead(tx => {
       tx.executeSql(
         `SELECT id, stem, language, interface_language, definition, gloss, hanja, pos, domain, romanization, ipa, simplified, traditional, audio_us, audio_uk, etymology, derived, related, word_parts,
                 level_rank, level_label, level_system, level_source
@@ -8336,7 +8342,7 @@ export const lookupBookIndexBySurface = (ownerId, bookUri, surface, scopeOrInter
       return resolve([]);
     }
 
-    db.transaction(tx => {
+    lookupRead(tx => {
       tx.executeSql(
         `SELECT dc.id, dc.stem, dc.language, dc.interface_language, dc.definition, dc.gloss, dc.hanja, dc.pos,
                 dc.domain, dc.romanization, dc.ipa, dc.simplified, dc.traditional, dc.audio_us, dc.audio_uk, dc.etymology, dc.derived, dc.related, dc.word_parts,
@@ -8384,7 +8390,7 @@ export const lookupBookIndexBySurfaceVariants = (ownerId, bookUri, fragment, sco
       return;
     }
 
-    db.transaction(tx => {
+    lookupRead(tx => {
       tx.executeSql(
         `SELECT bi.surface AS index_surface,
                 dc.id, dc.stem, dc.language, dc.interface_language, dc.definition, dc.gloss, dc.hanja, dc.pos,

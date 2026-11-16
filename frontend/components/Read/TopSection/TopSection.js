@@ -50,6 +50,8 @@ const TopSection = ({
     // Counts up each time the reader taps the open word again: saves it (or
     // takes the save back).
     saveToggleToken = 0,
+    // Called when the dictionary has its answer for the word (found or not).
+    onLookupResolved,
     translationVisualState = {},
     // The reader has no tab bar: a bottom panel pads its own way past the
     // system gesture bar.
@@ -135,7 +137,12 @@ const TopSection = ({
             prevWordRef.current = highlightedWord;
             setIsLookupExpanded(false);
             setCanExpandLookup(false);
-            setTranslationStatus({ isLoading: false, hasError: false, hasText: false, translatedText: '' });
+            // The same object when it is already blank: no render for nothing.
+            setTranslationStatus((previous) => (
+                previous.isLoading || previous.hasError || previous.hasText || previous.translatedText
+                    ? { isLoading: false, hasError: false, hasText: false, translatedText: '' }
+                    : previous
+            ));
             setIsCopied(false);
             setIsCopying(false);
         }
@@ -161,13 +168,13 @@ const TopSection = ({
             Animated.parallel([
                 Animated.timing(translateY, {
                     toValue: 0,
-                    duration: 240,
+                    duration: 180,
                     easing: Easing.out(Easing.cubic),
                     useNativeDriver: true,
                 }),
                 Animated.timing(opacity, {
                     toValue: 1,
-                    duration: 240,
+                    duration: 120,
                     easing: Easing.out(Easing.quad),
                     useNativeDriver: true,
                 }),
@@ -238,7 +245,11 @@ const TopSection = ({
         });
     }, []);
 
-    if (!visibleWord) {
+    // The tapped word shows in the render that brings it, not one render
+    // later through visibleWord (which only keeps the last word on the panel
+    // while it fades away).
+    const shownWord = highlightedWord || visibleWord;
+    if (!shownWord) {
         return null;
     }
 
@@ -261,7 +272,7 @@ const TopSection = ({
     const dictionaryMaxHeight = isLookupExpanded
         ? DICTIONARY_EXPANDED_MAX_HEIGHT
         : (isChineseDictionarySheet ? DICTIONARY_ZH_MAX_HEIGHT : DICTIONARY_MAX_HEIGHT);
-    const translationText = visibleWord;
+    const translationText = shownWord;
     const translationSourceLanguage = dictionaryBookLanguage;
     const translationTargetLanguage = normalizeInterfaceLanguageCode(interfaceLanguage);
     // Both ends named in the interface language ("Coréen → Français").
@@ -412,7 +423,7 @@ const TopSection = ({
             <View style={isTranslationMode ? styles.contentTranslation : styles.content}>
                 {!isTranslationMode ? (
                     <DictionaryContent
-                        highlightedWord={visibleWord}
+                        highlightedWord={shownWord}
                         sourceSentence={sourceSentence}
                         phraseWord={phraseWord}
                         isDarkMode={isDarkMode}
@@ -427,6 +438,7 @@ const TopSection = ({
                         savedWords={savedWords}
                         levelMarkFor={levelMarkFor}
                         saveToggleToken={saveToggleToken}
+                        onContentLoaded={onLookupResolved}
                     />
                 ) : (
                     <TranslationContent
