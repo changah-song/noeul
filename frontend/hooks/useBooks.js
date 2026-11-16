@@ -6,10 +6,8 @@ import { useNavigation } from '@react-navigation/native';
 import * as DocumentPicker from 'expo-document-picker';
 import { isBookPreprocessed } from '../services/Database';
 import { extractBookCoverColors } from '../services/bookCoverColors';
-import { uploadUserBook } from '../services/bookCloudSync';
 import { readEpubMetadata } from '../services/epubMetadata';
 import { subscribeBookLoadProgress } from '../services/bookLoadProgress';
-import { isCurrentSyncGeneration } from '../services/localOwnerCoordinator';
 import { readPdfMetadata, renderPdfCover } from '../services/pdfMetadata';
 import { SUPPORTED_BOOK_LANGUAGES, normalizeBookLanguage } from '../constants/languages';
 import { getLocalizedLanguageName, getUserFacingErrorMessage } from '../i18n/userFacing';
@@ -28,9 +26,7 @@ const useBooks = ({
     setBooks,
     setCurrentBook,
     onBookImported,
-    user,
     ownerId,
-    syncGeneration,
     targetLanguage = 'ko',
     setTargetLanguage = () => {},
 }) => {
@@ -391,36 +387,8 @@ const useBooks = ({
             setIsImporting(false);
             navigation.navigate('Read', { returnTo: 'Home' });
 
-            if (user?.id && ownerId === user.id && isCurrentSyncGeneration(syncGeneration)) {
-                uploadUserBook({
-                    user,
-                    ownerId,
-                    generation: syncGeneration,
-                    localBook: newBook,
-                    pickedAsset,
-                })
-                    .then((cloudBook) => {
-                        if (!isCurrentSyncGeneration(syncGeneration)) {
-                            return;
-                        }
-                        setBooks((prevBooks) => prevBooks.map((book) => (
-                            book.id === newBook.id
-                                ? {
-                                    ...book,
-                                    cloudId: cloudBook.id,
-                                    cloudOwnerId: cloudBook.user_id,
-                                    cloudFilePath: cloudBook.file_path,
-                                    cloudCoverPath: cloudBook.cover_path ?? null,
-                                    cloudSyncedAt: cloudBook.updated_at ?? cloudBook.uploaded_at ?? new Date().toISOString(),
-                                    downloaded: true,
-                                }
-                                : book
-                        )));
-                    })
-                    .catch((uploadError) => {
-                        console.warn('[useBooks] Cloud book upload failed; local import remains usable:', uploadError);
-                    });
-            }
+            // The cloud copy (row, and file while it's among the recently
+            // opened books) follows from useAppSetup's cloud book sync.
         } catch (error) {
             discardUnusedCopy(pendingCopy);
             console.error("[useBooks] Error importing a book:", error);
