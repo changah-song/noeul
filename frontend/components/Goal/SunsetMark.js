@@ -30,37 +30,45 @@ export const Star = ({ cx, cy, r, color }) => {
 };
 
 // The mark: 28 wide; a sky of 7.5 above the sun, the sun's 7.5, the horizon,
-// then two rows of reflection. The horizon sits at SKY + SUN.
+// then two thinner rows of reflection. The horizon sits at SKY + SUN.
 const WIDTH = 28;
 const SKY = 7.5;
 const SUN = 7.5;
 const BAR = 2.6;
+const ROW = 2;
+const ROW_GAP = 2.2;
 const HORIZON = SKY + SUN;
-export const SUNSET_MARK_HEIGHT = HORIZON + BAR + 2.2 + BAR + 2.2 + BAR;
+export const SUNSET_MARK_HEIGHT = HORIZON + BAR + 2 * (ROW_GAP + ROW);
 // The empty sky above the horizon, so callers can line the horizon up.
 export const SUNSET_MARK_SKY = SKY;
 
 // How far the sun's centre sits below the horizon, by stage.
-const SUN_DROP = { 1: 0, 2: 3, 3: 5.5 };
-// Rows of reflection: they go as the sun sets and come back with the stars.
-const REFLECTION_ROWS = [0, 2, 1, 0, 1, 2, 2];
+const SUN_DROP = { 1: 0, 2: 2.6, 3: 4.6 };
+// The reflection's rows by stage, as widths from the horizon down. It narrows
+// as the sun sets (long and short, long, short) and comes back the same way
+// with the stars (short, long, long and short).
+const LONG = 14;
+const SHORT = 8;
+const REFLECTION_ROWS = [[], [LONG, SHORT], [LONG], [SHORT], [SHORT], [LONG], [LONG, SHORT]];
 // Where each star comes out, and stays: right, low left, then the biggest
 // high in the middle.
 const MARK_STARS = [
-  { cx: 22, cy: SKY + 0.4, r: 2.3 },
-  { cx: 5.6, cy: SKY + 3.3, r: 1.9 },
-  { cx: 13.6, cy: SKY - 3.7, r: 3.4 },
+  { cx: 22.3, cy: SKY + 1, r: 3.6 },
+  { cx: 5.4, cy: SKY + 2.4, r: 3.1 },
+  { cx: 13.7, cy: SKY - 3, r: 4.5 },
 ];
 
 /**
  * SunsetMark — Home's goal mark beside the streak. Before the goal, the sun's
  * outline on the horizon; at the goal, the filled half sun with two rows of
- * reflection; then every 15 minutes past it the sun sinks and a row goes,
- * until it has set and stars come out (each bringing a row back).
+ * reflection; then every 15 minutes past it the sun sinks and the reflection
+ * narrows, until it has set and stars come out (the reflection widening again
+ * with each).
  */
 export const SunsetMark = ({ stage = 0, color }) => {
   const bar = { position: 'absolute', height: BAR, borderRadius: BAR / 2, backgroundColor: color };
-  const rows = REFLECTION_ROWS[stage] ?? 0;
+  const row = { position: 'absolute', height: ROW, borderRadius: ROW / 2, backgroundColor: color };
+  const rows = REFLECTION_ROWS[stage] ?? [];
   const stars = Math.max(0, stage - 3);
   return (
     <View style={{ width: WIDTH, height: SUNSET_MARK_HEIGHT }}>
@@ -101,8 +109,13 @@ export const SunsetMark = ({ stage = 0, color }) => {
         <Star key={index} {...star} color={color} />
       ))}
       <View style={[bar, { left: 0, top: HORIZON, width: WIDTH }]} />
-      {rows >= 1 ? <View style={[bar, { left: 7, top: HORIZON + BAR + 2.2, width: 14 }]} /> : null}
-      {rows >= 2 ? <View style={[bar, { left: 10, top: HORIZON + 2 * (BAR + 2.2), width: 8 }]} /> : null}
+      {rows.map((width, index) => (
+        <View
+          // eslint-disable-next-line react/no-array-index-key
+          key={`row-${index}`}
+          style={[row, { left: (WIDTH - width) / 2, top: HORIZON + BAR + ROW_GAP + index * (ROW + ROW_GAP), width }]}
+        />
+      ))}
     </View>
   );
 };
