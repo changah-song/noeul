@@ -170,7 +170,8 @@ final class ReaderPageView: UIView {
   var viewportOffsetY: CGFloat = 0
   var viewportHeight: CGFloat?
 
-  private var redrawScheduled = false
+  // When the pending animation redraw fires (CACurrentMediaTime), if any.
+  private var redrawDeadline: CFTimeInterval?
   // Long-press boxes slide from where they were (160 ms).
   private var slideFrom: [SelectionLineBox] = []
   private var slideProgress: CGFloat = 1
@@ -208,12 +209,18 @@ final class ReaderPageView: UIView {
     scheduleRedraw(afterMs: nextFrameMs)
   }
 
+  // One pending redraw at a time, but a sooner one replaces a later one: a
+  // gloss's next sense can be seconds away while a fade that just started
+  // needs its next frame now.
   private func scheduleRedraw(afterMs delay: Double) {
-    guard delay.isFinite, !redrawScheduled, window != nil else { return }
-    redrawScheduled = true
+    guard delay.isFinite, window != nil else { return }
+    let deadline = CACurrentMediaTime() + delay / 1000
+    if let pending = redrawDeadline, pending <= deadline + 0.004 { return }
+    redrawDeadline = deadline
     DispatchQueue.main.asyncAfter(deadline: .now() + delay / 1000) { [weak self] in
-      self?.redrawScheduled = false
-      self?.setNeedsDisplay()
+      guard let self, self.redrawDeadline == deadline else { return }
+      self.redrawDeadline = nil
+      self.setNeedsDisplay()
     }
   }
 

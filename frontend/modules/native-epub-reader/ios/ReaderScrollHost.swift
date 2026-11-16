@@ -32,6 +32,35 @@ private extension CGPath {
   }
 }
 
+// The same area as `rects`, as rects that don't overlap. The dim is cut with
+// the even-odd rule, which fills an area covered twice again: a line's text
+// rect reaches over its gloss row, so the glosses of the lit sentence stayed
+// dimmed. Bands between the rects' edges, each with its merged spans.
+func disjointRects(_ rects: [CGRect]) -> [CGRect] {
+  let rects = rects.filter { !$0.isEmpty && $0.width > 0 && $0.height > 0 }
+  guard rects.count > 1 else { return rects }
+  let edges = Array(Set(rects.flatMap { [$0.minY, $0.maxY] })).sorted()
+  var result: [CGRect] = []
+  for (top, bottom) in zip(edges, edges.dropFirst()) where bottom > top {
+    let spans = rects
+      .filter { $0.minY < bottom && $0.maxY > top }
+      .map { ($0.minX, $0.maxX) }
+      .sorted { $0.0 < $1.0 }
+    var merged: [(CGFloat, CGFloat)] = []
+    for span in spans {
+      if let last = merged.last, span.0 <= last.1 {
+        merged[merged.count - 1].1 = max(last.1, span.1)
+      } else {
+        merged.append(span)
+      }
+    }
+    for (left, right) in merged {
+      result.append(CGRect(x: left, y: top, width: right - left, height: bottom - top))
+    }
+  }
+  return result
+}
+
 final class ReaderScrollHost: UIView, UIScrollViewDelegate {
   weak var delegate: ReaderScrollHostDelegate?
 
@@ -226,7 +255,7 @@ final class ReaderScrollHost: UIView, UIScrollViewDelegate {
   func setBeam(current: [CGRect], previous: [CGRect], duration: CFTimeInterval) {
     let bounds = CGRect(x: 0, y: 0, width: contentView.bounds.width, height: contentHeight)
     let lit = CGMutablePath()
-    (current + (duration > 0 ? previous : [])).forEach { lit.addRect($0) }
+    disjointRects(current + (duration > 0 ? previous : [])).forEach { lit.addRect($0) }
     let dim = CGMutablePath()
     dim.addRect(bounds)
     dim.addPath(lit)
@@ -263,7 +292,7 @@ final class ReaderScrollHost: UIView, UIScrollViewDelegate {
       guard let self, self.beamToken == token else { return }
       let settled = CGMutablePath()
       settled.addRect(bounds)
-      current.forEach { settled.addRect($0) }
+      disjointRects(current).forEach { settled.addRect($0) }
       self.dimLayer.path = settled
       self.fadingOutFill.isHidden = true
       self.fadingInFill.isHidden = true
