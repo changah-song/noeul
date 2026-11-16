@@ -3213,6 +3213,7 @@ export const createDictionaryCacheTable = () => {
           difficulty_percentile REAL,
           zipf         REAL,
           loanword     INTEGER,
+          sense_version INTEGER,
           last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           UNIQUE(language, stem, interface_language)
         )`,
@@ -3640,10 +3641,12 @@ export const migrateDictionaryCacheProficiencyLevels = async () => {
 
 // Level engine: how common each word is (Zipf) and the Korean loanword flag,
 // sent by preprocessing (backend word_features). Old rows stay null until the
-// book is preprocessed again (PREPROCESS_VERSION).
+// book is preprocessed again (PREPROCESS_VERSION). sense_version: the
+// PREPROCESS_VERSION whose gloss and definition a row keeps (insertCacheEntries).
 export const migrateDictionaryCacheWordFeatures = async () => {
   const columns = await getTableColumns('dictionary_cache');
-  const missing = [['zipf', 'REAL'], ['loanword', 'INTEGER']].filter(([column]) => !columns.includes(column));
+  const missing = [['zipf', 'REAL'], ['loanword', 'INTEGER'], ['sense_version', 'INTEGER']]
+    .filter(([column]) => !columns.includes(column));
   if (missing.length === 0) return;
   await new Promise((resolve, reject) => {
     db.transaction(
@@ -8100,10 +8103,30 @@ export const deleteAllDataFromTable = (options = {}) => {
  * Uses an upsert so translated live lookups can replace stale fallback rows
  * while preprocessing rows with null fields do not wipe existing data.
  *
+ * keepSenses: keep a row's existing gloss and definition, filling them only
+ * where empty. Preprocessing sends a book in pieces, and each piece's
+ * response may word a word's translation differently (father: 아버지, 아버님,
+ * 아빠); overwriting would change the label under the word as the reader
+ * reads on. A live lookup still replaces them.
+ *
  * @param {Array<{stem, definition, gloss?, hanja, pos, domain?}>} entries
  */
 export const insertCacheEntries = (entries, scopeOrInterfaceLanguage = 'en', options = {}) => {
   const scope = normalizeDictionaryCacheScope(scopeOrInterfaceLanguage, options);
+  const keepSenses = options.keepSenses === true;
+  // Kept only against a row this same preprocessing version wrote: a new
+  // PREPROCESS_VERSION is often a gloss fix, and its rows must replace the old.
+  const senseUpdate = (column) => (
+    keepSenses
+      ? `${column} = CASE
+           WHEN dictionary_cache.sense_version = excluded.sense_version
+             AND NULLIF(dictionary_cache.${column}, '') IS NOT NULL
+           THEN dictionary_cache.${column}
+           ELSE COALESCE(excluded.${column}, dictionary_cache.${column})
+         END`
+      : `${column} = COALESCE(excluded.${column}, dictionary_cache.${column})`
+  );
+  const senseVersion = keepSenses ? PREPROCESS_VERSION : null;
 
   return new Promise((resolve, reject) => {
     if (!entries || entries.length === 0) {
@@ -8143,11 +8166,11 @@ export const insertCacheEntries = (entries, scopeOrInterfaceLanguage = 'en', opt
           tx.executeSql(
             `INSERT INTO dictionary_cache
                (stem, language, interface_language, definition, gloss, hanja, pos, domain, romanization, ipa, simplified, traditional, audio_us, audio_uk, etymology, derived, related, word_parts,
-                level_rank, level_label, level_system, level_source, difficulty_rank, difficulty_percentile, zipf, loanword)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                level_rank, level_label, level_system, level_source, difficulty_rank, difficulty_percentile, zipf, loanword, sense_version)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(stem, language, interface_language) DO UPDATE SET
-               definition = COALESCE(excluded.definition, dictionary_cache.definition),
-               gloss = COALESCE(excluded.gloss, dictionary_cache.gloss),
+               ${senseUpdate('definition')},
+               ${senseUpdate('gloss')},
                hanja = COALESCE(excluded.hanja, dictionary_cache.hanja),
                pos = COALESCE(excluded.pos, dictionary_cache.pos),
                domain = COALESCE(excluded.domain, dictionary_cache.domain),
@@ -8169,6 +8192,7 @@ export const insertCacheEntries = (entries, scopeOrInterfaceLanguage = 'en', opt
                difficulty_percentile = COALESCE(excluded.difficulty_percentile, dictionary_cache.difficulty_percentile),
                zipf = COALESCE(excluded.zipf, dictionary_cache.zipf),
                loanword = COALESCE(excluded.loanword, dictionary_cache.loanword),
+               sense_version = COALESCE(excluded.sense_version, dictionary_cache.sense_version),
                last_updated = CURRENT_TIMESTAMP`,
             [
               stem,
@@ -8199,6 +8223,7 @@ export const insertCacheEntries = (entries, scopeOrInterfaceLanguage = 'en', opt
               levelMetadata.difficultyPercentile,
               levelMetadata.zipf,
               levelMetadata.loanword,
+              senseVersion,
             ]
           );
         });
