@@ -8,6 +8,18 @@ import { makeOwnerDataDirectory } from './localDataScope';
 import { USER_BOOKS_BUCKET, supabase } from './supabase';
 
 const FILE_TAG = '[bookCloudSync]';
+
+// The largest book file kept in the cloud (the user-books bucket refuses
+// bigger ones too). A bigger book stays on the device it was imported on.
+export const MAX_CLOUD_BOOK_BYTES = 50 * 1024 * 1024;
+
+// Books sync to the cloud only for an account: a guest can't sign in on
+// another device, so a cloud copy would be of no use.
+export const isCloudBookUser = (user) => Boolean(user?.id) && user?.is_anonymous !== true;
+
+// The error a download gets when the book's file isn't kept in the cloud (it
+// isn't among the reader's recently opened books).
+export const BOOK_FILE_NOT_IN_CLOUD = 'BOOK_FILE_NOT_IN_CLOUD';
 const BOOK_DOWNLOAD_TIMEOUT_MS = 45000;
 const COVER_DOWNLOAD_TIMEOUT_MS = 10000;
 const USER_BOOK_SELECT = `
@@ -27,7 +39,9 @@ const USER_BOOK_SELECT = `
   native_position,
   uploaded_at,
   updated_at,
-  deleted_at
+  deleted_at,
+  file_stored,
+  last_opened_at
 `;
 
 const getBooksDirectory = (ownerId) =>
@@ -250,6 +264,7 @@ const toUserBookRow = ({
   pickedAsset,
   filePath,
   coverPath,
+  fileStored = true,
 }) => ({
   id: cloudBookId,
   user_id: userId,
@@ -269,6 +284,8 @@ const toUserBookRow = ({
   location: normalizeLocation(localBook?.location),
   native_position: localBook?.nativePosition ?? null,
   deleted_at: null,
+  file_stored: fileStored,
+  last_opened_at: localBook?.lastOpenedAt ?? null,
 });
 
 export const cloudBookToLocalBook = (cloudBook = {}, overrides = {}) => ({
@@ -278,6 +295,8 @@ export const cloudBookToLocalBook = (cloudBook = {}, overrides = {}) => ({
   cloudFilePath: cloudBook.file_path ?? cloudBook.file_url ?? null,
   cloudCoverPath: cloudBook.cover_path ?? null,
   cloudSyncedAt: cloudBook.updated_at ?? cloudBook.uploaded_at ?? null,
+  cloudFileStored: cloudBook.file_stored !== false,
+  cloudLastOpenedAt: cloudBook.last_opened_at ?? null,
   uri: overrides.uri ?? null,
   size: cloudBook.size_bytes ?? null,
   wordCount: getBookWordCount(cloudBook),
@@ -303,7 +322,21 @@ export const cloudBookToLocalBook = (cloudBook = {}, overrides = {}) => ({
   downloaded: overrides.downloaded ?? false,
 });
 
-export const uploadUserBook = async ({ user, ownerId, generation, localBook, pickedAsset } = {}) => {
+// Write the book's row (title, cover, progress) and, with includeFile, its
+// file. Without the file the row is kept as "not stored": the shelf and the
+// reading position still sync, and the file follows once the book is among
+// the reader's recently opened ones (see cloudBookFiles.js).
+export const uploadUserBook = async ({
+  user,
+  ownerId,
+  generation,
+  localBook,
+  pickedAsset,
+  includeFile = true,
+} = {}) => {
+  if (!isCloudBookUser(user)) {
+    throw new Error('Guests do not keep books in the cloud');
+  }
   const userId = assertCloudWriteAllowed({ user, ownerId, generation });
 
   const localUri = sanitizeText(pickedAsset?.uri || localBook?.uri);
@@ -316,14 +349,16 @@ export const uploadUserBook = async ({ user, ownerId, generation, localBook, pic
   const fileExtension = extensionForFormat(format);
   const filePath = localBook?.cloudFilePath || `${userId}/${cloudBookId}/book.${fileExtension}`;
 
-  await uploadStorageObject({
-    user,
-    ownerId,
-    generation,
-    path: filePath,
-    uri: localUri,
-    contentType: getContentTypeForUri(localUri, contentTypeForBookFormat(format)),
-  });
+  if (includeFile) {
+    await uploadStorageObject({
+      user,
+      ownerId,
+      generation,
+      path: filePath,
+      uri: localUri,
+      contentType: getContentTypeForUri(localUri, contentTypeForBookFormat(format)),
+    });
+  }
   const coverPath = await uploadCoverIfAvailable({
     user,
     ownerId,
@@ -339,6 +374,7 @@ export const uploadUserBook = async ({ user, ownerId, generation, localBook, pic
     pickedAsset,
     filePath,
     coverPath: coverPath || localBook?.cloudCoverPath || null,
+    fileStored: includeFile,
   });
 
   assertCloudWriteAllowed({ user, ownerId, generation });
@@ -546,6 +582,11 @@ export const downloadUserBook = async ({ user, ownerId, generation, cloudBook } 
   if (!filePath) {
     throw new Error('Cloud book does not have a file path');
   }
+  if (cloudBook.cloudFileStored === false || cloudBook.file_stored === false) {
+    const error = new Error('This book\'s file is not kept in the cloud');
+    error.code = BOOK_FILE_NOT_IN_CLOUD;
+    throw error;
+  }
   const format = inferBookFormat(cloudBook.format, cloudBook.originalFilename, filePath);
   const fileExtension = extensionForFormat(format);
 
@@ -688,4 +729,43 @@ export const softDeleteUserBook = async ({ user, ownerId, generation, cloudBookI
     console.warn(`${FILE_TAG} softDeleteUserBook failed`, error);
     throw error;
   }
+};
+
+// The reader opened this book (at openedAt). The cloud keeps the newest time.
+export const markUserBookOpened = async ({ user, ownerId, generation, cloudBookId, openedAt } = {}) => {
+  if (!cloudBookId || !isCloudBookUser(user)) {
+    return;
+  }
+
+  assertCloudWriteAllowed({ user, ownerId, generation });
+  const { error } = await supabase.rpc('mark_user_book_opened', {
+    book_id: cloudBookId,
+    opened_at: openedAt ?? null,
+  });
+
+  if (error) {
+    throw error;
+  }
+};
+
+// Drop the files of books outside the reader's recent ones, and say which
+// books should have their file in the cloud: { limit, keep, stored } with
+// keep and stored as Sets of cloud book ids.
+export const syncUserBookFiles = async ({ user, ownerId, generation } = {}) => {
+  if (!isCloudBookUser(user)) {
+    return null;
+  }
+
+  assertCloudWriteAllowed({ user, ownerId, generation });
+  const { data, error } = await supabase.rpc('sync_user_book_files');
+
+  if (error) {
+    throw error;
+  }
+
+  return {
+    limit: Number.isFinite(Number(data?.limit)) ? Number(data.limit) : null,
+    keep: new Set(Array.isArray(data?.keep) ? data.keep : []),
+    stored: new Set(Array.isArray(data?.stored) ? data.stored : []),
+  };
 };

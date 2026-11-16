@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { initAllTables } from '../services/Database';
-import { cloudBookToLocalBook, fetchUserBooks, uploadUserBook } from '../services/bookCloudSync';
+import { cloudBookToLocalBook, fetchUserBooks } from '../services/bookCloudSync';
+import { cloudBookFilesSignature, reconcileCloudBookFiles } from '../services/cloudBookFiles';
 import { rebaseBookFilePaths } from '../services/appContainerPaths';
 import { migratePickedBookFiles } from '../services/bookFiles';
 import { persistCoverDataUri, stripInlineCoverForStorage } from '../services/epubMetadata';
@@ -151,17 +152,6 @@ const cloudIsFurther = (cloudBook, localBook) => (
     && cloudBook.progress >= (Number(localBook.progress) || 0)
 );
 
-// Books imported on this phone that never reached the account (imported as a
-// guest, or offline): uploaded once the reader is signed in. Catalog books are
-// fetched from the library, so they aren't uploaded.
-const needsBackfillUpload = (book) => Boolean(
-    book?.uri
-    && !book.cloudId
-    && book.downloaded !== false
-    && !book.publicDomain
-    && !book.publicLibrary
-);
-
 const mergeCloudBooks = (localBooks = [], cloudBooks = [], userId) => {
     const nextBooks = normalizeBookList(localBooks).map((book) => ({
         ...book,
@@ -193,6 +183,8 @@ const mergeCloudBooks = (localBooks = [], cloudBooks = [], userId) => {
                 cloudFilePath,
                 cloudCoverPath: cloudBook.cover_path ?? existingBook.cloudCoverPath ?? null,
                 cloudSyncedAt: cloudUpdatedAt ?? existingBook.cloudSyncedAt ?? null,
+                cloudFileStored: cloudBook.file_stored !== false,
+                cloudLastOpenedAt: cloudBook.last_opened_at ?? existingBook.cloudLastOpenedAt ?? null,
                 title: shouldKeepLocalMetadata ? existingBook.title : (cloudBook.title || existingBook.title),
                 author: shouldKeepLocalMetadata ? existingBook.author : (cloudBook.author || existingBook.author),
                 originalFilename: cloudBook.original_filename ?? existingBook.originalFilename ?? null,
@@ -600,40 +592,41 @@ const useAppSetup = ({ ownerId, ownerReady = true, user = null } = {}) => {
         setBooks(prev => normalizeBookList(prev).map(b => b?.uri === uri ? { ...b, preprocessed: true } : b));
     };
 
-    // Upload books that never reached the account, one at a time, in the
-    // background; a file that is gone (cleared cache) is skipped.
-    const backfillRunningRef = useRef(false);
-    const backfillBookUploads = useCallback(async (bookList, { user, ownerId, generation } = {}) => {
-        if (backfillRunningRef.current || !user?.id || ownerId !== user.id) return;
-        const pending = normalizeBookList(bookList).filter(needsBackfillUpload);
-        if (pending.length === 0) return;
-        backfillRunningRef.current = true;
-        try {
-            for (const book of pending) {
-                if (generation != null && !isCurrentSyncGeneration(generation)) return;
-                try {
-                    const cloudBook = await uploadUserBook({ user, ownerId, generation, localBook: book });
-                    if (!cloudBook?.id) continue;
-                    setBooks((prev) => normalizeBookList(prev).map((candidate) => (
-                        candidate.uri === book.uri
-                            ? {
-                                ...candidate,
-                                cloudId: cloudBook.id,
-                                cloudOwnerId: cloudBook.user_id ?? user.id,
-                                cloudFilePath: cloudBook.file_path,
-                                cloudCoverPath: cloudBook.cover_path ?? null,
-                                cloudSyncedAt: cloudBook.updated_at ?? cloudBook.uploaded_at ?? new Date().toISOString(),
-                            }
-                            : candidate
-                    )));
-                } catch (error) {
-                    console.warn('[useAppSetup] Book upload skipped:', book.title, error?.message ?? error);
-                }
-            }
-        } finally {
-            backfillRunningRef.current = false;
-        }
+    // Keep the cloud in line with this device's books (see cloudBookFiles.js):
+    // every book gets a row, the recently opened ones their file. One run at
+    // a time; a request during a run starts another after it.
+    const reconcileStateRef = useRef({ running: false, again: false });
+    const updateBookFromCloud = useCallback((book, patch) => {
+        setBooks((prev) => normalizeBookList(prev).map((candidate) => (
+            (book.uri && candidate.uri === book.uri) || (book.cloudId && candidate.cloudId === book.cloudId)
+                ? { ...candidate, ...patch }
+                : candidate
+        )));
     }, []);
+    const runCloudBookReconcile = useCallback(async ({ user, ownerId: syncOwnerId, generation } = {}) => {
+        const state = reconcileStateRef.current;
+        if (state.running) {
+            state.again = true;
+            return;
+        }
+        state.running = true;
+        try {
+            do {
+                state.again = false;
+                await reconcileCloudBookFiles({
+                    user,
+                    ownerId: syncOwnerId,
+                    generation,
+                    books: booksRef.current,
+                    updateBook: updateBookFromCloud,
+                }).catch((error) => {
+                    console.warn('[useAppSetup] Cloud book files sync failed:', error?.message ?? error);
+                });
+            } while (state.again && (generation == null || isCurrentSyncGeneration(generation)));
+        } finally {
+            state.running = false;
+        }
+    }, [updateBookFromCloud]);
 
     const syncCloudBooks = useCallback(async ({ user, ownerId: syncOwnerId, generation } = {}) => {
         if (loading || !ownerReady) {
@@ -686,7 +679,8 @@ const useAppSetup = ({ ownerId, ownerReady = true, user = null } = {}) => {
 
             phase = 'set-merged-books';
             setBooks(mergedBooks);
-            backfillBookUploads(mergedBooks, { user, ownerId: syncOwnerId, generation });
+            booksRef.current = mergedBooks;
+            runCloudBookReconcile({ user, ownerId: syncOwnerId, generation });
 
             if (generation != null && !isCurrentSyncGeneration(generation)) {
                 return;
@@ -747,7 +741,32 @@ const useAppSetup = ({ ownerId, ownerReady = true, user = null } = {}) => {
                 currentBook: currentBookRef.current,
             });
         }
-    }, [backfillBookUploads, loading, ownerReady]);
+    }, [runCloudBookReconcile, loading, ownerReady]);
+
+    // A book imported or opened here: once the library has settled, update
+    // which books keep their file in the cloud.
+    const cloudFilesSignature = cloudBookFilesSignature(books);
+    const lastCloudFilesSignatureRef = useRef(null);
+    useEffect(() => {
+        if (loading || !ownerReady || !ownerId) return undefined;
+        const cloudUser = currentUserRef.current;
+        if (!cloudUser?.id || cloudUser.id !== ownerId) return undefined;
+        if (lastCloudFilesSignatureRef.current === null) {
+            // The first sync (syncCloudBooks) covers the library as loaded.
+            lastCloudFilesSignatureRef.current = cloudFilesSignature;
+            return undefined;
+        }
+        if (lastCloudFilesSignatureRef.current === cloudFilesSignature) return undefined;
+        const timer = setTimeout(() => {
+            lastCloudFilesSignatureRef.current = cloudFilesSignature;
+            runCloudBookReconcile({ user: cloudUser, ownerId, generation: getSyncGeneration() });
+        }, 2000);
+        return () => clearTimeout(timer);
+    }, [cloudFilesSignature, loading, ownerId, ownerReady, runCloudBookReconcile]);
+
+    useEffect(() => {
+        lastCloudFilesSignatureRef.current = null;
+    }, [ownerId]);
 
     return {
         books,

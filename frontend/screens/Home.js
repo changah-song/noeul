@@ -80,6 +80,7 @@ import {
     normalizeHexColor,
 } from '../services/bookCoverColors';
 import {
+    BOOK_FILE_NOT_IN_CLOUD,
     downloadUserBook,
     softDeleteUserBook,
     updateUserBookMetadata,
@@ -341,6 +342,9 @@ const normalizeStoredSong = (song, fallbackLanguage = 'ko') => {
 // Service errors are English developer messages (HTTP codes, storage paths);
 // show the user a translated message and keep the raw one in the log.
 const getDownloadErrorMessageKey = (error) => {
+    if (error?.code === BOOK_FILE_NOT_IN_CLOUD) {
+        return 'home.bookFileElsewhereBody';
+    }
     const message = String(error?.message ?? '').toLowerCase();
     if (error?.code === 'TIMEOUT' || message.includes('timed out') || message.includes('timeout')) {
         return 'home.downloadTimedOutBody';
@@ -1896,9 +1900,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         setBooks,
         setCurrentBook,
         onBookImported: () => {},
-        user,
         ownerId: activeOwnerId,
-        syncGeneration,
         targetLanguage,
         setTargetLanguage,
     });
@@ -3240,6 +3242,13 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             || !isCurrentSyncGeneration(syncGeneration)
         ) {
             Alert.alert(t('home.downloadUnavailableTitle'), t('home.downloadUnavailableBody'));
+            return;
+        }
+
+        // Only the reader's recently opened books keep their file in the
+        // cloud; this one's is on the device it was last read on.
+        if (book.cloudFileStored === false) {
+            Alert.alert(t('home.bookFileElsewhereTitle'), t('home.bookFileElsewhereBody'));
             return;
         }
 
