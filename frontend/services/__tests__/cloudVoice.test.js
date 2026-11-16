@@ -13,9 +13,12 @@ jest.mock('expo-file-system/legacy', () => ({
 }), { virtual: true });
 jest.mock('../../config', () => ({ BASE_URL: 'https://api.test' }));
 jest.mock('../api/client', () => ({ getAccessToken: jest.fn(async () => 'token-1') }));
-jest.mock('../listenDelay', () => ({ withListenTimeout: (promise) => promise }));
+jest.mock('../listenDelay', () => ({
+  listenDelay: jest.fn(async () => {}),
+  withListenTimeout: (promise) => promise,
+}));
 
-const { fetchSpeech, speechFileName, speechUrl } = require('../cloudVoice');
+const { createCloudSpeaker, fetchSpeech, speechFileName, speechUrl } = require('../cloudVoice');
 
 describe('cloudVoice', () => {
   beforeEach(() => {
@@ -41,6 +44,41 @@ describe('cloudVoice', () => {
     await fetchSpeech('Hello.', 'juno');
     expect(mockDownload).toHaveBeenCalledTimes(1);
     expect(mockDownload.mock.calls[0][2]).toEqual({ headers: { Authorization: 'Bearer token-1' } });
+  });
+
+  it('asks for the same file however the spaces run', async () => {
+    const first = await fetchSpeech('and it was so.   Then God said', 'juno');
+    const same = await fetchSpeech(' and it was so. Then God said ', 'juno');
+    expect(same).toBe(first);
+    expect(mockDownload).toHaveBeenCalledTimes(1);
+    expect(mockDownload.mock.calls[0][0]).toContain('text=and%20it%20was%20so.%20Then%20God%20said');
+  });
+
+  it('fetches ahead only after the sentence being read has its audio', async () => {
+    const order = [];
+    let release;
+    mockDownload.mockImplementationOnce(async (url, fileUri) => {
+      order.push('current asked');
+      await new Promise((resolve) => { release = resolve; });
+      mockFiles.set(fileUri, 1200);
+      order.push('current ready');
+      return { status: 200 };
+    });
+    mockDownload.mockImplementationOnce(async (url, fileUri) => {
+      order.push('next asked');
+      mockFiles.set(fileUri, 1200);
+      return { status: 200 };
+    });
+    const speaker = createCloudSpeaker();
+    const current = fetchSpeech('First sentence.', 'juno');
+    speaker.prefetch('Second sentence.', 'juno');
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(order).toEqual(['current asked']);
+    release();
+    await current;
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(order).toEqual(['current asked', 'current ready', 'next asked']);
   });
 
   it('removes the file and fails when the server refuses', async () => {
