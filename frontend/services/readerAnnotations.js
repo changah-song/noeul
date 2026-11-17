@@ -140,6 +140,47 @@ export const withPhraseTapTerms = (levelTerms = [], phraseSurfaces = [], ranks =
 };
 
 /**
+ * withTappedWordReadings — a Chinese word the reader tapped that the book's
+ * terms split up. Where no term spans a tapped character, the phone's own
+ * word breaker picks the word (大钱), while the book's words were 大 and 钱:
+ * the panel opened for 大钱 but pinyin sat over 钱 alone. The tapped word is
+ * added as one annotation-only term carrying the reading the lookup found, so
+ * pinyin (and the gloss) cover the word that was opened.
+ *
+ * `readings`: Map surface -> { pinyin, gloss } from lookups. Only words that
+ * are not terms already, and that hold an annotated term (otherwise nothing
+ * was drawn over them in the first place), are added. A saved word whose
+ * annotations are hidden gets the term without them.
+ */
+export const withTappedWordReadings = (terms = [], readings = null, {
+  pinyin = false,
+  gloss = false,
+  hiddenSurfaces = null,
+} = {}) => {
+  if (!readings || readings.size === 0 || (!pinyin && !gloss)) return terms;
+  const present = new Set((terms || []).map((term) => term?.text));
+  const annotated = (terms || []).filter((term) => (
+    term?.text && ((pinyin && term.pinyin) || (gloss && term.gloss))
+  ));
+  const extra = [];
+  readings.forEach((reading, surface) => {
+    const text = cleanText(surface);
+    if (!text || present.has(text) || !isCjkCompoundSurface(text)) return;
+    if (!annotated.some((term) => term.text !== text && text.includes(term.text))) return;
+    const term = { text, weight: 0, annotationOnly: true };
+    if (!(hiddenSurfaces && hiddenSurfaces.has(text))) {
+      const reads = cleanText(reading?.pinyin);
+      const means = cleanText(reading?.gloss);
+      if (pinyin && reads) term.pinyin = reads;
+      if (gloss && means) term.gloss = means;
+    }
+    present.add(text);
+    extra.push(term);
+  });
+  return extra.length > 0 ? [...(terms || []), ...extra] : terms;
+};
+
+/**
  * Merge annotations into the level-term list sent to the native reader.
  *
  * - `levelTerms`: the graded (underlined) words, [{ text, weight, ... }].

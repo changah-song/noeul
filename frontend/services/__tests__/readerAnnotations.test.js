@@ -3,6 +3,7 @@ import {
   buildAnnotatedLevelTerms,
   isCjkCompoundSurface,
   withPhraseTapTerms,
+  withTappedWordReadings,
 } from '../readerAnnotations';
 
 const rows = [
@@ -219,3 +220,40 @@ describe('Chinese words', () => {
   });
 });
 
+
+describe('withTappedWordReadings', () => {
+  const terms = [
+    { text: '钱', weight: 0.5, pinyin: 'qián' },
+    { text: '如果', weight: 0, annotationOnly: true },
+  ];
+  const readings = new Map([
+    ['大钱', { pinyin: 'dà qián', gloss: 'a fortune' }],
+    ['如果', { pinyin: 'rú guǒ', gloss: 'if' }],
+    ['你好', { pinyin: 'nǐ hǎo', gloss: 'hello' }],
+  ]);
+
+  it('covers a tapped word the book split up with its own reading', () => {
+    const result = withTappedWordReadings(terms, readings, { pinyin: true });
+    expect(result.find((term) => term.text === '大钱')).toEqual({
+      text: '大钱', weight: 0, annotationOnly: true, pinyin: 'dà qián',
+    });
+  });
+
+  it('leaves words that are terms already, or had nothing drawn in them', () => {
+    const result = withTappedWordReadings(terms, readings, { pinyin: true, gloss: true });
+    expect(result.filter((term) => term.text === '如果')).toHaveLength(1);
+    expect(result.some((term) => term.text === '你好')).toBe(false);
+  });
+
+  it('adds the gloss with glosses on, and nothing when annotations are off', () => {
+    const glossed = [{ text: '钱', weight: 0.5, gloss: 'money' }];
+    expect(withTappedWordReadings(glossed, readings, { gloss: true }).find((term) => term.text === '大钱'))
+      .toEqual({ text: '大钱', weight: 0, annotationOnly: true, gloss: 'a fortune' });
+    expect(withTappedWordReadings(terms, readings, {})).toBe(terms);
+  });
+
+  it('gives a saved word with hidden annotations the term without them', () => {
+    const result = withTappedWordReadings(terms, readings, { pinyin: true, hiddenSurfaces: new Set(['大钱']) });
+    expect(result.find((term) => term.text === '大钱')).toEqual({ text: '大钱', weight: 0, annotationOnly: true });
+  });
+});

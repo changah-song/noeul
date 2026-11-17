@@ -136,6 +136,17 @@ const getEntryRomanization = (entry) => cleanValue(entry?.romanization);
 const getEntryIpa = (entry) => cleanValue(entry?.ipa);
 const getEntryPinyin = (entry) => cleanValue(entry?.pinyin) || getEntryIpa(entry);
 const getEntrySimplified = (entry) => cleanValue(entry?.simplified);
+
+// The word's pinyin and a short gloss, from its own entry (not a character's).
+const readingForPage = (word, entries) => {
+    const own = (entries || []).filter((entry) => (
+        (cleanValue(entry?.word) || cleanValue(entry?.stem)) === word && getEntryPinyin(entry)
+    ));
+    if (own.length === 0) return null;
+    const entry = own[0];
+    const gloss = getEntryGloss(entry) || splitZhSenses(getEntryDefinition(entry))[0] || '';
+    return { word, pinyin: getEntryPinyin(entry), gloss };
+};
 const getEntryTraditional = (entry) => cleanValue(entry?.traditional);
 
 // CC-CEDICT packs a reading's senses into one string joined by "; ". Split them so
@@ -280,21 +291,22 @@ const DictionaryContent = ({
     sourceBook,
     savedWords = [],
     levelMarkFor = null,
-    // Counts up each time the reader taps the open word again on the page:
-    // that saves the entry showing (or takes the save back).
-    saveToggleToken = 0,
+    // The reader's handle on the save/unsave of the entry on show: a second
+    // tap on the word in the page calls it straight from the tap.
+    saveToggleRef = null,
 }) => {
     const { interfaceLanguage } = useAppContext();
     // The save/unsave of the entry on show, set as it renders (see
-    // renderSaveIcon) and run by a second tap on the word.
+    // renderSaveIcon).
     const primarySaveToggleRef = useRef(null);
     primarySaveToggleRef.current = null;
-    const lastSaveToggleTokenRef = useRef(saveToggleToken);
     useEffect(() => {
-        if (saveToggleToken === lastSaveToggleTokenRef.current) return;
-        lastSaveToggleTokenRef.current = saveToggleToken;
-        primarySaveToggleRef.current?.();
-    }, [saveToggleToken]);
+        if (!saveToggleRef) return undefined;
+        saveToggleRef.current = primarySaveToggleRef.current;
+        return () => {
+            saveToggleRef.current = null;
+        };
+    });
     // Read at lookup time, so a new function each render doesn't re-run it.
     const levelMarkForRef = useRef(levelMarkFor);
     levelMarkForRef.current = levelMarkFor;
@@ -447,6 +459,9 @@ const DictionaryContent = ({
         if (!lookupWord) return;
 
         let isCancelled = false;
+        // The tapped word's reading, for the page: in a Chinese book the
+        // reader draws its pinyin over the whole word (withTappedWordReadings).
+        let pageReading = null;
 
         const resolveLookup = async () => {
             setIsLiveLoading(true);
@@ -472,6 +487,12 @@ const DictionaryContent = ({
                     entries: (result.cachedResults?.length ?? 0) + (result.dictionaryData?.length ?? 0),
                     live: result.needsLiveFetch ? 'yes' : 'no',
                 });
+                if (targetLanguage === 'zh' && lookupWord === cleanValue(highlightedWord)) {
+                    pageReading = readingForPage(lookupWord, [
+                        ...(result.cachedResults ?? []),
+                        ...(result.dictionaryData ?? []),
+                    ]);
+                }
                 setCachedResults(result.cachedResults);
                 setStemWordList(result.stems);
                 setNeedsLiveFetch(result.needsLiveFetch);
@@ -490,7 +511,7 @@ const DictionaryContent = ({
             } finally {
                 if (!isCancelled) {
                     setIsLiveLoading(false);
-                    onContentLoaded?.();
+                    onContentLoaded?.(pageReading);
                 }
             }
         };
@@ -1278,10 +1299,9 @@ const DictionaryContent = ({
         );
     };
 
-    // Saving is a second tap on the word in the page, so the panel carries no
-    // save button. Once a word is saved a small bookmark sits at the end of the
-    // heading row (tap it to take the save back); until then the slot is
-    // empty, and only a screen reader finds a "Save" action there.
+    // A bookmark at the end of the heading row saves the word (outline) or
+    // takes the save back (filled). A second tap on the word in the page does
+    // the same. Without a definition to save the slot stays empty.
     const renderSaveIcon = ({ word, hanja = '', definition = '', requireDefinition = true }) => {
         const canSave = !requireDefinition || hasSavableDefinition(definition);
         const saved = canSave && isWordSaved(word);
@@ -1289,17 +1309,8 @@ const DictionaryContent = ({
         if (canSave && !primarySaveToggleRef.current) {
             primarySaveToggleRef.current = toggle;
         }
-        if (!saved) {
-            return (
-                <View
-                    style={styles.saveIconButton}
-                    accessible={canSave}
-                    accessibilityRole="button"
-                    accessibilityLabel={t('lookup.save')}
-                    accessibilityActions={canSave ? [{ name: 'activate' }] : undefined}
-                    onAccessibilityAction={canSave ? toggle : undefined}
-                />
-            );
+        if (!canSave) {
+            return <View style={styles.saveIconButton} />;
         }
         return (
             <TouchableOpacity
@@ -1308,10 +1319,14 @@ const DictionaryContent = ({
                 activeOpacity={0.7}
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 accessibilityRole="button"
-                accessibilityLabel={t('lookup.saved')}
-                accessibilityState={{ selected: true }}
+                accessibilityLabel={saved ? t('lookup.saved') : t('lookup.save')}
+                accessibilityState={{ selected: saved }}
             >
-                <MaterialIcons name="bookmark" size={20} color={palette.text} />
+                <MaterialIcons
+                    name={saved ? 'bookmark' : 'bookmark-border'}
+                    size={20}
+                    color={saved ? palette.text : palette.mutedText}
+                />
             </TouchableOpacity>
         );
     };

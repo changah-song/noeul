@@ -47,10 +47,11 @@ const TopSection = ({
     // (surface) => 1 underlined, 2 in the level sample, 0 neither: recorded on
     // the lookup so the level counts it only when reading past it is logged.
     levelMarkFor,
-    // Counts up each time the reader taps the open word again: saves it (or
-    // takes the save back).
-    saveToggleToken = 0,
-    // Called when the dictionary has its answer for the word (found or not).
+    // Filled by the dictionary with the save/unsave of the entry on show; a
+    // second tap on the open word calls it.
+    saveToggleRef = null,
+    // Called when the dictionary has its answer for the word (found or not),
+    // with the word's { word, pinyin, gloss } in a Chinese book.
     onLookupResolved,
     translationVisualState = {},
     // The reader has no tab bar: a bottom panel pads its own way past the
@@ -437,7 +438,7 @@ const TopSection = ({
                         sourceBook={sourceBook}
                         savedWords={savedWords}
                         levelMarkFor={levelMarkFor}
-                        saveToggleToken={saveToggleToken}
+                        saveToggleRef={saveToggleRef}
                         onContentLoaded={onLookupResolved}
                     />
                 ) : (
