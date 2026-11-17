@@ -1085,6 +1085,10 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     // Scroll mode, same chapter relaid out (font size, line height): back to
     // the line that was at the top, not just its paragraph.
     let anchor = (resetToFirstPage || mode != .continuous) ? nil : pages[safe: currentPage].flatMap { continuousAnchor($0) }
+    // The place on screen, in case the new window still shows its chapter.
+    let shownAnchor = mode == .continuous ? pages[safe: currentPage].flatMap { continuousAnchor($0) } : nil
+    let previousRestoreSignature = appliedRestoreSignature
+    let shownSpine = pages[safe: currentPage]?.spineIndex
     stickyAnchor = nil
     marks.resumeMark = nil
     pages = newPages
@@ -1099,12 +1103,32 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     }
     if index == nil, let previousSpine { index = pages.firstIndex { $0.spineIndex == previousSpine } }
     if index == nil, let spine = manifestSpineIndex { index = pages.firstIndex { $0.spineIndex == spine } }
+    // A window centered on a chapter the reader has already pulled away from
+    // (two quick pulls: the reply to the first lands after the second) is
+    // late, not a jump: a jump (contents, bookmark, scrubber) brings a new
+    // place with it. Stay on the chapter last reported, where it is; following
+    // the late window pulled the reader back, and the next reply then put
+    // them at the top of the chapter they had been at the end of.
+    let freshRestore = position.map { $0.signature != previousRestoreSignature } ?? false
+    if mode == .continuous, !freshRestore,
+       let committed = committedSpineIndex, let current = manifestSpineIndex, current != committed,
+       shownSpine == committed, let kept = pages.firstIndex(where: { $0.spineIndex == committed }) {
+      index = kept
+    }
     appliedRestoreSignature = position?.signature ?? ""
     guard let bound = index ?? (pages.isEmpty ? nil : 0) else { return }
     let page = pages[bound]
     var target = position.flatMap { continuousRestoreTarget($0, page: page) }
     if let anchor, anchor.spineIndex == page.spineIndex,
        let line = anchorScrollTarget(blockId: anchor.blockId, offset: anchor.offset, lineFraction: anchor.lineFraction, page: page) {
+      target = line
+    } else if resetToFirstPage, let shown = shownAnchor, shown.spineIndex == page.spineIndex,
+              !(position.map { $0.signature != previousRestoreSignature && $0.spineIndex == page.spineIndex } ?? false),
+              let line = anchorScrollTarget(blockId: shown.blockId, offset: shown.offset, lineFraction: shown.lineFraction, page: page) {
+      // The window moved on to the chapter already on screen (a pull to the
+      // one before landed at its end, then the window centered on it): stay
+      // put. Without a new place asked for, it otherwise fell back to the
+      // chapter's top whenever the saved place hadn't caught up yet.
       target = line
     }
     let landAtEnd = mode == .focus && pendingFocusLandAtEndSpine == page.spineIndex
@@ -1189,6 +1213,10 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     if let spine = manifestSpineIndex, spine != position.spineIndex { return }
     // The position echo for the chapter already showing never moves it.
     if index == currentPage && position.seekToken == nil { return }
+    // Nor does a late one for a chapter already left (two quick pulls: the
+    // first's position lands after the second); a jump carries a seek token.
+    if position.seekToken == nil, let committed = committedSpineIndex, position.spineIndex != committed,
+       pages[safe: currentPage]?.spineIndex == committed { return }
     let page = pages[index]
     bindVertical(index, target: continuousRestoreTarget(position, page: page) ?? 0, resetScroll: true)
     if mode == .focus {
