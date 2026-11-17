@@ -276,14 +276,18 @@ private func attributedText(for block: ReaderBlock, size: CGFloat, config: Reade
     let scale = doubleValue(span.style["fontScale"]).map { CGFloat($0) }.flatMap { $0 > 0 ? $0 : nil } ?? 1
     let family = ReaderFontFamily.from(span.style["fontFamily"]) ?? blockFamily
     let font = readerFont(size: size * scale, bold: bold, italic: italic, family: family)
-    var color = config.palette.bodyText
-    if !config.palette.isDark {
-      color = (span.style["color"] as? String).flatMap(parseAndroidColor) ?? blockColor ?? color
-    }
+    // Body text takes its color from the context when it's drawn
+    // (ReaderPageView.drawLines), so a theme change only redraws the pages.
+    // A color the book sets is kept on light themes and dropped on dark ones.
+    let bookColor = config.palette.isDark ? nil : ((span.style["color"] as? String).flatMap(parseAndroidColor) ?? blockColor)
     var attributes: [NSAttributedString.Key: Any] = [
       NSAttributedString.Key(kCTFontAttributeName as String): font as CTFont,
-      NSAttributedString.Key(kCTForegroundColorAttributeName as String): color.cgColor,
     ]
+    if let bookColor {
+      attributes[NSAttributedString.Key(kCTForegroundColorAttributeName as String)] = bookColor.cgColor
+    } else {
+      attributes[NSAttributedString.Key(kCTForegroundColorFromContextAttributeName as String)] = true
+    }
     let underline = span.marks.contains("a") || (span.style["textDecorationLine"] as? String)?.lowercased() == "underline"
     if underline {
       attributes[NSAttributedString.Key(kCTUnderlineStyleAttributeName as String)] = CTUnderlineStyle.single.rawValue
@@ -409,7 +413,9 @@ final class ReaderChapterLayoutCache {
   private var recent: [String] = []
 
   func pages(for chapter: ReaderChapter, layoutKey: String, config: ReaderLayoutConfig) -> [ReaderPage] {
-    let key = "\(layoutKey)|\(chapter.layoutSignature)"
+    // Only a chapter with colored text lays out differently on dark themes.
+    let ink = chapter.hasTextColors ? (config.palette.isDark ? "dark" : "light") : "-"
+    let key = "\(layoutKey)|\(ink)|\(chapter.layoutSignature)"
     if let cached = pages[key] {
       recent.removeAll { $0 == key }
       recent.append(key)

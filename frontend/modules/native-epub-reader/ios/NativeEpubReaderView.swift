@@ -260,6 +260,10 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
 
   private var contentSignature = ""
   private var settingsSignature = ""
+  private var paletteSignature = ""
+  // Dark or not as last laid out (`theme` applies the palette as it's set, so
+  // `palette` can't say what it was).
+  private var laidOutDark = false
   private var currentChapterSignature = ""
   private var appliedRestoreSignature = ""
   private var layoutGeneration = 0
@@ -414,12 +418,24 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     let chapters = parsedChapters()
     let nextContent = chapters.map(\.signature).joined(separator: "|")
     let tokensSignature = themeTokens.keys.sorted().map { "\($0)=\(themeTokens[$0] ?? "")" }.joined(separator: ",")
-    let nextSettings = "\(clampedFontSize)|\(clampedLineHeight)|\(theme)|\(tokensSignature)|\(showPinyin)|\(showGloss)"
+    let nextPalette = "\(theme)|\(tokensSignature)"
+    let nextSettings = "\(clampedFontSize)|\(clampedLineHeight)|\(showPinyin)|\(showGloss)"
     let current = currentChapter(in: chapters)?.signature ?? ""
 
+    // A theme change repaints the pages as they are: text takes its color
+    // when drawn. Only a chapter with colors of its own, turning dark or
+    // light, is laid out again.
+    if nextPalette != paletteSignature {
+      paletteSignature = nextPalette
+      applyPalette()
+      repaintVisiblePages()
+      if laidOutDark != palette.isDark {
+        laidOutDark = palette.isDark
+        if chapters.contains(where: \.hasTextColors) { contentSignature = "" }
+      }
+    }
     if nextSettings != settingsSignature {
       settingsSignature = nextSettings
-      applyPalette()
       marks.showPinyin = showPinyin
       marks.showGloss = showGloss
       contentSignature = ""
@@ -448,6 +464,14 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     collectionView.backgroundColor = palette.background
     host.palette = palette
     progressThumb.color = palette.bodyText
+  }
+
+  // The pages on screen in the new palette (the scroll host's own follow
+  // host.palette; cells coming on screen get it in cellForItemAt).
+  private func repaintVisiblePages() {
+    for case let cell as ReaderPageCell in collectionView.visibleCells {
+      cell.pageView.palette = palette
+    }
   }
 
   private func parsedChapters() -> [ReaderChapter] {
@@ -538,9 +562,10 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     )
     let chapters = parsedChapters()
     let previous = pages[safe: currentPage]
-    let tokensSignature = themeTokens.keys.sorted().map { "\($0)=\(themeTokens[$0] ?? "")" }.joined(separator: ",")
+    // No theme here: text takes its color when drawn (see attributedText), and
+    // the cache keys a chapter with colors of its own by dark or light.
     let layoutKey = "\(vertical)|\(config.contentWidth)|\(config.contentHeight)|\(config.fontSize)|\(config.lineHeight)"
-      + "|\(theme)|\(tokensSignature)|\(showPinyin)|\(showGloss)"
+      + "|\(showPinyin)|\(showGloss)"
     // Marked words that change with this layout (glosses turned on, word
     // help arriving) can play the reveal, compared with what was on screen.
     let termsChanged = highlightsDirty
@@ -1060,6 +1085,10 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     // Scroll mode, same chapter relaid out (font size, line height): back to
     // the line that was at the top, not just its paragraph.
     let anchor = (resetToFirstPage || mode != .continuous) ? nil : pages[safe: currentPage].flatMap { continuousAnchor($0) }
+    // The place on screen, in case the new window still shows its chapter.
+    let shownAnchor = mode == .continuous ? pages[safe: currentPage].flatMap { continuousAnchor($0) } : nil
+    let previousRestoreSignature = appliedRestoreSignature
+    let shownSpine = pages[safe: currentPage]?.spineIndex
     stickyAnchor = nil
     marks.resumeMark = nil
     pages = newPages
@@ -1074,12 +1103,32 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     }
     if index == nil, let previousSpine { index = pages.firstIndex { $0.spineIndex == previousSpine } }
     if index == nil, let spine = manifestSpineIndex { index = pages.firstIndex { $0.spineIndex == spine } }
+    // A window centered on a chapter the reader has already pulled away from
+    // (two quick pulls: the reply to the first lands after the second) is
+    // late, not a jump: a jump (contents, bookmark, scrubber) brings a new
+    // place with it. Stay on the chapter last reported, where it is; following
+    // the late window pulled the reader back, and the next reply then put
+    // them at the top of the chapter they had been at the end of.
+    let freshRestore = position.map { $0.signature != previousRestoreSignature } ?? false
+    if mode == .continuous, !freshRestore,
+       let committed = committedSpineIndex, let current = manifestSpineIndex, current != committed,
+       shownSpine == committed, let kept = pages.firstIndex(where: { $0.spineIndex == committed }) {
+      index = kept
+    }
     appliedRestoreSignature = position?.signature ?? ""
     guard let bound = index ?? (pages.isEmpty ? nil : 0) else { return }
     let page = pages[bound]
     var target = position.flatMap { continuousRestoreTarget($0, page: page) }
     if let anchor, anchor.spineIndex == page.spineIndex,
        let line = anchorScrollTarget(blockId: anchor.blockId, offset: anchor.offset, lineFraction: anchor.lineFraction, page: page) {
+      target = line
+    } else if resetToFirstPage, let shown = shownAnchor, shown.spineIndex == page.spineIndex,
+              !(position.map { $0.signature != previousRestoreSignature && $0.spineIndex == page.spineIndex } ?? false),
+              let line = anchorScrollTarget(blockId: shown.blockId, offset: shown.offset, lineFraction: shown.lineFraction, page: page) {
+      // The window moved on to the chapter already on screen (a pull to the
+      // one before landed at its end, then the window centered on it): stay
+      // put. Without a new place asked for, it otherwise fell back to the
+      // chapter's top whenever the saved place hadn't caught up yet.
       target = line
     }
     let landAtEnd = mode == .focus && pendingFocusLandAtEndSpine == page.spineIndex
@@ -1164,6 +1213,10 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     if let spine = manifestSpineIndex, spine != position.spineIndex { return }
     // The position echo for the chapter already showing never moves it.
     if index == currentPage && position.seekToken == nil { return }
+    // Nor does a late one for a chapter already left (two quick pulls: the
+    // first's position lands after the second); a jump carries a seek token.
+    if position.seekToken == nil, let committed = committedSpineIndex, position.spineIndex != committed,
+       pages[safe: currentPage]?.spineIndex == committed { return }
     let page = pages[index]
     bindVertical(index, target: continuousRestoreTarget(position, page: page) ?? 0, resetScroll: true)
     if mode == .focus {
