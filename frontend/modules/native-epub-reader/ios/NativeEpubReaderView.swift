@@ -260,6 +260,10 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
 
   private var contentSignature = ""
   private var settingsSignature = ""
+  private var paletteSignature = ""
+  // Dark or not as last laid out (`theme` applies the palette as it's set, so
+  // `palette` can't say what it was).
+  private var laidOutDark = false
   private var currentChapterSignature = ""
   private var appliedRestoreSignature = ""
   private var layoutGeneration = 0
@@ -414,12 +418,24 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     let chapters = parsedChapters()
     let nextContent = chapters.map(\.signature).joined(separator: "|")
     let tokensSignature = themeTokens.keys.sorted().map { "\($0)=\(themeTokens[$0] ?? "")" }.joined(separator: ",")
-    let nextSettings = "\(clampedFontSize)|\(clampedLineHeight)|\(theme)|\(tokensSignature)|\(showPinyin)|\(showGloss)"
+    let nextPalette = "\(theme)|\(tokensSignature)"
+    let nextSettings = "\(clampedFontSize)|\(clampedLineHeight)|\(showPinyin)|\(showGloss)"
     let current = currentChapter(in: chapters)?.signature ?? ""
 
+    // A theme change repaints the pages as they are: text takes its color
+    // when drawn. Only a chapter with colors of its own, turning dark or
+    // light, is laid out again.
+    if nextPalette != paletteSignature {
+      paletteSignature = nextPalette
+      applyPalette()
+      repaintVisiblePages()
+      if laidOutDark != palette.isDark {
+        laidOutDark = palette.isDark
+        if chapters.contains(where: \.hasTextColors) { contentSignature = "" }
+      }
+    }
     if nextSettings != settingsSignature {
       settingsSignature = nextSettings
-      applyPalette()
       marks.showPinyin = showPinyin
       marks.showGloss = showGloss
       contentSignature = ""
@@ -448,6 +464,14 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     collectionView.backgroundColor = palette.background
     host.palette = palette
     progressThumb.color = palette.bodyText
+  }
+
+  // The pages on screen in the new palette (the scroll host's own follow
+  // host.palette; cells coming on screen get it in cellForItemAt).
+  private func repaintVisiblePages() {
+    for case let cell as ReaderPageCell in collectionView.visibleCells {
+      cell.pageView.palette = palette
+    }
   }
 
   private func parsedChapters() -> [ReaderChapter] {
@@ -538,9 +562,10 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     )
     let chapters = parsedChapters()
     let previous = pages[safe: currentPage]
-    let tokensSignature = themeTokens.keys.sorted().map { "\($0)=\(themeTokens[$0] ?? "")" }.joined(separator: ",")
+    // No theme here: text takes its color when drawn (see attributedText), and
+    // the cache keys a chapter with colors of its own by dark or light.
     let layoutKey = "\(vertical)|\(config.contentWidth)|\(config.contentHeight)|\(config.fontSize)|\(config.lineHeight)"
-      + "|\(theme)|\(tokensSignature)|\(showPinyin)|\(showGloss)"
+      + "|\(showPinyin)|\(showGloss)"
     // Marked words that change with this layout (glosses turned on, word
     // help arriving) can play the reveal, compared with what was on screen.
     let termsChanged = highlightsDirty

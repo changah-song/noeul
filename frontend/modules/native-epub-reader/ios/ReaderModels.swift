@@ -63,6 +63,9 @@ struct ReaderChapter {
   // The chapter's content alone, whatever its place in the window: its
   // laid-out pages are kept under this.
   let layoutSignature: String
+  // Sets its own text colors, which dark themes drop: such a chapter is laid
+  // out again when the theme turns dark or light.
+  let hasTextColors: Bool
 
   static func parse(_ raw: [String: Any]) -> ReaderChapter? {
     guard let spine = intValue(raw["spineIndex"]) else { return nil }
@@ -77,7 +80,10 @@ struct ReaderChapter {
     return ReaderChapter(
       role: role, spineIndex: spine, href: href, path: path, title: title, blocks: blocks,
       signature: "\(role):\(spine):\(href):\(path):\(title):\(blockSig)",
-      layoutSignature: "\(spine):\(href):\(path):\(blockSig)"
+      layoutSignature: "\(spine):\(href):\(path):\(blockSig)",
+      hasTextColors: blocks.contains { block in
+        block.style["color"] is String || block.spans.contains { $0.style["color"] is String }
+      }
     )
   }
 }

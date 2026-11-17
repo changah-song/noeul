@@ -427,6 +427,8 @@ final class ReaderPageView: UIView {
   private func drawLines(of item: ReaderPageItem, context: CGContext, offsetX: CGFloat) {
     context.saveGState()
     context.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
+    // Text without a color of its own (see attributedText) uses this.
+    context.setFillColor(palette.bodyText.cgColor)
     for index in item.lineRange {
       let line = item.layout.lines[index]
       context.textPosition = CGPoint(x: origin.x + line.x + offsetX, y: origin.y + item.lineTop(index) + line.ascent)
