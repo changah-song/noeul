@@ -170,6 +170,7 @@ import {
     annotationsBySurface,
     buildAnnotatedLevelTerms,
     withPhraseTapTerms,
+    withTappedWordReadings,
 } from '../services/readerAnnotations';
 import { createNativeReaderThemeTokens, fontFamilies, radii, resolveThemeMode, spacing, textStyles, useTheme } from '../theme';
 
@@ -246,6 +247,7 @@ const LEVEL_MARK_STYLES = ['off', 'underline'];
 // Reading this long is a session worth refitting the level after.
 const REFIT_SESSION_MS = 60 * 1000;
 const EMPTY_LEVEL_TERMS = [];
+const EMPTY_READINGS = new Map();
 const EMPTY_TERM_RANKS = new Map();
 
 const FONT_SIZE_MIN = 12;
@@ -719,6 +721,9 @@ const Read = ({
     // Underlined words tapped in this book ([{ text, at }]): their underline
     // turns dotted. Earlier lookups load settled (at 0); a new tap animates.
     const [tappedTerms, setTappedTerms] = useState([]);
+    // Chinese words tapped in this book with the reading their lookup found
+    // (surface -> { pinyin, gloss }); see withTappedWordReadings.
+    const [tappedWordReadings, setTappedWordReadings] = useState(EMPTY_READINGS);
     const [highlightTerms, setHighlightTerms] = useState(null);
     const [optimisticHighlightTerms, setOptimisticHighlightTerms] = useState([]);
     const [levelUnderlineTerms, setLevelUnderlineTerms] = useState([]);
@@ -1031,6 +1036,7 @@ const Read = ({
     useEffect(() => {
         let active = true;
         setTappedTerms([]);
+        setTappedWordReadings(EMPTY_READINGS);
         getBookLookupWords({ ownerId: activeOwnerId, language: activeBookLanguage, bookUri: currentBook })
             .then((words) => {
                 if (active) setTappedTerms(words.map((text) => ({ text, at: 0 })));
@@ -1380,7 +1386,8 @@ const Read = ({
     // Follows the book link under a word tap (see followBookLink).
     const followLinkRef = useRef(null);
     const trimNoteMarkersRef = useRef(null);
-    const [saveToggleToken, setSaveToggleToken] = useState(0);
+    // The open panel's save/unsave (DictionaryContent fills it).
+    const saveToggleRef = useRef(null);
     // Word-tap database writes held back until the lookup has resolved (see
     // handleNativeWordSelected). Also run when the reader closes.
     const pendingContextWritesRef = useRef([]);
@@ -1393,6 +1400,18 @@ const Read = ({
         writes.forEach((write) => write());
     }, []);
     useEffect(() => flushPendingContextWrites, [flushPendingContextWrites]);
+    const handleLookupResolved = useCallback((reading) => {
+        flushPendingContextWrites();
+        const word = typeof reading?.word === 'string' ? reading.word.trim() : '';
+        if (!word || !reading.pinyin) return;
+        setTappedWordReadings((previous) => {
+            const known = previous.get(word);
+            if (known && known.pinyin === reading.pinyin && known.gloss === reading.gloss) return previous;
+            const next = new Map(previous);
+            next.set(word, { pinyin: reading.pinyin, gloss: reading.gloss || '' });
+            return next;
+        });
+    }, [flushPendingContextWrites]);
     const handleNativeWordSelected = useCallback((event = {}) => {
         let text = typeof event.text === 'string' ? event.text.trim() : '';
         if (!text) {
@@ -1400,9 +1419,10 @@ const Read = ({
         }
 
         // A second tap on the word whose panel is open saves it (or takes the
-        // save back): the panel's own entry does the saving.
+        // save back): the panel's own entry does the saving, called from here
+        // so the save lands with the tap, not a render later.
         if (event.again) {
-            setSaveToggleToken((value) => value + 1);
+            saveToggleRef.current?.();
             return;
         }
 
@@ -4174,7 +4194,8 @@ const Read = ({
                     levelTermRanks
                 );
             }
-            return withPhraseTapTerms(buildAnnotatedLevelTerms({
+            const hiddenSurfaces = hideSavedAnnotations ? savedSurfacesRef.current : null;
+            const terms = withPhraseTapTerms(buildAnnotatedLevelTerms({
                 levelTerms: thresholdLevelTerms,
                 annotationRows,
                 marksEnabled: levelMarksEnabled,
@@ -4183,10 +4204,19 @@ const Read = ({
                 pinyinScope,
                 glossScope,
                 interfaceLanguage,
-                hiddenSurfaces: hideSavedAnnotations ? savedSurfacesRef.current : null,
+                hiddenSurfaces,
             }), levelPhraseSurfaces, levelTermRanks);
+            return activeBookLanguage === 'zh'
+                ? withTappedWordReadings(terms, tappedWordReadings, {
+                    pinyin: readerShowPinyin,
+                    gloss: readerShowGloss,
+                    hiddenSurfaces,
+                })
+                : terms;
         },
         [
+            activeBookLanguage,
+            tappedWordReadings,
             annotationRows,
             hideSavedAnnotations,
             levelPhraseSurfaces,
@@ -5654,8 +5684,8 @@ const Read = ({
                         sourceBook={activeBook}
                         savedWords={savedWordsList}
                         levelMarkFor={currentBook ? levelMarkFor : null}
-                        saveToggleToken={saveToggleToken}
-                        onLookupResolved={flushPendingContextWrites}
+                        saveToggleRef={saveToggleRef}
+                        onLookupResolved={handleLookupResolved}
                         translationVisualState={translationBannerVisualState}
                     />
                     {textSelection ? renderSelectionExplain() : null}
