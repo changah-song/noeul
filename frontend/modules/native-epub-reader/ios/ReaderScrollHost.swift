@@ -149,7 +149,9 @@ final class ReaderScrollHost: UIView, UIScrollViewDelegate {
   override init(frame: CGRect) {
     super.init(frame: frame)
     scrollView.bounces = false
-    scrollView.alwaysBounceVertical = false
+    // See applyContentGeometry: a chapter that fits on the screen bounces, so
+    // its pan begins and the chapter pull can start.
+    scrollView.alwaysBounceVertical = true
     scrollView.contentInsetAdjustmentBehavior = .never
     scrollView.showsHorizontalScrollIndicator = false
     // ChapterProgressThumb is the scrollbar.
@@ -233,6 +235,12 @@ final class ReaderScrollHost: UIView, UIScrollViewDelegate {
     contentView.center = CGPoint(x: width / 2, y: contentHeight / 2)
     scrollView.contentSize = CGSize(width: width, height: contentHeight)
     probe.frame = CGRect(x: 0, y: 0, width: width, height: contentHeight)
+    // A chapter that fits on the screen (a part's title page: a heading and an
+    // image) gives the scroll view nothing to scroll. Without bouncing its pan
+    // never begins, so the pull to the next or previous chapter can't start
+    // and the reader is stuck there. Such a chapter bounces instead; once a
+    // pull starts, scrollViewDidScroll holds the content at the edge.
+    scrollView.bounces = maxScroll <= 0.5
   }
 
   func setOffset(_ y: CGFloat) {
