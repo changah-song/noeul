@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { Text, View, StyleSheet, TouchableOpacity, Pressable, ScrollView, ToastAndroid } from 'react-native';
+import { Text, View, StyleSheet, TouchableOpacity, Pressable, ScrollView, ToastAndroid, Platform } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { api } from '../../../services/api/client';
 import { logTiming } from '../../../services/appTelemetry';
@@ -1449,7 +1449,10 @@ const DictionaryContent = ({
                         {hanjaElement}
                         {pronunciationText && !isEnglishBook ? (
                             <Text
-                                selectable
+                                // Android lays a selectable text out narrower than
+                                // it measures it: "qū chǐ" wrapped to a hidden line.
+                                selectable={Platform.OS !== 'android'}
+                                textBreakStrategy="simple"
                                 style={[
                                     styles.entryMeta,
                                     isChineseBook && styles.zhHeadingPinyin,
@@ -2423,13 +2426,14 @@ const createStyles = (colors) => StyleSheet.create({
         flexShrink: 0,
     },
     // Pinyin sits inline to the right of the character in the heading: a clean sans
-    // face, non-italic, sized to sit on the character's baseline.
+    // face, non-italic, sized to sit on the character's baseline. No letter
+    // spacing: with it Android measured "qū chǐ" too narrow and wrapped the
+    // last syllable out of sight.
     zhHeadingPinyin: {
         fontFamily: fontFamilies.sansSemiBold,
         fontSize: 16,
         lineHeight: 24,
         fontStyle: 'normal',
-        letterSpacing: 0.2,
         textAlign: 'left',
     },
     zhBody: {
@@ -2499,7 +2503,6 @@ const createStyles = (colors) => StyleSheet.create({
         fontFamily: fontFamilies.sansBold,
         fontSize: 15,
         lineHeight: 24,
-        letterSpacing: 0.2,
     },
     zhReadingSenses: {
         flex: 1,
@@ -2572,7 +2575,6 @@ const createStyles = (colors) => StyleSheet.create({
         fontFamily: fontFamilies.sansBold,
         fontSize: 15,
         lineHeight: 24,
-        letterSpacing: 0.2,
     },
     zhCharSenses: {
         flex: 1,
