@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, Easing, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
-import { Feather, MaterialIcons } from '@expo/vector-icons';
+import { Feather, MaterialCommunityIcons, MaterialIcons } from '@expo/vector-icons';
 import { fontFamilies } from '../../theme';
 import { GUIDE_BAR_SENTENCE, GUIDE_HOLD_SENTENCE, GUIDE_PARAGRAPHS } from '../../services/readerGuideContent';
 import { PulseRing, TouchHold, TouchTap } from './GuideTouch';
@@ -114,14 +114,16 @@ function GuidePage({ page, frame, targetId, waiting, onTarget, t, colors, accent
                 <View style={styles.iconButton}>
                     <Feather name="chevron-left" size={22} color={colors.inkSlate} />
                 </View>
-                <View style={styles.progress}>
-                    <View style={styles.progressTrack}>
-                        <View style={styles.progressFill} />
+                {/* The book over the chapter being read, as in the reader. */}
+                <View style={styles.titleCluster}>
+                    <Text numberOfLines={1} style={styles.titleBook}>{page.bookTitle}</Text>
+                    <View style={styles.titleChapterRow}>
+                        <Text numberOfLines={1} style={styles.titleChapter}>{page.chapter}</Text>
+                        <Feather name="chevron-down" size={14} color={colors.inkSlate} />
                     </View>
-                    <Text style={styles.progressLabel}>12%</Text>
                 </View>
                 <View style={styles.iconButton}>
-                    <MaterialIcons name="bookmark-border" size={21} color={colors.inkSlate} />
+                    <Feather name="bookmark" size={19} color={colors.inkSlate} />
                 </View>
                 <View style={styles.iconButton}>
                     <Feather name="menu" size={20} color={colors.inkSlate} />
@@ -138,6 +140,14 @@ function GuidePage({ page, frame, targetId, waiting, onTarget, t, colors, accent
                 ))}
             </View>
 
+            <View pointerEvents="none" style={styles.scrubber}>
+                <View style={styles.scrubberTrack}>
+                    <View style={styles.scrubberFill} />
+                    <View style={styles.scrubberThumb} />
+                </View>
+                <Text style={styles.scrubberLabel}>12%</Text>
+            </View>
+
             <Animated.View
                 pointerEvents="none"
                 style={[
@@ -152,7 +162,7 @@ function GuidePage({ page, frame, targetId, waiting, onTarget, t, colors, accent
                 onLayout={(event) => setAiHeight(event.nativeEvent.layout.height)}
                 style={[
                     styles.aiPanel,
-                    { transform: [{ translateY: aiShown.interpolate({ inputRange: [0, 1], outputRange: [-(aiHeight + 60), 0] }) }] },
+                    { transform: [{ translateY: aiShown.interpolate({ inputRange: [0, 1], outputRange: [aiHeight + 20, 0] }) }] },
                 ]}
             >
                 <View style={styles.aiHeader}>
@@ -248,16 +258,32 @@ function GuidePage({ page, frame, targetId, waiting, onTarget, t, colors, accent
                     { transform: [{ translateY: listenShown.interpolate({ inputRange: [0, 1], outputRange: [90, 0] }) }] },
                 ]}
             >
+                {/* The reader's listen bar: previous / pause / next, the voice
+                    and speed chip, the two study toggles, close. */}
+                <View style={styles.listenButton}>
+                    <MaterialIcons name="skip-previous" size={20} color={colors.inkSlate} />
+                </View>
                 <View style={styles.listenPlay}>
-                    <Feather name="pause" size={15} color={colors.inkSlate} />
+                    <MaterialIcons name="pause" size={20} color={colors.readerPaper} />
                 </View>
-                <View style={styles.listenCopy}>
-                    <Text style={styles.listenTitle} numberOfLines={1}>{t('guide.readingAloud')}</Text>
-                    <Text style={styles.listenDetail} numberOfLines={1}>
-                        {t('guide.sentenceOf', { n: Math.max(0, frame.reading) + 1, total: page.sentences.length })}
-                    </Text>
+                <View style={styles.listenButton}>
+                    <MaterialIcons name="skip-next" size={20} color={colors.inkSlate} />
                 </View>
-                <Text style={styles.listenChip}>{t('read.listenRateValue', { rate: '1.0' })}</Text>
+                <View style={styles.listenDivider} />
+                <View style={styles.listenChip}>
+                    <MaterialCommunityIcons name="waveform" size={13} color={colors.inkSlate} />
+                    <Text style={styles.listenChipText}>{t('read.listenRateValue', { rate: '1.0' })}</Text>
+                </View>
+                <View style={styles.listenToggle}>
+                    <MaterialIcons name="school" size={14} color={colors.inkSlate} />
+                </View>
+                <View style={styles.listenToggle}>
+                    <MaterialIcons name="translate" size={14} color={colors.inkSlate} />
+                </View>
+                <View style={styles.listenSpacer} />
+                <View style={styles.listenButton}>
+                    <Feather name="x" size={17} color={colors.textTertiary} />
+                </View>
             </Animated.View>
         </View>
     );
@@ -295,27 +321,65 @@ const createStyles = (colors, compact) => {
             alignItems: 'center',
             justifyContent: 'center',
         },
-        progress: {
+        titleCluster: {
             flex: 1,
+            minWidth: 0,
+            justifyContent: 'center',
+            paddingLeft: 2,
+            paddingRight: 6,
+        },
+        titleBook: {
+            fontFamily: fontFamilies.sansRegular,
+            fontSize: 10,
+            lineHeight: 13,
+            color: colors.textTertiary,
+        },
+        titleChapterRow: {
             flexDirection: 'row',
             alignItems: 'center',
-            justifyContent: 'flex-end',
-            gap: 8,
-            paddingHorizontal: 6,
+            gap: 3,
         },
-        progressTrack: {
-            width: 48,
-            height: 3,
-            borderRadius: 2,
-            overflow: 'hidden',
+        titleChapter: {
+            flexShrink: 1,
+            fontFamily: fontFamilies.sansSemiBold,
+            fontSize: 13,
+            lineHeight: 18,
+            color: colors.inkSlate,
+        },
+        // The page scrubber along the bottom: the place in the chapter.
+        scrubber: {
+            position: 'absolute',
+            left: 18,
+            right: 14,
+            bottom: 18,
+            zIndex: 2,
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 8,
+        },
+        scrubberTrack: {
+            flex: 1,
+            height: 2,
+            borderRadius: 1,
             backgroundColor: colors.readerProgressTrack,
         },
-        progressFill: {
+        scrubberFill: {
             width: '12%',
             height: '100%',
+            borderRadius: 1,
             backgroundColor: colors.readerProgressFill,
         },
-        progressLabel: {
+        scrubberThumb: {
+            position: 'absolute',
+            left: '12%',
+            top: -4,
+            width: 10,
+            height: 10,
+            marginLeft: -5,
+            borderRadius: 5,
+            backgroundColor: colors.readerProgressFill,
+        },
+        scrubberLabel: {
             fontFamily: fontFamilies.sansRegular,
             fontSize: 11,
             color: colors.readerMutedInk,
@@ -352,15 +416,18 @@ const createStyles = (colors, compact) => {
             fontSize,
             lineHeight,
         },
+        // The sentence's translation: a pane across the top of the page,
+        // hanging from the header (the word panel's twin).
         bar: {
             position: 'absolute',
-            left: 12,
-            right: 12,
-            top: 50,
+            left: 0,
+            right: 0,
+            top: 44,
             zIndex: 4,
-            paddingVertical: 10,
-            paddingHorizontal: 14,
-            borderRadius: 12,
+            paddingVertical: 12,
+            paddingHorizontal: 18,
+            borderBottomLeftRadius: 18,
+            borderBottomRightRadius: 18,
             backgroundColor: colors.surfaceElevated,
             ...panelShadow,
         },
@@ -374,13 +441,13 @@ const createStyles = (colors, compact) => {
             position: 'absolute',
             left: 0,
             right: 0,
-            top: 44,
+            bottom: 0,
             zIndex: 5,
-            paddingTop: 12,
-            paddingBottom: 16,
+            paddingTop: 14,
+            paddingBottom: 18,
             paddingHorizontal: 18,
-            borderBottomLeftRadius: 18,
-            borderBottomRightRadius: 18,
+            borderTopLeftRadius: 18,
+            borderTopRightRadius: 18,
             backgroundColor: colors.surfaceElevated,
             ...panelShadow,
         },
@@ -573,7 +640,7 @@ const createStyles = (colors, compact) => {
         playButton: {
             position: 'absolute',
             right: 14,
-            bottom: 14,
+            bottom: 40,
             zIndex: 4,
             width: 38,
             height: 38,
@@ -590,18 +657,25 @@ const createStyles = (colors, compact) => {
         },
         listenBar: {
             position: 'absolute',
-            left: 12,
-            right: 12,
-            bottom: 12,
+            left: 10,
+            right: 10,
+            bottom: 34,
             zIndex: 5,
+            height: 50,
             flexDirection: 'row',
             alignItems: 'center',
-            gap: 10,
-            paddingVertical: 8,
-            paddingLeft: 8,
-            paddingRight: 12,
-            borderRadius: 16,
-            backgroundColor: colors.inkSlate,
+            paddingHorizontal: 6,
+            borderRadius: 25,
+            borderWidth: StyleSheet.hairlineWidth,
+            borderColor: colors.readerBorder,
+            backgroundColor: colors.readerSurface,
+            ...panelShadow,
+        },
+        listenButton: {
+            width: 30,
+            height: 36,
+            alignItems: 'center',
+            justifyContent: 'center',
         },
         listenPlay: {
             width: 36,
@@ -609,32 +683,42 @@ const createStyles = (colors, compact) => {
             borderRadius: 18,
             alignItems: 'center',
             justifyContent: 'center',
-            backgroundColor: colors.surface,
+            backgroundColor: colors.inkSlate,
         },
-        listenCopy: {
-            flex: 1,
-            minWidth: 0,
-        },
-        listenTitle: {
-            fontFamily: fontFamilies.sansMedium,
-            fontSize: 13,
-            color: colors.surface,
-        },
-        listenDetail: {
-            fontFamily: fontFamilies.sansRegular,
-            fontSize: 12,
-            color: colors.surface,
-            opacity: 0.72,
+        listenDivider: {
+            width: 1,
+            height: 20,
+            marginHorizontal: 4,
+            backgroundColor: colors.readerHairline,
         },
         listenChip: {
-            paddingVertical: 5,
-            paddingHorizontal: 8,
-            borderRadius: 8,
-            overflow: 'hidden',
+            height: 28,
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 3,
+            paddingHorizontal: 7,
+            marginRight: 3,
+            borderRadius: 14,
+            borderWidth: 1,
+            borderColor: colors.readerBorder,
+        },
+        listenChipText: {
             fontFamily: fontFamilies.sansSemiBold,
-            fontSize: 12,
-            color: colors.surface,
-            backgroundColor: 'rgba(255,255,255,0.14)',
+            fontSize: 11,
+            color: colors.readerBodyInk,
+        },
+        listenToggle: {
+            width: 28,
+            height: 28,
+            marginHorizontal: 1,
+            borderRadius: 14,
+            borderWidth: 1,
+            borderColor: colors.readerBorder,
+            alignItems: 'center',
+            justifyContent: 'center',
+        },
+        listenSpacer: {
+            flex: 1,
         },
     });
 };

@@ -18,7 +18,8 @@ export const GUIDE_CLIPS = [
     { key: 'intro' },
     { key: 'tap', duration: 4200, actionAt: 900, target: 'word' },
     { key: 'bar', duration: 3800 },
-    { key: 'save', duration: 3800, actionAt: 900, target: 'save' },
+    // A second tap on the open word saves it (the panel's bookmark does too).
+    { key: 'save', duration: 3800, actionAt: 900, target: 'word' },
     { key: 'hold', duration: 5000, actionAt: 700, target: 'hold' },
     { key: 'listen', duration: 5600, actionAt: 700, target: 'play' },
     { key: 'done' },
@@ -56,17 +57,23 @@ export const guideFrameAt = (key, elapsed, word, holdLength) => {
         listenOn: false,
     };
     if (key === 'tap') {
+        // The word's panel rises and its sentence's translation hangs from
+        // the top together, as in the reader.
         if (touchingAt(elapsed)) frame.touch = word;
         if (elapsed >= 150) frame.tapped = word;
-        if (elapsed >= 220) frame.dictionary = true;
+        if (elapsed >= 220) {
+            frame.dictionary = true;
+            frame.bar = true;
+        }
     } else if (key === 'bar') {
         frame.tapped = word;
         frame.dictionary = true;
-        frame.bar = elapsed >= 300 && elapsed < 3300;
+        frame.bar = true;
     } else if (key === 'save') {
         frame.tapped = word;
         frame.dictionary = true;
-        if (touchingAt(elapsed)) frame.touch = 'save';
+        frame.bar = true;
+        if (touchingAt(elapsed)) frame.touch = word;
         frame.saved = elapsed >= 120;
         frame.toast = elapsed >= 300 && elapsed < 2600;
     } else if (key === 'hold') {
