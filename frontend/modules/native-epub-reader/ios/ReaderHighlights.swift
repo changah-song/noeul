@@ -254,9 +254,15 @@ private func contextSentence(_ units: [unichar], start: Int, end: Int) -> String
 func buildHighlights(for page: ReaderPage, terms: ReaderHighlightTerms?) -> ReaderPageHighlights {
   var result = ReaderPageHighlights()
   var seenContexts = Set<String>()
+  // In order of first appearance; the sets only answer "seen yet?". A
+  // scroll-mode page is a whole chapter (thousands of words), where searching
+  // the arrays made this quadratic: seconds for a long chapter on a phone.
   var savedTerms: [String] = []
   var levelTerms: [String] = []
   var exposureTerms: [String] = []
+  var savedSeen = Set<String>()
+  var levelSeen = Set<String>()
+  var exposureSeen = Set<String>()
 
   for item in page.items where item.layout.imageFrame == nil && !item.lineRange.isEmpty {
     let lines = item.layout.lines
@@ -282,7 +288,7 @@ func buildHighlights(for page: ReaderPage, terms: ReaderHighlightTerms?) -> Read
         term: term,
         strength: terms.strengths[term] ?? 1
       ))
-      if !savedTerms.contains(term) { savedTerms.append(term) }
+      if savedSeen.insert(term).inserted { savedTerms.append(term) }
       let sentence = contextSentence(units, start: match.start, end: match.end)
       if seenContexts.insert("\(term)|\(sentence)|\(blockId)").inserted {
         result.savedContexts.append(["text": term, "sentence": sentence, "blockId": blockId])
@@ -312,7 +318,7 @@ func buildHighlights(for page: ReaderPage, terms: ReaderHighlightTerms?) -> Read
     }
     for (span, info) in placedLevel.sorted(by: { $0.span.lowerBound < $1.span.lowerBound }) {
       let reported = collapseSpaces(info.text)
-      if !info.annotationOnly && !levelTerms.contains(reported) { levelTerms.append(reported) }
+      if !info.annotationOnly && levelSeen.insert(reported).inserted { levelTerms.append(reported) }
       result.level.append(ReaderHighlightRange(
         blockId: blockId,
         range: NSRange(location: sliceStart + span.lowerBound, length: span.count),
@@ -328,8 +334,9 @@ func buildHighlights(for page: ReaderPage, terms: ReaderHighlightTerms?) -> Read
 
     // Words reported as seen but never drawn; one inside a marked phrase is
     // part of the phrase, not seen on its own.
-    let phraseSpans = result.level.filter { $0.isPhrase && $0.blockId == blockId }
-      .map { ($0.range.location - sliceStart)..<(NSMaxRange($0.range) - sliceStart) }
+    // This slice's own (another slice of the block lies outside it), not a
+    // search of every word placed on the page so far.
+    let phraseSpans = placedLevel.filter { isPhraseTerm($0.info.text) }.map(\.span)
     occupied = []
     for match in terms.exposureMatcher.matches(in: units) {
       guard hasTokenBoundary(units, start: match.start, end: match.end),
@@ -338,7 +345,7 @@ func buildHighlights(for page: ReaderPage, terms: ReaderHighlightTerms?) -> Read
       else { continue }
       occupied.append(match.start..<match.end)
       let term = collapseSpaces(terms.exposure[match.priority])
-      if !exposureTerms.contains(term) { exposureTerms.append(term) }
+      if exposureSeen.insert(term).inserted { exposureTerms.append(term) }
       result.exposureHits.append((blockId, NSRange(location: sliceStart + match.start, length: match.end - match.start), term))
     }
   }
