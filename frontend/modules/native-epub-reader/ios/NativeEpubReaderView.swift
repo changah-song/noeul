@@ -131,8 +131,17 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
   var restorePosition: [String: Any] = [:]
   var fontSize: Double = 18
   var lineHeight: Double = 1.5
-  var theme = "light"
-  var themeTokens: [String: Any] = [:]
+  // The palette follows these as soon as they are set, not at the end of the
+  // props update: a layout started in between (a chrome inset arriving with
+  // the first props) would otherwise draw the dark theme's pages in light-theme
+  // ink and cache them under the dark theme's key, so a book opened in dark
+  // mode showed near-black text until the theme was switched away and back.
+  var theme = "light" {
+    didSet { if theme != oldValue { applyPalette() } }
+  }
+  var themeTokens: [String: Any] = [:] {
+    didSet { applyPalette() }
+  }
   var renderMode = "paged"
   var chapterTransitionDirection = "none"
   var keepScreenOn = false {
