@@ -82,6 +82,18 @@ describe('timeline', () => {
         const open = guideFrameAt('tap', 300, '2:8', 6);
         expect(open.tapped).toBe('2:8');
         expect(open.dictionary).toBe(true);
+        // The sentence's translation comes with the panel, as in the reader.
+        expect(open.bar).toBe(true);
+    });
+
+    it('saves with a second tap on the open word', () => {
+        const save = GUIDE_CLIPS.find((clip) => clip.key === 'save');
+        expect(save.target).toBe('word');
+        expect(guideTargetId(save, { word: '2:8' })).toBe('2:8');
+        expect(guideFrameAt('save', -1, '2:8', 6).saved).toBe(false);
+        const tapped = guideFrameAt('save', 0, '2:8', 6);
+        expect(tapped.touch).toBe('2:8');
+        expect(guideFrameAt('save', 200, '2:8', 6).saved).toBe(true);
     });
 
     it('drags across the whole held sentence before the AI answers, whatever its length', () => {
