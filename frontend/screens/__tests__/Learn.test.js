@@ -1,9 +1,9 @@
 import React from 'react';
 import renderer, { act } from 'react-test-renderer';
 
-// Learn: the stats card and the review button read the same list, so a newly
-// saved (never reviewed) word shows as due and not seen yet, never 0 / 0 / 0
-// next to "Review 1 word". The avatar opens Profile.
+// Learn: due words are listed for swiping on the Today tab, words waiting
+// for their next review sit in their stage tab with when they come back. A
+// swipe moves a word to its stage, Undo brings it back. The avatar opens Profile.
 
 jest.mock('@expo/vector-icons', () => ({
   Feather: () => null,
@@ -29,6 +29,7 @@ jest.mock('../../hooks/useTranslation', () => ({
   }),
 }));
 const mockRows = [];
+jest.mock('expo-haptics', () => ({ selectionAsync: jest.fn(() => Promise.resolve()) }));
 jest.mock('../../services/Database', () => ({
   addRelatedKnownWord: jest.fn(),
   fsrsSchedule: jest.fn(() => null),
@@ -38,7 +39,7 @@ jest.mock('../../services/Database', () => ({
   getRelatedKnownWords: jest.fn(() => Promise.resolve([])),
   insertData: jest.fn(),
   logInteractionEvent: jest.fn(() => Promise.resolve()),
-  recordReviewOutcome: jest.fn(),
+  recordReviewOutcome: jest.fn(() => Promise.resolve()),
   removeData: jest.fn(),
   removeRelatedKnownWord: jest.fn(),
   updateFavorite: jest.fn(),
@@ -93,44 +94,60 @@ const row = (overrides) => ({
   ...overrides,
 });
 
+const Database = require('../../services/Database');
+const mounted = [];
+// For tests on fake timers: no real-time wait for the first load.
+const renderLearnSync = async () => {
+  let tree;
+  await act(async () => {
+    tree = renderer.create(<Learn navigation={{ navigate: jest.fn() }} user={null} />);
+  });
+  mounted.push(tree);
+  await act(async () => {});
+  return tree;
+};
+
 const renderLearn = async (navigation = { navigate: jest.fn() }) => {
   let tree;
   await act(async () => {
     tree = renderer.create(<Learn navigation={navigation} user={null} />);
   });
+  mounted.push(tree);
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
   return tree;
 };
 
-// [matured, due today, not seen yet] in the order the card shows them.
-const stats = (tree) => {
-  const labels = ['learn.statMatured', 'learn.statDueToday', 'learn.statNotSeenYet'];
-  const texts = tree.root.findAll((node) => node.type === 'Text').map((node) => node.props.children);
-  // Each value is the text right before its label.
-  // Values are formatted for the interface language (formatNumber), so compare as numbers.
-  return labels.map((label) => Number(texts[texts.indexOf(label) - 1]));
+// What the screen shows, as one string (tab labels carry their counts).
+const textOf = (tree) => JSON.stringify(tree.toJSON());
+const pressTab = async (tree, label) => {
+  const tab = tree.root.findAll((node) => typeof node.props.onPress === 'function'
+    && node.findAll((child) => child.type === 'Text' && [].concat(child.props.children).join('').startsWith(label)).length > 0)
+    .pop();
+  await act(async () => tab.props.onPress());
 };
-// The label of the review button: the only button whose accessibilityState
-// carries a boolean `disabled`.
-const reviewButtonText = (tree) => tree.root
-  .findAll((node) => node.props.accessibilityRole === 'button'
-    && typeof node.props.accessibilityState?.disabled === 'boolean')[0]
-  .findAll((node) => node.type === 'Text')
-  .map((node) => node.props.children)
-  .join(' ');
+// A due word's swipe row: the only rows with the known / unknown actions.
+const swipeRows = (tree) => tree.root.findAll((node) => (
+  Array.isArray(node.props.accessibilityActions) && typeof node.props.onAccessibilityAction === 'function'
+));
 
 beforeEach(() => {
   mockRows.length = 0;
 });
-
-it('counts a newly saved word as due and not seen yet, matching the review button', async () => {
-  mockRows.push(row({}));
-  const tree = await renderLearn();
-  expect(stats(tree)).toEqual([0, 1, 1]);
-  expect(reviewButtonText(tree)).toContain('learn.reviewWordsOne');
+// Unmount so no timer (the first-visit swipe nudge) fires after the test.
+afterEach(() => {
+  act(() => { mounted.splice(0).forEach((tree) => tree.unmount()); });
 });
 
-it('leaves a word scheduled for later out of due and the button', async () => {
+it('lists a newly saved word for swiping under New words', async () => {
+  mockRows.push(row({}));
+  const tree = await renderLearn();
+  expect(textOf(tree)).toContain('Learn.when.today 1');
+  expect(swipeRows(tree).length).toBeGreaterThan(0);
+  expect(textOf(tree)).toContain('learn.sectionNew');
+  expect(textOf(tree)).not.toContain('learn.sectionReturning');
+});
+
+it('keeps a word scheduled for later out of the due list and in its queue', async () => {
   mockRows.push(row({
     level: 'mid',
     last_reviewed_at: new Date(Date.now() - day).toISOString(),
@@ -147,11 +164,15 @@ it('leaves a word scheduled for later out of due and the button', async () => {
     wrong_count: 1,
   }));
   const tree = await renderLearn();
-  expect(stats(tree)).toEqual([0, 1, 0]);
-  expect(reviewButtonText(tree)).toContain('learn.reviewWordsOne');
+  expect(textOf(tree)).toContain('Learn.when.today 1');
+  expect(textOf(tree)).toContain('learn.stageLearningTab 1');
+  await pressTab(tree, 'learn.stageLearningTab');
+  expect(textOf(tree)).toContain('정직');
+  // The row capitalises the label's first letter.
+  expect(textOf(tree).toLowerCase()).toContain('learn.when.indays(3)');
 });
 
-it('says no reviews are due when nothing is due', async () => {
+it('says all caught up when nothing is due', async () => {
   mockRows.push(row({
     level: 'good',
     last_reviewed_at: new Date().toISOString(),
@@ -159,8 +180,38 @@ it('says no reviews are due when nothing is due', async () => {
     correct_count: 2,
   }));
   const tree = await renderLearn();
-  expect(stats(tree)[1]).toBe(0);
-  expect(reviewButtonText(tree)).toContain('learn.noReviews');
+  expect(textOf(tree)).toContain('learn.allCaughtUp');
+  expect(swipeRows(tree)).toHaveLength(0);
+});
+
+it('moves a swiped word to its queue at once and Undo brings it back', async () => {
+  jest.useFakeTimers();
+  mockRows.push(row({}));
+  const tree = await renderLearnSync();
+  await act(async () => {
+    swipeRows(tree)[0].props.onAccessibilityAction({ nativeEvent: { actionName: 'unknown' } });
+  });
+  expect(textOf(tree)).toContain('learn.stageLearningTab 1');
+  expect(swipeRows(tree)).toHaveLength(0);
+  expect(Database.recordReviewOutcome).not.toHaveBeenCalled();
+  // A never-reviewed word is scheduled as a first review (no elapsed days),
+  // the same way the stored review will be, so it does not change tabs later.
+  expect(Database.fsrsSchedule.mock.calls.every(([word, , days]) => word.last_reviewed_at || days === null)).toBe(true);
+
+  const undo = tree.root.findAll((node) => node.props.accessibilityLabel === 'common.undo'
+    && typeof node.props.onPress === 'function')[0];
+  await act(async () => undo.props.onPress());
+  expect(textOf(tree)).toContain('Learn.when.today 1');
+  expect(swipeRows(tree).length).toBeGreaterThan(0);
+
+  // Swiped again and left alone, the grade is stored once Undo times out.
+  await act(async () => {
+    swipeRows(tree)[0].props.onAccessibilityAction({ nativeEvent: { actionName: 'known' } });
+  });
+  await act(async () => { jest.advanceTimersByTime(7000); });
+  expect(Database.recordReviewOutcome).toHaveBeenCalledTimes(1);
+  expect(Database.recordReviewOutcome.mock.calls[0][4]).toBe('good');
+  jest.useRealTimers();
 });
 
 it('opens Profile from the avatar', async () => {

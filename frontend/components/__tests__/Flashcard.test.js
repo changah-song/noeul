@@ -102,12 +102,6 @@ describe('Flashcard', () => {
     expect(onMark).toHaveBeenCalledWith('bad');
   });
 
-  it('leaves out the hint line when every grade gives the same interval', async () => {
-    const tree = await render();
-    await act(async () => byLabel(tree, 'learn.showAnswer').props.onPress());
-    expect(text(tree)).not.toContain('learn.when.');
-  });
-
   it('shows the all-caught-up screen after the last card', async () => {
     const onKeepReading = jest.fn();
     const onBackToLearn = jest.fn();

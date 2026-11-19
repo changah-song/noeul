@@ -7474,6 +7474,11 @@ const addDays = (days) => {
   return date.toISOString();
 };
 
+const FSRS_RECALL_WEIGHTS = { gain: 1.49, stabilityDecay: 0.14, retrievabilityGain: 0.94 };
+// Stability (days) a word starts with when its very first review is "known"
+// or "okay" (FSRS v4 defaults). A higher seed from P(known) is kept.
+const FSRS_FIRST_STABILITY = { 2: 0.6, 3: 2.4 };
+
 const forgettingCurve = (stability, days) => (
   Math.pow(1 + days / (9 * normalizeFsrsValue(stability, DEFAULT_STABILITY)), -1)
 );
@@ -7491,12 +7496,17 @@ const updateStability = (stability, difficulty, retrievability, grade) => {
 
   const currentStability = normalizeFsrsValue(stability, DEFAULT_STABILITY);
   const currentDifficulty = normalizeFsrsValue(difficulty, DEFAULT_DIFFICULTY, 1, 10);
+  // FSRS v4 recall formula with its published default weights (w8, w9, w10).
+  // The last weight used to be 0.1, about a tenth of the default: a word
+  // known at every on-time review then gained almost nothing and kept coming
+  // back the next day (1, 1, 1, 1, 2, 2 … days). With the defaults the gaps
+  // run roughly 2, 8, 24, 64, 150 days.
   const next = currentStability * (
     1
-    + Math.exp(0.9)
+    + Math.exp(FSRS_RECALL_WEIGHTS.gain)
     * (11 - currentDifficulty)
-    * Math.pow(currentStability, -0.2)
-    * (Math.exp(0.1 * (1 - retrievability)) - 1)
+    * Math.pow(currentStability, -FSRS_RECALL_WEIGHTS.stabilityDecay)
+    * (Math.exp(FSRS_RECALL_WEIGHTS.retrievabilityGain * (1 - retrievability)) - 1)
   );
 
   return normalizeFsrsValue(next, currentStability);
@@ -7523,7 +7533,12 @@ export const fsrsSchedule = (wordData = {}, outcome, daysSinceLastReview) => {
     ? forgettingCurve(currentStability, elapsedDays)
     : 1.0;
 
-  const stability = updateStability(currentStability, currentDifficulty, retrievability, grade);
+  // A first review has no elapsed time to learn from: the word takes the
+  // starting stability for its grade instead of a growth step.
+  const isFirstReview = daysSinceLastReview == null && grade !== 1;
+  const stability = isFirstReview
+    ? Math.max(currentStability, FSRS_FIRST_STABILITY[grade])
+    : updateStability(currentStability, currentDifficulty, retrievability, grade);
   const difficulty = updateDifficulty(currentDifficulty, grade);
   const interval = grade === 1 ? 1 : nextInterval(stability);
 
