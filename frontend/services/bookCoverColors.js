@@ -3,19 +3,43 @@ import { colors } from '../theme';
 const FALLBACK_COVER_COLOR = colors.coverSlate;
 let missingNativeModuleWarned = false;
 
-const GENERATED_COVER_PALETTES = [
-  { bg: colors.surfaceMuted, accent: colors.inkSlate, ink: colors.text, soft: colors.textTertiary },
-  { bg: colors.surfaceAssist, accent: colors.coverSlate, ink: colors.textSecondary, soft: colors.borderStrong },
-  { bg: colors.surfaceStrong, accent: colors.inkSlate, ink: colors.text, soft: colors.textTertiary },
-  { bg: colors.border, accent: colors.coverSlate, ink: colors.textSecondary, soft: colors.textTertiary },
-  { bg: colors.borderStrong, accent: colors.inkSlateDeep, ink: colors.text, soft: colors.surfaceMuted },
-  { bg: colors.coverMid, accent: colors.inkSlate, ink: colors.surfaceMuted, soft: colors.surfaceMuted },
-  { bg: colors.textTertiary, accent: colors.inkSlateDeep, ink: colors.surface, soft: colors.border },
-  { bg: colors.textMuted, accent: colors.inkSlateDeep, ink: colors.surface, soft: colors.border },
-  { bg: colors.coverSlate, accent: colors.inkSlateDeep, ink: colors.border, soft: colors.surfaceMuted },
-  { bg: colors.inkSlate, accent: colors.inkSlateDeep, ink: colors.surfaceMuted, soft: colors.surfaceMuted },
-  { bg: colors.inkSlateDeep, accent: colors.black, ink: colors.surface, soft: colors.borderStrong },
+// Generated covers (a book with no cover image of its own): a ground colour
+// and the colour of the tile pattern drawn on it. `accent`, `ink` and `soft`
+// keep feeding the spine and the book-opening colours.
+const PATTERN_COVER_COLORS = [
+  ['#2a2c5e', '#f5c451'],
+  ['#b8432f', '#f7dfa6'],
+  ['#1f5a52', '#f0934a'],
+  ['#55346b', '#e88a97'],
+  ['#11151c', '#e9683a'],
+  ['#405f9e', '#f3b8a0'],
+  ['#ad6a2e', '#fff3d6'],
+  ['#2f7a67', '#f5c451'],
+  ['#7c4d8a', '#f7dfa6'],
+  ['#a94f55', '#f5c451'],
+  ['#57723b', '#f7dfa6'],
+  ['#2f6f7e', '#f0934a'],
+  ['#884a37', '#f3b8a0'],
+  ['#3f5b7d', '#f5c451'],
+  ['#202631', '#e88a97'],
+  ['#866b2d', '#fff3d6'],
+  ['#8e2f20', '#f3b8a0'],
+  ['#123a36', '#8fc79a'],
+  ['#37204a', '#f0934a'],
+  ['#2c447a', '#f7dfa6'],
+  ['#7a4416', '#f5c451'],
+  ['#465c3b', '#fff3d6'],
+  ['#8b5570', '#f7dfa6'],
+  ['#4f6f8f', '#fff3d6'],
 ];
+
+const GENERATED_COVER_PALETTES = PATTERN_COVER_COLORS.map(([ground, pattern]) => ({
+  bg: ground,
+  accent: ground,
+  ink: colors.glyphCream,
+  soft: pattern,
+  pattern,
+}));
 
 export const normalizeHexColor = (value) => {
   const color = String(value || '').trim();
@@ -122,9 +146,63 @@ const hashBookIdentity = (book) => {
   return hash;
 };
 
-export const getGeneratedBookCoverPalette = (book) => (
-  GENERATED_COVER_PALETTES[hashBookIdentity(book) % GENERATED_COVER_PALETTES.length]
-);
+// The bundled books take the colour pairs in turn, counted within each
+// language, so no two books on the same library shelf share a pair (as long
+// as a language has no more books than there are pairs). Any other book
+// without a cover gets its pair from its title and author.
+// The catalog is loaded on first use, not imported at the top: it pulls in
+// every bundled book's text, which this module's other users (and its tests)
+// have no need of. If it cannot be loaded, every book falls back to the hash.
+let bundledCoverSlots = null;
+const getBundledCoverSlots = () => {
+  if (bundledCoverSlots) return bundledCoverSlots;
+  bundledCoverSlots = {};
+  try {
+    // eslint-disable-next-line global-require
+    const { PUBLIC_DOMAIN_TEXTS } = require('../assets/data/public-domain/catalog');
+    const nextSlot = {};
+    PUBLIC_DOMAIN_TEXTS.forEach((book) => {
+      const language = book.language ?? 'ko';
+      bundledCoverSlots[book.id] = nextSlot[language] ?? 0;
+      nextSlot[language] = bundledCoverSlots[book.id] + 1;
+    });
+  } catch (error) {
+    bundledCoverSlots = {};
+  }
+  return bundledCoverSlots;
+};
+
+const BUNDLED_ID_PREFIX = 'public-domain-';
+const bundledBookId = (book) => {
+  if (book?.publicDomainId) return book.publicDomainId;
+  const id = String(book?.id || '');
+  return id.startsWith(BUNDLED_ID_PREFIX) ? id.slice(BUNDLED_ID_PREFIX.length) : null;
+};
+
+export const getGeneratedBookCoverPalette = (book) => {
+  const bundledId = bundledBookId(book);
+  const slot = bundledId ? getBundledCoverSlots()[bundledId] : undefined;
+  const index = slot ?? hashBookIdentity(book);
+  return GENERATED_COVER_PALETTES[index % GENERATED_COVER_PALETTES.length];
+};
+
+// The pattern on a generated cover: a grid of tiles, each one of these shapes
+// (a quarter disc in one of four corners, a full disc, or a leaf on either
+// diagonal). Which shapes a book gets is worked out from its title and
+// author, so a book always has the same cover and no two look alike.
+export const COVER_PATTERN_SHAPES = ['topLeft', 'topRight', 'bottomRight', 'bottomLeft', 'disc', 'leafRising', 'leafFalling'];
+export const COVER_PATTERN_COLUMNS = 4;
+const PATTERN_MODULUS = 2147483647;
+
+export const getCoverPatternTiles = (book, count = COVER_PATTERN_COLUMNS * COVER_PATTERN_COLUMNS) => {
+  let seed = (hashBookIdentity(book) % (PATTERN_MODULUS - 1)) + 1;
+  const tiles = [];
+  for (let index = 0; index < count; index += 1) {
+    seed = (seed * 48271) % PATTERN_MODULUS;
+    tiles.push(COVER_PATTERN_SHAPES[seed % COVER_PATTERN_SHAPES.length]);
+  }
+  return tiles;
+};
 
 const makeSafeCacheKey = (value, fallback) => {
   const rawKey = String(value || fallback || 'cover').trim();
