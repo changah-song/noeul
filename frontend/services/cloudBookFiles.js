@@ -12,10 +12,11 @@ import { isCurrentSyncGeneration } from './localOwnerCoordinator';
 //
 // Every book the reader imported has a row in the cloud (title, cover,
 // progress), so the shelf and reading position follow them to every device.
-// Only their most recently opened books (3 for now; the limit comes from the
-// server, so a plan can raise it) also keep the file. Opening an older book
-// makes it recent again: its file goes up and the oldest one's comes down.
-// The server decides which; this uploads what it asks for.
+// The server also says which books keep their file: the most recently opened
+// ones, up to a limit it sets (1000 for an account, so in practice all of
+// them; it was 3 for a while). Past the limit, opening an older book makes it
+// recent again: its file goes up and the oldest one's comes down. This
+// uploads what the server asks for.
 
 const getTime = (value) => {
   const time = new Date(value ?? 0).getTime();
