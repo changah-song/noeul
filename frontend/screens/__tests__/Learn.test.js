@@ -96,11 +96,15 @@ const row = (overrides) => ({
 
 const Database = require('../../services/Database');
 const mounted = [];
+// Learn reads the safe-area insets (to place the timeline scrubber).
+const { SafeAreaProvider } = require('react-native-safe-area-context');
+const SAFE_AREA = { frame: { x: 0, y: 0, width: 360, height: 780 }, insets: { top: 24, left: 0, right: 0, bottom: 0 } };
+const withSafeArea = (node) => <SafeAreaProvider initialMetrics={SAFE_AREA}>{node}</SafeAreaProvider>;
 // For tests on fake timers: no real-time wait for the first load.
 const renderLearnSync = async () => {
   let tree;
   await act(async () => {
-    tree = renderer.create(<Learn navigation={{ navigate: jest.fn() }} user={null} />);
+    tree = renderer.create(withSafeArea(<Learn navigation={{ navigate: jest.fn() }} user={null} />));
   });
   mounted.push(tree);
   await act(async () => {});
@@ -110,7 +114,7 @@ const renderLearnSync = async () => {
 const renderLearn = async (navigation = { navigate: jest.fn() }) => {
   let tree;
   await act(async () => {
-    tree = renderer.create(<Learn navigation={navigation} user={null} />);
+    tree = renderer.create(withSafeArea(<Learn navigation={navigation} user={null} />));
   });
   mounted.push(tree);
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
@@ -167,6 +171,7 @@ it('keeps a word scheduled for later out of the due list and in its queue', asyn
   expect(textOf(tree)).toContain('Learn.when.today 1');
   expect(textOf(tree)).toContain('learn.stageLearningTab 1');
   await pressTab(tree, 'learn.stageLearningTab');
+  // A card in the stack, with its day on the timeline beside it.
   expect(textOf(tree)).toContain('정직');
   // The row capitalises the label's first letter.
   expect(textOf(tree).toLowerCase()).toContain('learn.when.indays(3)');

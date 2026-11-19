@@ -14,12 +14,13 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
-import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Feather, MaterialIcons } from '@expo/vector-icons';
 
 import SwipeWordRow from '../components/Learn/SwipeWordRow';
+import WordStack, { TimelineScrubber, findStackIndexAt, getStackOffsets } from '../components/Learn/WordStack';
 import GrammarSection from '../components/Learn/GrammarSection';
 import AppTopBar from '../components/shared/AppTopBar';
 import { usePillTabBarClearance } from '../components/shared/TabBar';
@@ -597,6 +598,9 @@ const getStrengthDots = (word) => {
 };
 
 const SWIPE_NUDGE_SEEN_KEY = 'learn.swipeNudgeSeen';
+// How far below the top of the scrolling area the scrubber's track starts:
+// clear of the tabs, pinned or not.
+const SCRUB_TRACK_OFFSET = 140;
 
 // The word as it will read once a swipe grade is saved, so it can move to its
 // queue at once. Mirrors recordReviewOutcome in services/Database.js.
@@ -1450,6 +1454,7 @@ const Learn = ({ navigation, user }) => {
   const { colors } = useTheme();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const pillTabBarClearance = usePillTabBarClearance();
+  const safeAreaInsets = useSafeAreaInsets();
   const proficiencyLevels = useMemo(() => createProficiencyLevels(colors), [colors]);
   const proficiencyByKey = useMemo(() => createProficiencyByKey(proficiencyLevels), [proficiencyLevels]);
   const learnThemeValue = useMemo(() => ({
@@ -2013,12 +2018,104 @@ const Learn = ({ navigation, user }) => {
 
   // The lists can run to hundreds of rows; draw a page and add another each
   // time the reader nears the end.
+  // The stage tabs' card stack: every waiting word, soonest first, with the
+  // day it comes back. `showWhen` marks the first card of each new day, where
+  // the timeline gets its mark and label.
+  const stageItems = useMemo(() => {
+    if (mainTab === 'saved') {
+      return [];
+    }
+    const queue = mainTab === 'learning' ? learningQueue : longTermQueue;
+    let previousWhen = null;
+    return queue.map((word) => {
+      const whenLabel = capitalizeFirst(formatNextReview(word, t));
+      const seenCount = getSeenCount(word);
+      const item = {
+        key: getWordKey(word),
+        word,
+        whenLabel,
+        showWhen: whenLabel !== previousWhen,
+        strength: getStrengthDots(word),
+        metaLabel: [
+          getSourceLabel(word, t),
+          seenCount === 1 ? t('learn.rowSeenOnce') : t('learn.rowSeenTimes', { count: seenCount }),
+        ].filter(Boolean).join(' · '),
+        openLabel: t('learn.wordDetails'),
+      };
+      previousWhen = whenLabel;
+      return item;
+    });
+  }, [learningQueue, longTermQueue, mainTab, t]);
+
+  // The stack's open card. A tap opens or closes one; the scrubber opens
+  // whichever card is beside its handle, so a drag browses them all.
+  const [expandedStageKey, setExpandedStageKey] = useState(null);
+  const [scrubbing, setScrubbing] = useState(false);
+  const handleStageToggle = useCallback((key) => {
+    setExpandedStageKey((current) => (current === key ? null : key));
+  }, []);
+  const stageOffsets = useMemo(() => getStackOffsets(stageItems), [stageItems]);
+  const stageBrowseRef = useRef({ items: stageItems, offsets: stageOffsets, expandedKey: null });
+  stageBrowseRef.current = { items: stageItems, offsets: stageOffsets, expandedKey: expandedStageKey };
+  // Where the stack starts inside the scrolled content.
+  const stageTopRef = useRef({ wrapper: 0, stack: 0 });
+
+  // Scrubber: where the list is scrolled to, as 0..1.
+  const listScrollRef = useRef(null);
+  const scrollMetricsRef = useRef({ content: 0, viewport: 0 });
+  const scrubProgress = useRef(new Animated.Value(0)).current;
+  // The day names by the timeline's dots: shown only while the handle is held.
+  const scrubLabelOpacity = useRef(new Animated.Value(0)).current;
+  const handleScrubDragChange = useCallback((held) => {
+    setScrubbing(held);
+    Animated.timing(scrubLabelOpacity, {
+      toValue: held ? 1 : 0,
+      duration: held ? 120 : 260,
+      useNativeDriver: true,
+    }).start();
+  }, [scrubLabelOpacity]);
+  const [listScrollable, setListScrollable] = useState(false);
+  const updateScrollable = useCallback(() => {
+    const { content, viewport } = scrollMetricsRef.current;
+    setListScrollable(viewport > 0 && content > viewport + 24);
+  }, []);
+
+  // The Today list can run to hundreds of rows; draw a page and add another
+  // each time the reader nears the end.
   const handleListScroll = useCallback((event) => {
     const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+    scrollMetricsRef.current = { content: contentSize.height, viewport: layoutMeasurement.height };
+    const maxScroll = contentSize.height - layoutMeasurement.height;
+    scrubProgress.setValue(maxScroll > 0 ? Math.min(1, Math.max(0, contentOffset.y / maxScroll)) : 0);
     if (contentOffset.y + layoutMeasurement.height > contentSize.height - 800) {
       setVisibleCount((count) => (count < words.length ? count + LIST_PAGE_SIZE : count));
     }
-  }, [words.length]);
+  }, [scrubProgress, words.length]);
+
+  const handleScrub = useCallback((progress, handleY) => {
+    const { content, viewport } = scrollMetricsRef.current;
+    const maxScroll = Math.max(0, content - viewport);
+    const scrollY = progress * maxScroll;
+    scrubProgress.setValue(progress);
+    listScrollRef.current?.scrollTo({ y: scrollY, animated: false });
+
+    // Open the card beside the handle. The handle's track starts
+    // SCRUB_TRACK_OFFSET below the top of the scrolling area.
+    const { items, offsets, expandedKey } = stageBrowseRef.current;
+    const stackY = scrollY + SCRUB_TRACK_OFFSET + handleY - stageTopRef.current.wrapper - stageTopRef.current.stack;
+    const openIndex = expandedKey == null ? -1 : items.findIndex((item) => item.key === expandedKey);
+    const index = findStackIndexAt(offsets, stackY, openIndex);
+    const key = items[index]?.key ?? null;
+    if (key !== expandedKey) {
+      setExpandedStageKey(key);
+    }
+  }, [scrubProgress]);
+
+  useEffect(() => {
+    setExpandedStageKey(null);
+    scrubProgress.setValue(0);
+    listScrollRef.current?.scrollTo({ y: 0, animated: false });
+  }, [mainTab, scrubProgress]);
 
   if (selectedWord) {
     return (
@@ -2040,21 +2137,12 @@ const Learn = ({ navigation, user }) => {
   const todayLabel = capitalizeFirst(t('learn.when.today'));
   const tomorrowLabel = capitalizeFirst(t('learn.when.tomorrow'));
   const mainTabs = [
-    // A word's path, left to right. Today is where the time is spent; the
-    // two stages after it only track.
-    { key: 'saved', label: tabLabel(todayLabel, reviewCount), weight: 1.4 },
+    // A word's path, left to right.
+    { key: 'saved', label: tabLabel(todayLabel, reviewCount) },
     { key: 'learning', label: tabLabel(t('learn.stageLearningTab'), learningQueue.length) },
     { key: 'longterm', label: tabLabel(t('learn.stageLongTermTab'), longTermQueue.length) },
   ];
   const stageLabelKeys = { learning: 'learn.stageLearningTab', longterm: 'learn.stageLongTermTab' };
-  const openWord = (word) => {
-    if (isSelectionMode) {
-      toggleWordSelection(word);
-      return;
-    }
-    setSelectedWord(word);
-  };
-
   // Today: words back for another look first, then ones never reviewed.
   const dueRows = reviewDeck.slice(0, visibleCount);
   const returningCount = reviewDeck.filter((word) => !isNeverReviewed(word)).length;
@@ -2062,25 +2150,6 @@ const Learn = ({ navigation, user }) => {
     { key: 'returning', title: t('learn.sectionReturning'), count: returningCount, rows: dueRows.filter((word) => !isNeverReviewed(word)) },
     { key: 'new', title: t('learn.sectionNew'), count: reviewCount - returningCount, rows: dueRows.filter(isNeverReviewed) },
   ].filter((section) => section.rows.length > 0);
-
-  // Learning: grouped by how soon each word is back.
-  const now = Date.now();
-  const daysAway = (word) => calendarDaysUntil(getNextReviewTimestamp(word), now);
-  const stageSections = mainTab === 'learning'
-    ? [
-      { key: 'tomorrow', title: tomorrowLabel, all: learningQueue.filter((word) => daysAway(word) <= 1) },
-      { key: 'week', title: t('learn.groupThisWeek'), all: learningQueue.filter((word) => daysAway(word) > 1 && daysAway(word) <= 7) },
-      { key: 'later', title: t('learn.groupLater'), all: learningQueue.filter((word) => daysAway(word) > 7) },
-    ]
-    : [{ key: 'all', title: '', all: longTermQueue }];
-  let stageBudget = visibleCount;
-  const visibleStageSections = stageSections
-    .map((section) => {
-      const rows = section.all.slice(0, Math.max(0, stageBudget));
-      stageBudget -= rows.length;
-      return { ...section, count: section.all.length, rows };
-    })
-    .filter((section) => section.rows.length > 0);
 
   const renderSectionHeader = (section) => (section.title ? (
     <View style={styles.sectionHeader}>
@@ -2096,9 +2165,19 @@ const Learn = ({ navigation, user }) => {
       scroll
       backgroundColor={colors.bgPage}
       scrollViewProps={{
+        ref: listScrollRef,
         scrollEnabled: listScrollEnabled,
         onScroll: handleListScroll,
-        scrollEventThrottle: 120,
+        // The stage tabs' scrubber follows the scroll, so it needs every frame.
+        scrollEventThrottle: mainTab === 'saved' ? 120 : 16,
+        onLayout: (event) => {
+          scrollMetricsRef.current.viewport = event.nativeEvent.layout.height;
+          updateScrollable();
+        },
+        onContentSizeChange: (_, height) => {
+          scrollMetricsRef.current.content = height;
+          updateScrollable();
+        },
         // AppTopBar, then the tabs.
         stickyHeaderIndices: [1],
       }}
@@ -2206,32 +2285,52 @@ const Learn = ({ navigation, user }) => {
           </View>
         )
       ) : (
-        <View>
+        <View onLayout={(event) => { stageTopRef.current.wrapper = event.nativeEvent.layout.y; }}>
           {/* What this stage is, whether or not anything is in it yet. */}
           <Text style={styles.stageCaption}>
             {mainTab === 'learning' ? t('learn.stageLearningEmpty') : t('learn.stageLongTermEmpty')}
           </Text>
-          {visibleStageSections.map((section) => (
-            <View key={section.key}>
-              {renderSectionHeader(section)}
-              <View style={styles.list}>
-                {section.rows.map((word) => (
-                  <VocabularyRow
-                    key={getWordKey(word)}
-                    word={word}
-                    dueLabel={capitalizeFirst(formatNextReview(word, t))}
-                    selectionMode={isSelectionMode}
-                    selected={selectedWordKeys.has(getWordKey(word))}
-                    onPress={() => openWord(word)}
-                    onLongPress={() => startWordSelection(word)}
-                  />
-                ))}
-              </View>
+          {isSelectionMode ? (
+            // Picking words to delete: plain rows.
+            <View style={styles.list}>
+              {stageItems.slice(0, visibleCount).map(({ word, whenLabel }) => (
+                <VocabularyRow
+                  key={getWordKey(word)}
+                  word={word}
+                  dueLabel={whenLabel}
+                  selectionMode
+                  selected={selectedWordKeys.has(getWordKey(word))}
+                  onPress={() => toggleWordSelection(word)}
+                  onLongPress={() => startWordSelection(word)}
+                />
+              ))}
             </View>
-          ))}
+          ) : (
+            <WordStack
+              items={stageItems}
+              expandedKey={expandedStageKey}
+              quick={scrubbing}
+              labelOpacity={scrubLabelOpacity}
+              onToggle={handleStageToggle}
+              onLayout={(event) => { stageTopRef.current.stack = event.nativeEvent.layout.y; }}
+              onOpen={setSelectedWord}
+              onLongPress={startWordSelection}
+              noDefinitionLabel={t('learn.noDefinition')}
+            />
+          )}
         </View>
       )}
     </Screen>
+    {mainTab !== 'saved' && !isSelectionMode && listScrollable ? (
+      <TimelineScrubber
+        progress={scrubProgress}
+        // Clear of the tabs (pinned or not) down to just above the Read/Learn pill.
+        top={safeAreaInsets.top + SCRUB_TRACK_OFFSET}
+        bottom={pillTabBarClearance + 4}
+        onScrub={handleScrub}
+        onDragChange={handleScrubDragChange}
+      />
+    ) : null}
     {undoCount > 0 ? (
       <View style={[styles.undoBar, { bottom: pillTabBarClearance, maxWidth: screenWidth - 40 }]}>
         {lastMove ? (
@@ -2306,6 +2405,7 @@ const createStyles = (colors) => StyleSheet.create({
   stageCaption: {
     paddingHorizontal: 20,
     paddingTop: 12,
+    paddingBottom: 12,
     fontFamily: fontFamilies.sansRegular,
     fontSize: 14,
     lineHeight: 20,
