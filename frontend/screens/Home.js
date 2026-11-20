@@ -73,6 +73,8 @@ import {
     contrastRatio as getCoverContrastRatio,
     darkenHex,
     extractBookCoverColors,
+    COVER_PATTERN_COLUMNS,
+    getCoverPatternTiles,
     getGeneratedBookCoverPalette,
     getPublicDomainBookCoverColors,
     getStoredBookCoverColors,
@@ -285,6 +287,11 @@ const useHomeTheme = () => (
 
 const DEFAULT_COVER_REF_WIDTH = Layout.bookPreviewCoverWidth;
 const DEFAULT_COVER_REF_HEIGHT = Layout.bookPreviewCoverHeight;
+// A generated cover's label is paper with ink on it in every theme: it is
+// part of the book, not of the app's chrome.
+const DEFAULT_COVER_LABEL_PAPER = '#faf8f5';
+const DEFAULT_COVER_LABEL_INK = '#1b1c1c';
+const DEFAULT_COVER_LABEL_MUTED = '#5c5e63';
 
 const KOREAN_TEXT_PATTERN = /[\u3131-\u318e\uac00-\ud7a3]/;
 
@@ -754,7 +761,22 @@ const getDefaultCoverPalette = (book, homeColors = HOME_COLORS) => {
         title,
         author,
         rule,
+        pattern: generatedPalette.pattern || generatedPalette.soft,
     };
+};
+
+// One tile of a generated cover's pattern: a square with some corners rounded
+// all the way (see COVER_PATTERN_SHAPES in services/bookCoverColors.js).
+const coverPatternTileRadii = (shape, size) => {
+    switch (shape) {
+        case 'topLeft': return { borderTopLeftRadius: size };
+        case 'topRight': return { borderTopRightRadius: size };
+        case 'bottomRight': return { borderBottomRightRadius: size };
+        case 'bottomLeft': return { borderBottomLeftRadius: size };
+        case 'leafRising': return { borderTopRightRadius: size, borderBottomLeftRadius: size };
+        case 'leafFalling': return { borderTopLeftRadius: size, borderBottomRightRadius: size };
+        default: return { borderRadius: size / 2 };
+    }
 };
 
 const BookCover = ({ book, width, height, style, titleStyle }) => {
@@ -792,82 +814,93 @@ const BookCover = ({ book, width, height, style, titleStyle }) => {
         );
     }
 
+    // No cover image: a tile pattern in the book's own two colours over a
+    // cream label with the title and author.
     const palette = getDefaultCoverPalette(book, homeColors);
     const scaleX = width / DEFAULT_COVER_REF_WIDTH;
     const scaleY = height / DEFAULT_COVER_REF_HEIGHT;
     const scale = Math.min(scaleX, scaleY);
     const title = getBookTitle(book, t);
     const author = getBookAuthor(book, t);
-    const titleFontSize = Math.max(10, getDefaultCoverTitleSize(title, 24 * scale));
-    const authorFontSize = Math.max(7, Math.round(12 * scale));
-    const ruleWidth = Math.max(18, Math.round(30 * scaleX));
-    const ruleGap = Math.max(5, Math.round(12 * scaleY));
+    const tileSize = width / COVER_PATTERN_COLUMNS;
+    const patternHeight = Math.min(tileSize * COVER_PATTERN_COLUMNS, Math.round(height * 0.68));
+    const labelHeight = height - patternHeight;
+    const tiles = getCoverPatternTiles(book);
+    const rows = [];
+    for (let index = 0; index < tiles.length; index += COVER_PATTERN_COLUMNS) {
+        rows.push(tiles.slice(index, index + COVER_PATTERN_COLUMNS));
+    }
+    const titleFontSize = Math.max(8, getDefaultCoverTitleSize(title, 22 * scale));
+    const authorFontSize = Math.max(6, Math.round(11 * scale));
+    // On the smallest thumbnails there is only room for the title.
+    const showAuthor = !!author && labelHeight >= 44;
 
     return (
-        <View style={[
-            styles.defaultCover,
-            style,
-            {
-                width,
-                height,
-                backgroundColor: palette.background,
-                gap: ruleGap,
-                paddingHorizontal: Math.max(8, Math.round(20 * scaleX)),
-                paddingVertical: Math.max(10, Math.round(20 * scaleY)),
-            },
-        ]}>
+        <View
+            accessibilityLabel={title}
+            style={[styles.defaultCover, style, { width, height, backgroundColor: palette.background }]}
+        >
+            <View style={{ width, height: patternHeight, overflow: 'hidden' }}>
+                {rows.map((row, rowIndex) => (
+                    // eslint-disable-next-line react/no-array-index-key
+                    <View key={rowIndex} style={styles.defaultCoverPatternRow}>
+                        {row.map((shape, columnIndex) => (
+                            <View
+                                // eslint-disable-next-line react/no-array-index-key
+                                key={columnIndex}
+                                style={[
+                                    { flex: 1, height: tileSize, backgroundColor: palette.pattern },
+                                    coverPatternTileRadii(shape, tileSize),
+                                ]}
+                            />
+                        ))}
+                    </View>
+                ))}
+            </View>
             <View
                 style={[
-                    styles.defaultCoverRule,
+                    styles.defaultCoverLabel,
                     {
-                        width: ruleWidth,
-                        backgroundColor: palette.rule,
-                    },
-                ]}
-            />
-            <Text
-                numberOfLines={3}
-                adjustsFontSizeToFit
-                minimumFontScale={0.72}
-                style={[
-                    styles.defaultCoverTitle,
-                    hasKoreanText(title) ? styles.defaultCoverTitleKorean : styles.defaultCoverTitleDisplay,
-                    titleStyle,
-                    {
-                        color: palette.title,
-                        fontSize: titleFontSize,
-                        lineHeight: Math.round(titleFontSize * 1.45),
+                        paddingHorizontal: Math.max(4, Math.round(16 * scaleX)),
+                        gap: Math.max(1, Math.round(5 * scaleY)),
                     },
                 ]}
             >
-                {title}
-            </Text>
-            <Text
-                numberOfLines={2}
-                adjustsFontSizeToFit
-                minimumFontScale={0.78}
-                style={[
-                    styles.defaultCoverAuthor,
-                    hasKoreanText(author) && styles.koreanInlineText,
-                    {
-                        color: palette.author,
-                        fontSize: authorFontSize,
-                        lineHeight: Math.max(10, Math.round(authorFontSize * 1.42)),
-                        letterSpacing: Math.max(1.2, 3 * scale),
-                    },
-                ]}
-            >
-                {author}
-            </Text>
-            <View
-                style={[
-                    styles.defaultCoverRule,
-                    {
-                        width: ruleWidth,
-                        backgroundColor: palette.rule,
-                    },
-                ]}
-            />
+                <Text
+                    numberOfLines={2}
+                    adjustsFontSizeToFit
+                    minimumFontScale={0.72}
+                    style={[
+                        styles.defaultCoverTitle,
+                        hasKoreanText(title) ? styles.defaultCoverTitleKorean : styles.defaultCoverTitleDisplay,
+                        titleStyle,
+                        {
+                            color: DEFAULT_COVER_LABEL_INK,
+                            fontSize: titleFontSize,
+                            lineHeight: Math.round(titleFontSize * 1.28),
+                        },
+                    ]}
+                >
+                    {title}
+                </Text>
+                {showAuthor ? (
+                    <Text
+                        numberOfLines={1}
+                        style={[
+                            styles.defaultCoverAuthor,
+                            hasKoreanText(author) && styles.koreanInlineText,
+                            {
+                                color: DEFAULT_COVER_LABEL_MUTED,
+                                fontSize: authorFontSize,
+                                lineHeight: Math.max(9, Math.round(authorFontSize * 1.4)),
+                                letterSpacing: Math.max(0.6, 2 * scale),
+                            },
+                        ]}
+                    >
+                        {author}
+                    </Text>
+                ) : null}
+            </View>
         </View>
     );
 };
@@ -3245,8 +3278,8 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             return;
         }
 
-        // Only the reader's recently opened books keep their file in the
-        // cloud; this one's is on the device it was last read on.
+        // This book's file isn't in the cloud (not uploaded yet, or over
+        // the size limit); it's on the device it was last read on.
         if (book.cloudFileStored === false) {
             Alert.alert(t('home.bookFileElsewhereTitle'), t('home.bookFileElsewhereBody'));
             return;
@@ -6553,29 +6586,28 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
     defaultCover: {
         overflow: 'hidden',
         borderRadius: 2,
-        alignItems: 'center',
-        justifyContent: 'center',
     },
-    defaultCoverRule: {
-        height: 1,
-        borderRadius: 1,
+    defaultCoverPatternRow: {
+        flexDirection: 'row',
+    },
+    defaultCoverLabel: {
+        flex: 1,
+        justifyContent: 'center',
+        backgroundColor: DEFAULT_COVER_LABEL_PAPER,
     },
     defaultCoverTitle: {
         width: '100%',
         letterSpacing: 0,
-        textAlign: 'center',
     },
     defaultCoverTitleKorean: {
-        fontFamily: fontFamilies.krSerifSemiBold,
+        fontFamily: fontFamilies.krSerifBold,
     },
     defaultCoverTitleDisplay: {
-        fontFamily: fontFamilies.displaySemiBold,
+        fontFamily: fontFamilies.displayBold,
     },
     defaultCoverAuthor: {
         width: '100%',
         fontFamily: fontFamilies.krSerifRegular,
-        opacity: 1,
-        textAlign: 'center',
     },
     bookCover: {
         borderRadius: 2,

@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Alert,
   Animated,
+  AppState,
   BackHandler,
   Modal,
   Pressable,
@@ -11,14 +12,15 @@ import {
   Text,
   TouchableOpacity,
   View,
+  useWindowDimensions,
 } from 'react-native';
-import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Feather, MaterialIcons } from '@expo/vector-icons';
 
-import Flashcard from '../components/Learn/Flashcard';
-import AudioReview from '../components/Learn/AudioReview';
+import SwipeWordRow from '../components/Learn/SwipeWordRow';
+import WordStack, { TimelineScrubber, findStackIndexAt, getStackOffsets } from '../components/Learn/WordStack';
 import GrammarSection from '../components/Learn/GrammarSection';
 import AppTopBar from '../components/shared/AppTopBar';
 import { usePillTabBarClearance } from '../components/shared/TabBar';
@@ -39,6 +41,7 @@ import {
   getRelatedKnownWords,
   insertData,
   logInteractionEvent,
+  fsrsSchedule,
   recordReviewOutcome,
   removeData,
   removeRelatedKnownWord,
@@ -50,7 +53,6 @@ import {
 import { deriveCandidateReason } from '../services/wordCandidates';
 import { LEARNED_LEVEL } from '../services/savedWordFade';
 import {
-  recordCloudVocabReview,
   supabase,
   toggleCloudRelatedKnownWord,
 } from '../services/supabase';
@@ -557,6 +559,74 @@ const sortDueReviews = (rows) => [...rows].sort((a, b) => (
   - (getNextReviewTimestamp(b) ?? Number.MAX_SAFE_INTEGER)
 ));
 
+// How many of the latest swipes can be taken back, and for how long. Those
+// grades are held unsaved, so an undo never rewrites a stored review.
+// Same green the swipe row turns for a known word.
+const KNOWN_GREEN = '#2e8b57';
+const UNDO_DEPTH = 5;
+const UNDO_WINDOW_MS = 6000;
+// Rows drawn at first and added each time the list is scrolled near its end.
+const LIST_PAGE_SIZE = 30;
+// A word whose reviews are three weeks or more apart counts as long-term
+// memory. Same line Anki draws between "young" and "mature" cards; with the
+// scheduler it is reached after about three known reviews in a row.
+const LONG_TERM_INTERVAL_DAYS = 21;
+
+// Days between a word's last review and its next one.
+const getScheduledIntervalDays = (word) => {
+  const next = getNextReviewTimestamp(word);
+  if (next === null) {
+    return 0;
+  }
+  const last = new Date(word?.last_reviewed_at).getTime();
+  return Math.round((next - (Number.isFinite(last) ? last : Date.now())) / MS_PER_DAY);
+};
+const isLongTerm = (word) => getScheduledIntervalDays(word) >= LONG_TERM_INTERVAL_DAYS;
+
+// How firmly a word is held, as 0–4 filled dots: none until its first review,
+// then one more as the gap between reviews passes a week, three weeks and
+// two months.
+const getStrengthDots = (word) => {
+  if (isNeverReviewed(word)) {
+    return 0;
+  }
+  const interval = getScheduledIntervalDays(word);
+  if (interval >= 60) return 4;
+  if (interval >= LONG_TERM_INTERVAL_DAYS) return 3;
+  if (interval >= 7) return 2;
+  return 1;
+};
+
+const SWIPE_NUDGE_SEEN_KEY = 'learn.swipeNudgeSeen';
+// How far below the top of the scrolling area the scrubber's track starts:
+// clear of the tabs, pinned or not.
+const SCRUB_TRACK_OFFSET = 140;
+
+// The word as it will read once a swipe grade is saved, so it can move to its
+// queue at once. Mirrors recordReviewOutcome in services/Database.js.
+const applyGradeLocally = (word, status) => {
+  const now = Date.now();
+  // No last review must stay "none": new Date(null) is 1970, which would read
+  // as a word remembered across fifty years and schedule it a year out.
+  const lastReviewed = word.last_reviewed_at ? new Date(word.last_reviewed_at).getTime() : NaN;
+  const daysSince = Number.isFinite(lastReviewed) ? Math.max(0, (now - lastReviewed) / MS_PER_DAY) : null;
+  const schedule = fsrsSchedule(word, status, daysSince);
+  const nextReview = new Date(now);
+  nextReview.setDate(nextReview.getDate() + Math.max(0, Number(schedule?.interval) || 1));
+  const reviewedAt = new Date(now).toISOString();
+  return {
+    ...word,
+    level: status,
+    last_reviewed_at: reviewedAt,
+    next_review_at: nextReview.toISOString(),
+    stability: schedule?.stability ?? word.stability,
+    difficulty: schedule?.difficulty ?? word.difficulty,
+    correct_count: numericValue(word.correct_count) + (status === 'bad' ? 0 : 1),
+    wrong_count: numericValue(word.wrong_count) + (status === 'bad' ? 1 : 0),
+    updated_at: reviewedAt,
+  };
+};
+
 const normalizeRows = (rows) =>
   rows.map((row) => ({
     ...row,
@@ -609,10 +679,10 @@ const getFilteredWords = (rows, filter, levelsByKey = proficiencyByKey) => {
   return sortRecent(rows);
 };
 
-const EncounterDots = ({ seenCount, size = 6 }) => {
+const EncounterDots = ({ seenCount, size = 6, filled = null }) => {
   const { t } = useTranslation();
   const { styles } = useLearnTheme();
-  const filledCount = getExposureDotCount(seenCount);
+  const filledCount = filled ?? getExposureDotCount(seenCount);
 
   return (
     <View
@@ -651,7 +721,18 @@ const StatusBadge = ({ label }) => {
   );
 };
 
-const VocabularyRow = ({ word, onPress, onLongPress, selectionMode = false, selected = false }) => {
+const VocabularyRow = ({
+  word,
+  onPress,
+  onLongPress,
+  selectionMode = false,
+  selected = false,
+  dueLabel = '',
+  // Swipe rows: the meaning stays hidden (this opacity) until the row is
+  // touched, and the swipe row supplies the press handlers.
+  definitionOpacity = null,
+  pressableProps = null,
+}) => {
   const { t, language } = useTranslation();
   const { colors, styles } = useLearnTheme();
   const seenCount = getSeenCount(word);
@@ -660,17 +741,16 @@ const VocabularyRow = ({ word, onPress, onLongPress, selectionMode = false, sele
   const seenLabel = seenCount === 1
     ? t('learn.rowSeenOnce')
     : t('learn.rowSeenTimes', { count: seenCount });
-  const showNewBadge = isRecentlySaved(word);
-  const showNotSeenBadge = !showNewBadge && isNotSeenLately(word);
 
   return (
     <Pressable
       onPress={onPress}
       onLongPress={onLongPress}
       delayLongPress={280}
+      {...pressableProps}
       style={({ pressed }) => [
         styles.wordRow,
-        pressed && styles.wordRowPressed,
+        pressableProps ? styles.wordRowSwipe : (pressed && styles.wordRowPressed),
         selected && styles.wordRowSelected,
       ]}
     >
@@ -683,38 +763,86 @@ const VocabularyRow = ({ word, onPress, onLongPress, selectionMode = false, sele
         <View style={styles.wordTitleLine}>
           <Text numberOfLines={1} style={styles.wordText}>{word.word}</Text>
           {word.hanja ? <Text numberOfLines={1} style={styles.wordHanja}>{word.hanja}</Text> : null}
-          {showNewBadge ? <StatusBadge label={t('learn.newBadge')} /> : null}
-          {showNotSeenBadge ? <StatusBadge label={t('learn.notSeenBadge')} /> : null}
           {word.is_favorite ? <MaterialIcons name="star" size={15} color={colors.inkSlate} /> : null}
         </View>
-        <Text numberOfLines={1} style={styles.wordDefinition}>{word.def || t('learn.noDefinition')}</Text>
+        {definitionOpacity ? (
+          <View style={styles.wordDefinitionSlot}>
+            {/* A blank bar holds the meaning's place until the row is touched. */}
+            {/* The bar fades out in the first half; the meaning rises into
+                its place over the whole reveal. */}
+            <Animated.View
+              style={[
+                styles.wordDefinitionCover,
+                { opacity: definitionOpacity.interpolate({ inputRange: [0, 0.5, 1], outputRange: [1, 0, 0] }) },
+              ]}
+            />
+            <Animated.Text
+              numberOfLines={1}
+              style={[
+                styles.wordDefinition,
+                {
+                  opacity: definitionOpacity.interpolate({ inputRange: [0, 0.25, 1], outputRange: [0, 0, 1] }),
+                  transform: [{
+                    translateY: definitionOpacity.interpolate({ inputRange: [0, 1], outputRange: [7, 0] }),
+                  }],
+                },
+              ]}
+            >
+              {word.def || t('learn.noDefinition')}
+            </Animated.Text>
+          </View>
+        ) : (
+          <Text numberOfLines={1} style={styles.wordDefinition}>{word.def || t('learn.noDefinition')}</Text>
+        )}
         <Text numberOfLines={1} style={styles.wordMetaText}>
           {[source, seenLabel, lastSaw].filter(Boolean).join(' · ')}
         </Text>
       </View>
 
       <View style={styles.encounterSummary}>
-        <EncounterDots seenCount={seenCount} />
+        {dueLabel ? <Text numberOfLines={1} style={styles.wordDueText}>{dueLabel}</Text> : null}
+        <EncounterDots seenCount={seenCount} filled={getStrengthDots(word)} />
       </View>
     </Pressable>
   );
 };
 
-const SegmentedTabs = ({ tabs, value, onChange }) => {
+// `tab.weight` sets a tab's share of the width (default 1). `pulse`
+// ({ key, nonce }) makes that tab's label jump once: a swiped word landed there.
+const SegmentedTabs = ({ tabs, value, onChange, pulse = null }) => {
   const { styles } = useLearnTheme();
   const [trackWidth, setTrackWidth] = useState(0);
   const activeIndex = Math.max(0, tabs.findIndex((tab) => tab.key === value));
   const position = useRef(new Animated.Value(activeIndex)).current;
+  const pulseScale = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
     Animated.timing(position, {
       toValue: activeIndex,
       duration: 180,
-      useNativeDriver: true,
+      // Width changes between tabs, which the native driver cannot animate.
+      useNativeDriver: false,
     }).start();
   }, [activeIndex, position]);
 
-  const segmentWidth = trackWidth > 0 ? (trackWidth - SEGMENT_TRACK_PADDING * 2) / tabs.length : 0;
+  useEffect(() => {
+    if (!pulse?.nonce) {
+      return;
+    }
+    pulseScale.setValue(1.22);
+    Animated.spring(pulseScale, {
+      toValue: 1,
+      bounciness: 14,
+      speed: 14,
+      useNativeDriver: true,
+    }).start();
+  }, [pulse?.nonce, pulseScale]);
+
+  const totalWeight = tabs.reduce((sum, tab) => sum + (tab.weight ?? 1), 0);
+  const innerWidth = Math.max(0, trackWidth - SEGMENT_TRACK_PADDING * 2);
+  const widths = tabs.map((tab) => (innerWidth * (tab.weight ?? 1)) / totalWeight);
+  const offsets = widths.map((_, index) => widths.slice(0, index).reduce((sum, width) => sum + width, 0));
+  const indexes = tabs.map((_, index) => index);
 
   return (
     <View
@@ -722,14 +850,17 @@ const SegmentedTabs = ({ tabs, value, onChange }) => {
       style={styles.mainTabs}
       onLayout={(event) => setTrackWidth(event.nativeEvent.layout.width)}
     >
-      {segmentWidth > 0 ? (
+      {innerWidth > 0 && tabs.length > 1 ? (
         <Animated.View
           pointerEvents="none"
           style={[
             styles.mainTabIndicator,
             {
-              width: segmentWidth,
-              transform: [{ translateX: Animated.multiply(position, segmentWidth) }],
+              width: position.interpolate({ inputRange: indexes, outputRange: widths }),
+              left: position.interpolate({
+                inputRange: indexes,
+                outputRange: offsets.map((offset) => offset + SEGMENT_TRACK_PADDING),
+              }),
             },
           ]}
         />
@@ -741,13 +872,20 @@ const SegmentedTabs = ({ tabs, value, onChange }) => {
             key={tab.key}
             onPress={() => onChange(tab.key)}
             activeOpacity={0.7}
-            style={styles.mainTab}
+            style={[styles.mainTab, { flex: tab.weight ?? 1 }]}
             accessibilityRole="tab"
             accessibilityState={{ selected: active }}
           >
-            <Text numberOfLines={1} style={[styles.mainTabText, active && styles.mainTabTextActive]}>
+            <Animated.Text
+              numberOfLines={1}
+              style={[
+                styles.mainTabText,
+                active && styles.mainTabTextActive,
+                pulse?.key === tab.key && { transform: [{ scale: pulseScale }] },
+              ]}
+            >
               {tab.label}
-            </Text>
+            </Animated.Text>
           </TouchableOpacity>
         );
       })}
@@ -1129,6 +1267,7 @@ const WordDetailModal = ({
   contexts = [],
   onClose,
   onToggleFavorite,
+  onDelete,
   onKnownWordsChange,
 }) => {
   const { t, language } = useTranslation();
@@ -1178,19 +1317,31 @@ const WordDetailModal = ({
         >
           <Feather name="chevron-left" size={24} color={colors.inkSlate} />
         </TouchableOpacity>
-        <TouchableOpacity
-          accessibilityRole="button"
-          accessibilityLabel={word.is_favorite ? t('learn.removeFavorite') : t('learn.addFavorite')}
-          accessibilityState={{ selected: Boolean(word.is_favorite) }}
-          onPress={onToggleFavorite}
-          style={styles.headerIconButton}
-        >
-          <MaterialIcons
-            name={word.is_favorite ? 'star' : 'star-outline'}
-            size={24}
-            color={colors.inkSlate}
-          />
-        </TouchableOpacity>
+        <View style={styles.detailHeaderActions}>
+          {onDelete ? (
+            <TouchableOpacity
+              accessibilityRole="button"
+              accessibilityLabel={t('common.delete')}
+              onPress={onDelete}
+              style={styles.headerIconButton}
+            >
+              <Feather name="trash-2" size={21} color={colors.inkSlate} />
+            </TouchableOpacity>
+          ) : null}
+          <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel={word.is_favorite ? t('learn.removeFavorite') : t('learn.addFavorite')}
+            accessibilityState={{ selected: Boolean(word.is_favorite) }}
+            onPress={onToggleFavorite}
+            style={styles.headerIconButton}
+          >
+            <MaterialIcons
+              name={word.is_favorite ? 'star' : 'star-outline'}
+              size={24}
+              color={colors.inkSlate}
+            />
+          </TouchableOpacity>
+        </View>
       </View>
 
       <ScrollView
@@ -1303,6 +1454,7 @@ const Learn = ({ navigation, user }) => {
   const { colors } = useTheme();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const pillTabBarClearance = usePillTabBarClearance();
+  const safeAreaInsets = useSafeAreaInsets();
   const proficiencyLevels = useMemo(() => createProficiencyLevels(colors), [colors]);
   const proficiencyByKey = useMemo(() => createProficiencyByKey(proficiencyLevels), [proficiencyLevels]);
   const learnThemeValue = useMemo(() => ({
@@ -1317,17 +1469,36 @@ const Learn = ({ navigation, user }) => {
   const [candidatesLoading, setCandidatesLoading] = useState(false);
   const [candidatesLoaded, setCandidatesLoaded] = useState(false);
   const [savedCandidateStems, setSavedCandidateStems] = useState(() => new Set());
-  const [activeFilter, setActiveFilter] = useState('recent');
-  const [practiceDeck, setPracticeDeck] = useState(null);
-  const [practiceIndex, setPracticeIndex] = useState(0);
-  const [practiceDone, setPracticeDone] = useState(false);
-  const markedPracticeIndexRef = useRef(-1);
+  const { width: screenWidth } = useWindowDimensions();
+  const [listScrollEnabled, setListScrollEnabled] = useState(true);
+  const [visibleCount, setVisibleCount] = useState(LIST_PAGE_SIZE);
+  // How many swipes Undo can still take back (drives the Undo button).
+  const [undoCount, setUndoCount] = useState(0);
+  // Where the last swiped word went: { key, nonce }. The tab jumps and the
+  // Undo button names it.
+  const [lastMove, setLastMove] = useState(null);
+  // First visit: the top row rocks once to show it can be swiped.
+  const [showNudge, setShowNudge] = useState(false);
+  useEffect(() => {
+    AsyncStorage.getItem(SWIPE_NUDGE_SEEN_KEY)
+      .then((seen) => {
+        if (!seen) {
+          setShowNudge(true);
+        }
+      })
+      .catch(() => {});
+  }, []);
+  const undoTimerRef = useRef(null);
+  // Every swipe grade not yet stored: { original, optimistic, status }. A
+  // reload of the list re-applies them so a graded word never jumps back.
+  const gradeOverlayRef = useRef([]);
+  // Swipe grades are written one after another; closing the review waits for
+  // the last one before it reloads the list.
+  const practiceWritesRef = useRef(Promise.resolve());
+  const pendingPracticeGradesRef = useRef([]);
   const [selectedWord, setSelectedWord] = useState(null);
   const [selectedWordContexts, setSelectedWordContexts] = useState([]);
   const [selectedWordKeys, setSelectedWordKeys] = useState(() => new Set());
-  // Audio review: the list it plays (the saved words as currently filtered).
-  const [audioWords, setAudioWords] = useState(null);
-
   const isSelectionMode = selectedWordKeys.size > 0;
 
   // Request ids: a fetch started for the previous language/owner can resolve
@@ -1341,7 +1512,10 @@ const Learn = ({ navigation, user }) => {
       const data = await viewData({ ownerId: activeOwnerId, language: targetLanguage });
       // Learned words (saved words whose highlight faded out while reading)
       // have their own tab and leave the saved list and the reviews.
-      const all = normalizeRows(data);
+      const overlay = gradeOverlayRef.current;
+      const all = normalizeRows(data).map((row) => (
+        overlay.find((entry) => sameWord(entry.original, row))?.optimistic ?? row
+      ));
       const normalized = all.filter((row) => row.level !== LEARNED_LEVEL);
       if (requestId !== wordsRequestIdRef.current) {
         return normalized;
@@ -1376,8 +1550,12 @@ const Learn = ({ navigation, user }) => {
 
   useEffect(() => {
     setWords([]);
-    setPracticeDeck(null);
-    setPracticeIndex(0);
+    // Unsaved swipe grades belong to the previous owner/language: drop them
+    // rather than write them under the new one.
+    pendingPracticeGradesRef.current = [];
+    gradeOverlayRef.current = [];
+    clearTimeout(undoTimerRef.current);
+    setUndoCount(0);
     setSelectedWord(null);
     setSelectedWordContexts([]);
     setSelectedWordKeys(new Set());
@@ -1539,11 +1717,6 @@ const Learn = ({ navigation, user }) => {
     return () => subscription.remove();
   }, [selectedWord]);
 
-  const visibleWords = useMemo(
-    () => getFilteredWords(words, activeFilter, proficiencyByKey),
-    [activeFilter, proficiencyByKey, words]
-  );
-
   const selectedWords = useMemo(
     () => words.filter((word) => selectedWordKeys.has(getWordKey(word))),
     [selectedWordKeys, words]
@@ -1570,15 +1743,26 @@ const Learn = ({ navigation, user }) => {
   const reviewDeck = useMemo(
     () => {
       const now = Date.now();
-      return sortDueReviews(words.filter((word) => isReviewAvailable(word, now)));
+      // Overdue words first (longest overdue on top), then new ones, newest first.
+      return sortDueReviews(sortRecent(words.filter((word) => isReviewAvailable(word, now))));
     },
     [words]
   );
+  // Graded words waiting for their next turn, soonest first, by how far apart
+  // their reviews now are: still being learned, or in long-term memory.
+  const [learningQueue, longTermQueue] = useMemo(() => {
+    const now = Date.now();
+    const waiting = sortDueReviews(words.filter((word) => isReviewCoolingDown(word, now)));
+    return [
+      waiting.filter((word) => !isLongTerm(word)),
+      waiting.filter(isLongTerm),
+    ];
+  }, [words]);
   const notSeenYetCount = useMemo(() => words.filter(isNeverReviewed).length, [words]);
-  // "The next one comes back …" on the all-caught-up screen: the soonest
-  // review scheduled after now.
+  // "The next one comes back …" once nothing is due: the soonest review
+  // scheduled after now.
   const nextComebackNote = useMemo(() => {
-    if (!practiceDone) {
+    if (reviewDeck.length > 0) {
       return '';
     }
     const now = Date.now();
@@ -1593,7 +1777,7 @@ const Learn = ({ navigation, user }) => {
       return '';
     }
     return days === 1 ? t('learn.nextBackTomorrow') : t('learn.nextBackInDays', { count: days });
-  }, [practiceDone, t, words]);
+  }, [reviewDeck.length, t, words]);
 
   const syncFieldsToCloud = useCallback(async () => {
     requestUserDataSync('learn-vocab-fields');
@@ -1698,120 +1882,240 @@ const Learn = ({ navigation, user }) => {
     );
   }, [clearWordSelection, deleteSavedWord, fetchWords, selectedWords, t]);
 
-  const startPractice = useCallback((deckWords, title) => {
-    const now = Date.now();
-    const availableDeckWords = (deckWords || []).filter((word) => isReviewAvailable(word, now));
-
-    if (availableDeckWords.length === 0) {
-      return;
-    }
-
-    markedPracticeIndexRef.current = -1;
-    setPracticeDone(false);
-    setPracticeDeck({
-      title,
-      words: availableDeckWords,
-    });
-    setPracticeIndex(0);
-  }, []);
-
-  const closePractice = useCallback(() => {
-    // markedPracticeIndexRef is reset in startPractice, not here: a double tap
-    // on the last card still sees the old deck in its closure.
-    setPracticeDeck(null);
-    setPracticeIndex(0);
-    setPracticeDone(false);
-  }, []);
-
-  const persistPracticeOutcome = useCallback(async (currentWord, status) => {
-    await recordReviewOutcome(
-      currentWord.word,
-      currentWord.hanja,
-      currentWord.def,
-      currentWord.level,
-      status,
-      currentWord.language ?? 'ko',
-      {
-        ownerId: activeOwnerId,
-        wordData: currentWord,
-      }
+  // Delete from the word's own page (the way out for a word in Today, whose
+  // row has no long-press: a held touch there is someone reading the meaning).
+  const handleDeleteWord = useCallback((word) => {
+    Alert.alert(
+      t('learn.deleteSavedWordTitle'),
+      t('learn.deleteWordBody', { word: word.word }),
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        {
+          text: t('common.delete'),
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await deleteSavedWord(word);
+            } catch (error) {
+              console.warn('[Learn] remove failed:', error?.message ?? error);
+            }
+            setSelectedWord(null);
+            await fetchWords();
+          },
+        },
+      ]
     );
-    const updatedWords = await fetchWords();
-    const updatedWord = updatedWords.find((candidate) => sameWord(candidate, currentWord));
-    if (updatedWord) {
-      const reviewedAt = updatedWord.last_reviewed_at ?? updatedWord.updated_at ?? new Date().toISOString();
-      let syncedReview = false;
+  }, [deleteSavedWord, fetchWords, t]);
 
-      if (
-        user?.id
-        && !syncPaused
-        && activeOwnerId === user.id
-        && isCurrentSyncGeneration(syncGeneration)
-      ) {
-        try {
-          await recordCloudVocabReview({
-            user,
-            ownerId: activeOwnerId,
-            generation: syncGeneration,
-            entry: updatedWord,
-            review: {
-              outcome: status,
-              next_status: updatedWord.level,
-              reviewed_at: reviewedAt,
-              last_reviewed_at: reviewedAt,
-              next_review_at: updatedWord.next_review_at,
-              stability: updatedWord.stability,
-              difficulty: updatedWord.difficulty,
-              correct_count: updatedWord.correct_count,
-              wrong_count: updatedWord.wrong_count,
-              updated_at: updatedWord.updated_at ?? reviewedAt,
-            },
-          });
-          syncedReview = true;
-        } catch (error) {
-          console.warn('[Learn] Cloud review sync failed; queueing full vocab sync:', error?.message ?? error);
-        }
-      }
+  const writePracticeGrade = useCallback((entry) => {
+    const word = entry.original;
+    practiceWritesRef.current = practiceWritesRef.current
+      .then(() => recordReviewOutcome(
+        word.word,
+        word.hanja,
+        word.def,
+        word.level,
+        entry.status,
+        word.language ?? 'ko',
+        { ownerId: activeOwnerId, wordData: word }
+      ))
+      .catch((error) => {
+        console.warn('[Learn] Failed to record swipe review:', error?.message ?? error);
+      })
+      .then(() => {
+        // Stored: from here a reload shows the saved row itself.
+        gradeOverlayRef.current = gradeOverlayRef.current.filter((candidate) => candidate !== entry);
+      });
+  }, [activeOwnerId]);
 
-      if (!syncedReview) {
-        await syncFieldsToCloud(updatedWord);
-      }
-    }
-  }, [
-    activeOwnerId,
-    fetchWords,
-    syncFieldsToCloud,
-    syncGeneration,
-    syncPaused,
-    user,
-  ]);
-
-  const handlePracticeMark = useCallback(async (status) => {
-    if (!practiceDeck?.words?.length) {
+  // Store every swipe still held back for Undo, then reload and sync once.
+  const flushPracticeWrites = useCallback(() => {
+    clearTimeout(undoTimerRef.current);
+    const pending = pendingPracticeGradesRef.current.splice(0);
+    setUndoCount(0);
+    if (pending.length === 0) {
       return;
     }
-    // A fast double tap fires twice before the re-render: without this guard
-    // the same card is recorded twice and the index skips the next card.
-    if (markedPracticeIndexRef.current === practiceIndex) {
+    pending.forEach(writePracticeGrade);
+    practiceWritesRef.current.then(() => {
+      requestUserDataSync('learn-vocab-fields');
+      return fetchWords();
+    });
+  }, [fetchWords, writePracticeGrade]);
+  const flushPracticeWritesRef = useRef(flushPracticeWrites);
+  flushPracticeWritesRef.current = flushPracticeWrites;
+
+  // One swipe = one graded review. The word moves to its queue at once; the
+  // latest few grades stay unsaved for a few seconds so Undo only has to drop
+  // them. Nothing per swipe waits on a reload or the network.
+  const handleSwipeGrade = useCallback((word, status) => {
+    const entry = { original: word, optimistic: applyGradeLocally(word, status), status };
+    const pending = pendingPracticeGradesRef.current;
+    pending.push(entry);
+    gradeOverlayRef.current = [...gradeOverlayRef.current, entry];
+    setWords((current) => current.map((candidate) => (
+      sameWord(candidate, word) ? entry.optimistic : candidate
+    )));
+    while (pending.length > UNDO_DEPTH) {
+      writePracticeGrade(pending.shift());
+    }
+    setUndoCount(pending.length);
+    setLastMove((current) => ({
+      key: isLongTerm(entry.optimistic) ? 'longterm' : 'learning',
+      when: capitalizeFirst(formatNextReview(entry.optimistic, t)),
+      nonce: (current?.nonce ?? 0) + 1,
+    }));
+    if (showNudge) {
+      setShowNudge(false);
+    }
+    AsyncStorage.setItem(SWIPE_NUDGE_SEEN_KEY, '1').catch(() => {});
+    clearTimeout(undoTimerRef.current);
+    undoTimerRef.current = setTimeout(() => flushPracticeWritesRef.current(), UNDO_WINDOW_MS);
+  }, [showNudge, t, writePracticeGrade]);
+
+  const handleSwipeUndo = useCallback(() => {
+    const pending = pendingPracticeGradesRef.current;
+    const entry = pending.pop();
+    if (!entry) {
       return;
     }
-    markedPracticeIndexRef.current = practiceIndex;
-
-    const currentWord = practiceDeck.words[practiceIndex];
-    // Advance before the slow DB/cloud work so the next card shows at once.
-    // After the last card the deck stays open on the all-caught-up screen.
-    if (practiceIndex >= practiceDeck.words.length - 1) {
-      setPracticeDone(true);
-    } else {
-      setPracticeIndex(practiceIndex + 1);
+    gradeOverlayRef.current = gradeOverlayRef.current.filter((candidate) => candidate !== entry);
+    setWords((current) => current.map((candidate) => (
+      sameWord(candidate, entry.original) ? entry.original : candidate
+    )));
+    setUndoCount(pending.length);
+    clearTimeout(undoTimerRef.current);
+    if (pending.length > 0) {
+      undoTimerRef.current = setTimeout(() => flushPracticeWritesRef.current(), UNDO_WINDOW_MS);
     }
+  }, []);
 
-    try {
-      await persistPracticeOutcome(currentWord, status);
-    } catch (error) {
-      console.warn('[Learn] Failed to record flashcard review:', error?.message ?? error);
+  // Leaving the tab or the app stores whatever is still waiting on Undo.
+  useFocusEffect(useCallback(() => () => flushPracticeWritesRef.current(), []));
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state !== 'active') {
+        flushPracticeWritesRef.current();
+      }
+    });
+    return () => {
+      subscription.remove();
+      clearTimeout(undoTimerRef.current);
+    };
+  }, []);
+
+  // A due word looks like every other saved-word row; only its meaning waits
+  // for the touch.
+  const renderDueRow = useCallback((word, slot) => (
+    <VocabularyRow word={word} definitionOpacity={slot.reveal} pressableProps={slot.pressableProps} />
+  ), []);
+
+  const handleSwipeActive = useCallback((active) => setListScrollEnabled(!active), []);
+
+  useEffect(() => {
+    setVisibleCount(LIST_PAGE_SIZE);
+  }, [mainTab]);
+
+  // The lists can run to hundreds of rows; draw a page and add another each
+  // time the reader nears the end.
+  // The stage tabs' card stack: every waiting word, soonest first, with the
+  // day it comes back. `showWhen` marks the first card of each new day, where
+  // the timeline gets its mark and label.
+  const stageItems = useMemo(() => {
+    if (mainTab === 'saved') {
+      return [];
     }
-  }, [persistPracticeOutcome, practiceDeck, practiceIndex]);
+    const queue = mainTab === 'learning' ? learningQueue : longTermQueue;
+    let previousWhen = null;
+    return queue.map((word) => {
+      const whenLabel = capitalizeFirst(formatNextReview(word, t));
+      const seenCount = getSeenCount(word);
+      const item = {
+        key: getWordKey(word),
+        word,
+        whenLabel,
+        showWhen: whenLabel !== previousWhen,
+        strength: getStrengthDots(word),
+        metaLabel: [
+          getSourceLabel(word, t),
+          seenCount === 1 ? t('learn.rowSeenOnce') : t('learn.rowSeenTimes', { count: seenCount }),
+        ].filter(Boolean).join(' · '),
+        openLabel: t('learn.wordDetails'),
+      };
+      previousWhen = whenLabel;
+      return item;
+    });
+  }, [learningQueue, longTermQueue, mainTab, t]);
+
+  // The stack's open card. A tap opens or closes one; the scrubber opens
+  // whichever card is beside its handle, so a drag browses them all.
+  const [expandedStageKey, setExpandedStageKey] = useState(null);
+  const [scrubbing, setScrubbing] = useState(false);
+  const handleStageToggle = useCallback((key) => {
+    setExpandedStageKey((current) => (current === key ? null : key));
+  }, []);
+  const stageOffsets = useMemo(() => getStackOffsets(stageItems), [stageItems]);
+  const stageBrowseRef = useRef({ items: stageItems, offsets: stageOffsets, expandedKey: null });
+  stageBrowseRef.current = { items: stageItems, offsets: stageOffsets, expandedKey: expandedStageKey };
+  // Where the stack starts inside the scrolled content.
+  const stageTopRef = useRef({ wrapper: 0, stack: 0 });
+
+  // Scrubber: where the list is scrolled to, as 0..1.
+  const listScrollRef = useRef(null);
+  const scrollMetricsRef = useRef({ content: 0, viewport: 0 });
+  const scrubProgress = useRef(new Animated.Value(0)).current;
+  // The day names by the timeline's dots: shown only while the handle is held.
+  const scrubLabelOpacity = useRef(new Animated.Value(0)).current;
+  const handleScrubDragChange = useCallback((held) => {
+    setScrubbing(held);
+    Animated.timing(scrubLabelOpacity, {
+      toValue: held ? 1 : 0,
+      duration: held ? 120 : 260,
+      useNativeDriver: true,
+    }).start();
+  }, [scrubLabelOpacity]);
+  const [listScrollable, setListScrollable] = useState(false);
+  const updateScrollable = useCallback(() => {
+    const { content, viewport } = scrollMetricsRef.current;
+    setListScrollable(viewport > 0 && content > viewport + 24);
+  }, []);
+
+  // The Today list can run to hundreds of rows; draw a page and add another
+  // each time the reader nears the end.
+  const handleListScroll = useCallback((event) => {
+    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+    scrollMetricsRef.current = { content: contentSize.height, viewport: layoutMeasurement.height };
+    const maxScroll = contentSize.height - layoutMeasurement.height;
+    scrubProgress.setValue(maxScroll > 0 ? Math.min(1, Math.max(0, contentOffset.y / maxScroll)) : 0);
+    if (contentOffset.y + layoutMeasurement.height > contentSize.height - 800) {
+      setVisibleCount((count) => (count < words.length ? count + LIST_PAGE_SIZE : count));
+    }
+  }, [scrubProgress, words.length]);
+
+  const handleScrub = useCallback((progress, handleY) => {
+    const { content, viewport } = scrollMetricsRef.current;
+    const maxScroll = Math.max(0, content - viewport);
+    const scrollY = progress * maxScroll;
+    scrubProgress.setValue(progress);
+    listScrollRef.current?.scrollTo({ y: scrollY, animated: false });
+
+    // Open the card beside the handle. The handle's track starts
+    // SCRUB_TRACK_OFFSET below the top of the scrolling area.
+    const { items, offsets, expandedKey } = stageBrowseRef.current;
+    const stackY = scrollY + SCRUB_TRACK_OFFSET + handleY - stageTopRef.current.wrapper - stageTopRef.current.stack;
+    const openIndex = expandedKey == null ? -1 : items.findIndex((item) => item.key === expandedKey);
+    const index = findStackIndexAt(offsets, stackY, openIndex);
+    const key = items[index]?.key ?? null;
+    if (key !== expandedKey) {
+      setExpandedStageKey(key);
+    }
+  }, [scrubProgress]);
+
+  useEffect(() => {
+    setExpandedStageKey(null);
+    scrubProgress.setValue(0);
+    listScrollRef.current?.scrollTo({ y: 0, animated: false });
+  }, [mainTab, scrubProgress]);
 
   if (selectedWord) {
     return (
@@ -1821,6 +2125,7 @@ const Learn = ({ navigation, user }) => {
           contexts={selectedWordContexts}
           onClose={() => setSelectedWord(null)}
           onToggleFavorite={() => handleToggleFavorite(selectedWord)}
+          onDelete={() => handleDeleteWord(selectedWord)}
           onKnownWordsChange={fetchWords}
         />
       </LearnThemeContext.Provider>
@@ -1828,24 +2133,54 @@ const Learn = ({ navigation, user }) => {
   }
 
   const reviewCount = reviewDeck.length;
-  const reviewLabel = reviewCount === 0
-    ? t('learn.noReviews')
-    : (reviewCount === 1 ? t('learn.reviewWordsOne') : t('learn.reviewWordsOther', { count: reviewCount }));
+  const tabLabel = (label, count) => (count > 0 ? `${label} ${formatNumber(count)}` : label);
+  const todayLabel = capitalizeFirst(t('learn.when.today'));
+  const tomorrowLabel = capitalizeFirst(t('learn.when.tomorrow'));
   const mainTabs = [
-    { key: 'saved', label: t('learn.savedTab') },
-    { key: 'suggested', label: t('learn.suggestedTab') },
-    {
-      key: 'learned',
-      label: learnedWords.length > 0 ? t('learn.learnedTabCount', { count: formatNumber(learnedWords.length) }) : t('learn.learnedTab'),
-    },
-    { key: 'grammar', label: t('grammar.learnTab') },
+    // A word's path, left to right.
+    { key: 'saved', label: tabLabel(todayLabel, reviewCount) },
+    { key: 'learning', label: tabLabel(t('learn.stageLearningTab'), learningQueue.length) },
+    { key: 'longterm', label: tabLabel(t('learn.stageLongTermTab'), longTermQueue.length) },
   ];
+  const stageLabelKeys = { learning: 'learn.stageLearningTab', longterm: 'learn.stageLongTermTab' };
+  // Today: words back for another look first, then ones never reviewed.
+  const dueRows = reviewDeck.slice(0, visibleCount);
+  const returningCount = reviewDeck.filter((word) => !isNeverReviewed(word)).length;
+  const dueSections = [
+    { key: 'returning', title: t('learn.sectionReturning'), count: returningCount, rows: dueRows.filter((word) => !isNeverReviewed(word)) },
+    { key: 'new', title: t('learn.sectionNew'), count: reviewCount - returningCount, rows: dueRows.filter(isNeverReviewed) },
+  ].filter((section) => section.rows.length > 0);
+
+  const renderSectionHeader = (section) => (section.title ? (
+    <View style={styles.sectionHeader}>
+      <Text style={styles.sectionTitle}>{section.title}</Text>
+      <Text style={styles.sectionCount}>{formatNumber(section.count)}</Text>
+    </View>
+  ) : null);
 
   return (
     <LearnThemeContext.Provider value={learnThemeValue}>
+    <View style={styles.screenWrap}>
     <Screen
       scroll
       backgroundColor={colors.bgPage}
+      scrollViewProps={{
+        ref: listScrollRef,
+        scrollEnabled: listScrollEnabled,
+        onScroll: handleListScroll,
+        // The stage tabs' scrubber follows the scroll, so it needs every frame.
+        scrollEventThrottle: mainTab === 'saved' ? 120 : 16,
+        onLayout: (event) => {
+          scrollMetricsRef.current.viewport = event.nativeEvent.layout.height;
+          updateScrollable();
+        },
+        onContentSizeChange: (_, height) => {
+          scrollMetricsRef.current.content = height;
+          updateScrollable();
+        },
+        // AppTopBar, then the tabs.
+        stickyHeaderIndices: [1],
+      }}
       // The floating Read/Learn pill sits over the bottom of the list.
       contentContainerStyle={[styles.content, { paddingBottom: pillTabBarClearance }]}
     >
@@ -1857,108 +2192,10 @@ const Learn = ({ navigation, user }) => {
         onProfilePress={() => navigation?.navigate?.('Profile')}
       />
 
-      <View style={styles.summaryCard}>
-        <View style={styles.summaryStats}>
-          <View style={styles.summaryStat}>
-            <Text style={styles.summaryValue}>{formatNumber(maturedCount)}</Text>
-            <Text style={styles.summaryLabel}>{t('learn.statMatured')}</Text>
-          </View>
-          <View style={[styles.summaryStat, styles.summaryStatMiddle]}>
-            <Text style={styles.summaryValue}>{formatNumber(reviewCount)}</Text>
-            <Text style={styles.summaryLabel}>{t('learn.statDueToday')}</Text>
-          </View>
-          <View style={styles.summaryStat}>
-            <Text style={styles.summaryValue}>{formatNumber(notSeenYetCount)}</Text>
-            <Text style={styles.summaryLabel}>{t('learn.statNotSeenYet')}</Text>
-          </View>
-        </View>
-
-        <View style={styles.summaryActions}>
-          <TouchableOpacity
-            disabled={reviewCount === 0}
-            onPress={() => startPractice(reviewDeck, t('learn.dueReview'))}
-            accessibilityRole="button"
-            accessibilityState={{ disabled: reviewCount === 0 }}
-            style={[styles.reviewButton, reviewCount === 0 && styles.reviewButtonDisabled]}
-          >
-            <Text
-              numberOfLines={1}
-              adjustsFontSizeToFit
-              minimumFontScale={0.7}
-              maxFontSizeMultiplier={1.2}
-              style={[styles.reviewButtonText, reviewCount === 0 && styles.reviewButtonTextDisabled]}
-            >
-              {reviewLabel}
-            </Text>
-          </TouchableOpacity>
-          {words.length > 0 ? (
-            <TouchableOpacity
-              accessibilityRole="button"
-              onPress={() => navigation?.navigate?.('Read', { returnTo: 'Learn' })}
-              style={styles.keepReadingButton}
-            >
-              <Text
-                numberOfLines={1}
-                adjustsFontSizeToFit
-                minimumFontScale={0.7}
-                maxFontSizeMultiplier={1.2}
-                style={styles.keepReadingText}
-              >
-                {t('learn.keepReading')}
-              </Text>
-            </TouchableOpacity>
-          ) : null}
-          {words.length > 0 ? (
-            <TouchableOpacity
-              accessibilityRole="button"
-              accessibilityLabel={t('learn.audioLessons')}
-              // Audio lessons pick from every saved word not yet learned,
-              // most useful first (components/Learn/AudioReview.js).
-              onPress={() => setAudioWords(words)}
-              style={styles.listenButton}
-            >
-              <Feather name="headphones" size={20} color={colors.text} />
-            </TouchableOpacity>
-          ) : null}
-        </View>
-      </View>
-
-      <SegmentedTabs tabs={mainTabs} value={mainTab} onChange={setMainTab} />
-
-      {mainTab === 'saved' ? (
-      <>
-      <View style={styles.filters}>
-        {FILTERS.map((filter) => {
-          const active = activeFilter === filter.key;
-          return (
-            <TouchableOpacity
-              key={filter.key}
-              accessibilityRole="button"
-              accessibilityLabel={t(filter.labelKey)}
-              accessibilityState={{ selected: active }}
-              onPress={() => {
-                clearWordSelection();
-                setActiveFilter(filter.key);
-              }}
-              hitSlop={{ top: 6, bottom: 6 }}
-              style={[
-                styles.filterChip,
-                filter.icon && styles.filterIconChip,
-                active && styles.filterChipActive,
-              ]}
-            >
-              {filter.icon ? (
-                <MaterialIcons
-                  name={active ? filter.icon : `${filter.icon}-border`}
-                  size={16}
-                  color={active ? colors.white : colors.textMuted}
-                />
-              ) : (
-                <Text style={[styles.filterText, active && styles.filterTextActive]}>{t(filter.labelKey)}</Text>
-              )}
-            </TouchableOpacity>
-          );
-        })}
+      {/* Stays at the top while the list scrolls, so the tab a swiped word
+          moves to is always in view. */}
+      <View style={styles.mainTabsSticky}>
+        <SegmentedTabs tabs={mainTabs} value={mainTab} onChange={setMainTab} pulse={lastMove} />
       </View>
 
       {isSelectionMode ? (
@@ -1979,138 +2216,251 @@ const Learn = ({ navigation, user }) => {
         </View>
       ) : null}
 
-      <View style={styles.list}>
-        {visibleWords.length === 0 ? (
+      {mainTab === 'saved' ? (
+        reviewCount === 0 ? (
           <View style={styles.emptyState}>
-            <Text style={styles.emptyTitle}>{t('learn.emptyTitle')}</Text>
-            <Text style={styles.emptyBody}>
-              {t('learn.emptyBody')}
+            <Text style={styles.emptyTitle}>
+              {words.length === 0 ? t('learn.emptyTitle') : t('learn.allCaughtUp')}
             </Text>
+            <Text style={styles.emptyBody}>
+              {words.length === 0 ? t('learn.emptyBody') : nextComebackNote}
+            </Text>
+            <TouchableOpacity
+              accessibilityRole="button"
+              onPress={() => navigation?.navigate?.('Read', { returnTo: 'Learn' })}
+              style={styles.emptyAction}
+            >
+              <Text style={styles.emptyActionText}>{t('learn.keepReading')}</Text>
+            </TouchableOpacity>
+          </View>
+        ) : isSelectionMode ? (
+          // Picking words to delete: plain rows, no swiping.
+          <View style={styles.list}>
+            {dueRows.map((word) => (
+              <VocabularyRow
+                key={getWordKey(word)}
+                word={word}
+                selectionMode
+                selected={selectedWordKeys.has(getWordKey(word))}
+                onPress={() => toggleWordSelection(word)}
+                onLongPress={() => startWordSelection(word)}
+              />
+            ))}
           </View>
         ) : (
-          visibleWords.map((word, index) => (
-            <VocabularyRow
-              key={`${getWordKey(word)}::${index}`}
-              word={word}
-              selectionMode={isSelectionMode}
-              selected={selectedWordKeys.has(getWordKey(word))}
-              onPress={() => {
-                if (isSelectionMode) {
-                  toggleWordSelection(word);
-                  return;
-                }
-                setSelectedWord(word);
-              }}
-              onLongPress={() => startWordSelection(word)}
-            />
-          ))
-        )}
-      </View>
-      </>
-      ) : mainTab === 'grammar' ? (
-        <GrammarSection ownerId={activeOwnerId} language={targetLanguage} />
-      ) : mainTab === 'learned' ? (
-        <View style={styles.suggestedWrap}>
-          {learnedWords.length === 0 ? (
-            <View style={styles.emptyState}>
-              <Text style={styles.emptyTitle}>{t('learn.learnedEmptyTitle')}</Text>
-              <Text style={styles.emptyBody}>{t('learn.learnedEmptyBody')}</Text>
+          <View>
+            {/* What each direction means, in the colours the row turns. */}
+            <View style={styles.swipeLegend}>
+              <View style={styles.swipeLegendSide}>
+                <Feather name="arrow-left" size={15} color={colors.danger} />
+                <Text style={styles.swipeLegendText}>{t('learn.legendDontKnow')}</Text>
+              </View>
+              <View style={styles.swipeLegendSide}>
+                <Text style={styles.swipeLegendText}>{t('learn.legendKnow')}</Text>
+                <Feather name="arrow-right" size={15} color={KNOWN_GREEN} />
+              </View>
             </View>
-          ) : (
-            <View>
-              <Text style={styles.learnedHint}>{t('learn.learnedHint')}</Text>
-              {learnedWords.map((row) => (
-                <View key={row.id} style={styles.learnedRow}>
-                  <View style={styles.learnedText}>
-                    <Text style={styles.learnedWord}>{row.word}</Text>
-                    {row.def ? <Text style={styles.learnedDef} numberOfLines={2}>{row.def}</Text> : null}
-                  </View>
-                  <TouchableOpacity
-                    onPress={() => handleRestoreLearned(row)}
-                    style={styles.learnedRestore}
-                    activeOpacity={0.7}
-                    accessibilityRole="button"
-                    accessibilityLabel={t('learn.learnedRestoreFor', { word: row.word })}
-                  >
-                    <Text style={styles.learnedRestoreText}>{t('learn.learnedRestore')}</Text>
-                  </TouchableOpacity>
-                </View>
+            {dueSections.map((section, sectionIndex) => (
+              <View key={section.key}>
+                {renderSectionHeader(section)}
+                {section.rows.map((word, index) => (
+                  <SwipeWordRow
+                    key={getWordKey(word)}
+                    word={word}
+                    screenWidth={screenWidth}
+                    colors={colors}
+                    knownLabel={t('learn.swipeKnow')}
+                    unknownLabel={t('learn.swipeDontKnow')}
+                    knownHint={capitalizeFirst(formatNextReview(applyGradeLocally(word, 'good'), t))}
+                    unknownHint={tomorrowLabel}
+                    nudge={showNudge && sectionIndex === 0 && index === 0}
+                    renderContent={renderDueRow}
+                    onGrade={handleSwipeGrade}
+                    onOpen={setSelectedWord}
+                    onSwipeActive={handleSwipeActive}
+                  />
+                ))}
+              </View>
+            ))}
+          </View>
+        )
+      ) : (
+        <View onLayout={(event) => { stageTopRef.current.wrapper = event.nativeEvent.layout.y; }}>
+          {/* What this stage is, whether or not anything is in it yet. */}
+          <Text style={styles.stageCaption}>
+            {mainTab === 'learning' ? t('learn.stageLearningEmpty') : t('learn.stageLongTermEmpty')}
+          </Text>
+          {isSelectionMode ? (
+            // Picking words to delete: plain rows.
+            <View style={styles.list}>
+              {stageItems.slice(0, visibleCount).map(({ word, whenLabel }) => (
+                <VocabularyRow
+                  key={getWordKey(word)}
+                  word={word}
+                  dueLabel={whenLabel}
+                  selectionMode
+                  selected={selectedWordKeys.has(getWordKey(word))}
+                  onPress={() => toggleWordSelection(word)}
+                  onLongPress={() => startWordSelection(word)}
+                />
               ))}
             </View>
-          )}
-        </View>
-      ) : (
-        <View style={styles.suggestedWrap}>
-          {candidatesLoading && !candidatesLoaded ? (
-            <View style={styles.suggestedLoading}>
-              <ActivityIndicator color={colors.textMuted} />
-            </View>
-          ) : candidateGroups.length === 0 ? (
-            <View style={styles.emptyState}>
-              <Text style={styles.emptyTitle}>{t('learn.suggestedEmptyTitle')}</Text>
-              <Text style={styles.emptyBody}>{t('learn.suggestedEmptyBody')}</Text>
-            </View>
           ) : (
-            candidateGroups.map((group) => (
-              <View key={group.bookUri} style={styles.candidateGroup}>
-                <Text style={styles.candidateGroupTitle} numberOfLines={1}>
-                  {t('learn.suggestedFrom', { title: stripStoredPlaceholder(group.bookTitle) || t('learn.untitledBook') })}
-                </Text>
-                <View style={styles.candidateGroupList}>
-                  {group.candidates.map((candidate) => (
-                    <CandidateCard
-                      key={`${group.bookUri}::${candidate.stem}`}
-                      candidate={candidate}
-                      colors={colors}
-                      saved={savedCandidateStems.has(candidate.stem)}
-                      onSave={handleSaveCandidate}
-                    />
-                  ))}
-                </View>
-              </View>
-            ))
+            <WordStack
+              items={stageItems}
+              expandedKey={expandedStageKey}
+              quick={scrubbing}
+              labelOpacity={scrubLabelOpacity}
+              onToggle={handleStageToggle}
+              onLayout={(event) => { stageTopRef.current.stack = event.nativeEvent.layout.y; }}
+              onOpen={setSelectedWord}
+              onLongPress={startWordSelection}
+              noDefinitionLabel={t('learn.noDefinition')}
+            />
           )}
         </View>
       )}
-
-      <Modal animationType="slide" visible={!!practiceDeck} onRequestClose={closePractice}>
-        {/* A Modal is its own native root: without a provider inside it,
-            iOS reports zero insets and the header sits under the status bar. */}
-        <SafeAreaProvider>
-        <Flashcard
-          vocab={practiceDeck?.words?.[practiceIndex]}
-          title={practiceDeck?.title ?? t('learn.practice')}
-          index={practiceIndex}
-          total={practiceDeck?.words?.length ?? 0}
-          onClose={closePractice}
-          onMark={handlePracticeMark}
-          completed={practiceDone}
-          completionNote={nextComebackNote}
-          onKeepReading={() => {
-            closePractice();
-            navigation?.navigate?.('Read', { returnTo: 'Learn' });
-          }}
-          onBackToLearn={closePractice}
-          user={user}
-          ownerId={activeOwnerId}
-          syncGeneration={syncGeneration}
-        />
-        </SafeAreaProvider>
-      </Modal>
-      <AudioReview
-        visible={Boolean(audioWords)}
-        words={audioWords ?? []}
-        targetLanguage={targetLanguage}
-        interfaceLanguage={interfaceLanguage}
-        ownerId={activeOwnerId}
-        onClose={() => setAudioWords(null)}
-      />
     </Screen>
+    {mainTab !== 'saved' && !isSelectionMode && listScrollable ? (
+      <TimelineScrubber
+        progress={scrubProgress}
+        // Clear of the tabs (pinned or not) down to just above the Read/Learn pill.
+        top={safeAreaInsets.top + SCRUB_TRACK_OFFSET}
+        bottom={pillTabBarClearance + 4}
+        onScrub={handleScrub}
+        onDragChange={handleScrubDragChange}
+      />
+    ) : null}
+    {undoCount > 0 ? (
+      <View style={[styles.undoBar, { bottom: pillTabBarClearance, maxWidth: screenWidth - 40 }]}>
+        {lastMove ? (
+          <Text numberOfLines={1} style={styles.undoNote}>
+            {`${t(stageLabelKeys[lastMove.key])} · ${lastMove.when}`}
+          </Text>
+        ) : null}
+        <TouchableOpacity
+          onPress={handleSwipeUndo}
+          accessibilityRole="button"
+          accessibilityLabel={t('common.undo')}
+          activeOpacity={0.7}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          style={styles.undoButton}
+        >
+          <Feather name="rotate-ccw" size={15} color={colors.bgPage} />
+          <Text style={styles.undoText}>{t('common.undo')}</Text>
+        </TouchableOpacity>
+      </View>
+    ) : null}
+    </View>
     </LearnThemeContext.Provider>
   );
 };
 
 const createStyles = (colors) => StyleSheet.create({
+  screenWrap: {
+    flex: 1,
+  },
+  mainTabsSticky: {
+    backgroundColor: colors.bgPage,
+    paddingBottom: 8,
+  },
+  swipeLegend: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingTop: 10,
+  },
+  swipeLegendSide: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  swipeLegendText: {
+    fontFamily: fontFamilies.sansMedium,
+    fontSize: 13,
+    lineHeight: 18,
+    color: colors.textMuted,
+  },
+  sectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: 8,
+    paddingHorizontal: 20,
+    paddingTop: 22,
+    paddingBottom: 2,
+  },
+  sectionTitle: {
+    fontFamily: fontFamilies.sansSemiBold,
+    fontSize: 13,
+    lineHeight: 18,
+    color: colors.text,
+  },
+  sectionCount: {
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 13,
+    lineHeight: 18,
+    color: colors.textMuted,
+    fontVariant: ['tabular-nums'],
+  },
+  stageCaption: {
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: 12,
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 14,
+    lineHeight: 20,
+    color: colors.textMuted,
+  },
+  emptyAction: {
+    marginTop: 14,
+    height: 46,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 22,
+  },
+  emptyActionText: {
+    fontFamily: fontFamilies.sansSemiBold,
+    fontSize: 15,
+    color: colors.text,
+  },
+  undoBar: {
+    position: 'absolute',
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    borderRadius: 22,
+    paddingLeft: 18,
+    paddingRight: 16,
+    paddingVertical: 11,
+    backgroundColor: colors.text,
+    shadowColor: '#1b1c1c',
+    shadowOpacity: 0.18,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 4,
+  },
+  undoNote: {
+    flexShrink: 1,
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 14,
+    color: colors.bgPage,
+    opacity: 0.78,
+  },
+  undoButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  undoText: {
+    fontFamily: fontFamilies.sansSemiBold,
+    fontSize: 15,
+    color: colors.bgPage,
+  },
   content: {
     // At least the screen's height, so the goal calendar's backdrop (placed
     // against this container) reaches the bottom when the list is short.
@@ -2337,6 +2687,10 @@ const createStyles = (colors) => StyleSheet.create({
     borderBottomColor: colors.divider,
     gap: 12,
   },
+  // Swipe rows run edge to edge so the colour behind them does too.
+  wordRowSwipe: {
+    marginHorizontal: 20,
+  },
   wordRowPressed: {
     backgroundColor: colors.surfaceMuted,
   },
@@ -2399,6 +2753,23 @@ const createStyles = (colors) => StyleSheet.create({
     lineHeight: 21,
     color: colors.textSecondary,
   },
+  wordDueText: {
+    fontFamily: fontFamilies.sansSemiBold,
+    fontSize: 12,
+    lineHeight: 16,
+    color: colors.textMuted,
+  },
+  wordDefinitionSlot: {
+    justifyContent: 'center',
+  },
+  wordDefinitionCover: {
+    position: 'absolute',
+    left: 0,
+    width: 112,
+    height: 9,
+    borderRadius: 5,
+    backgroundColor: colors.surfaceMuted,
+  },
   wordMetaText: {
     fontFamily: fontFamilies.sansRegular,
     fontSize: 12,
@@ -2408,6 +2779,7 @@ const createStyles = (colors) => StyleSheet.create({
   encounterSummary: {
     alignItems: 'flex-end',
     justifyContent: 'center',
+    gap: 6,
   },
   dotRow: {
     flexDirection: 'row',
@@ -2518,6 +2890,11 @@ const createStyles = (colors) => StyleSheet.create({
   detailScreen: {
     flex: 1,
     backgroundColor: colors.bgPage,
+  },
+  detailHeaderActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
   },
   detailHeader: {
     flexDirection: 'row',

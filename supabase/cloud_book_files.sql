@@ -1,11 +1,12 @@
--- Cloud book files: only each reader's most recently opened books keep their
--- file in storage.
+-- Cloud book files: which books keep their file in storage.
 --
 -- Every book still has a user_books row (title, cover, progress), so the
 -- shelf and reading position follow the reader to every device. The file
 -- itself (book.epub / book.pdf) is kept for the newest `cloud_book_limit_for`
--- books by last_opened_at: 3 for an account, 0 for a guest (a guest can't
--- sign in on another device, so a cloud copy is of no use to them). When a
+-- books by last_opened_at: 1000 for an account, which in practice is every
+-- book (it was 3 while storage was on the free plan's 1 GB), 0 for a guest (a
+-- guest can't sign in on another device, so a cloud copy is of no use to
+-- them). users.cloud_book_limit sets a different number for one reader. When a
 -- book drops out of that set its file is queued in storage_cleanup_jobs, and
 -- the nightly job removes it. Opening it again uploads it again.
 --
@@ -38,7 +39,7 @@ set search_path = public
 as $$
   select case
     when coalesce((select au.is_anonymous from auth.users au where au.id = target_user), false) then 0
-    else greatest(coalesce((select u.cloud_book_limit from public.users u where u.id = target_user), 3), 0)
+    else greatest(coalesce((select u.cloud_book_limit from public.users u where u.id = target_user), 1000), 0)
   end;
 $$;
 

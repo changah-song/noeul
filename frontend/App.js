@@ -30,6 +30,7 @@ import LocalDataDecisionModal from './components/Auth/LocalDataDecisionModal';
 import BookOpeningOverlay from './components/shared/BookOpeningOverlay';
 import { noteRouteShown } from './services/readerListenState';
 import { listenForOpenedBookFiles } from './services/openedBookFiles';
+import { listenForInviteLinks, peekPendingInvite } from './services/friends';
 import { PillTabBar, tabScreenOptions } from './components/shared/TabBar';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -43,6 +44,7 @@ import { LocalOwnerProvider, useLocalOwner } from './contexts/LocalOwnerContext'
 import { VocabWordsProvider } from './contexts/VocabWordsContext';
 import useAppSetup from './hooks/useAppSetup';
 import useAuth from './hooks/useAuth';
+import useFriendCard from './hooks/useFriendCard';
 import Home from './screens/Home';
 import Learn from './screens/Learn';
 import Profile from './screens/Profile';
@@ -155,6 +157,7 @@ function AppContent() {
 
     const appOwnerStateReady = !appSetupLoading && appSetupOwnerId === activeOwnerId;
     const appReady = !loading && ownerMigrationReady && appOwnerStateReady && fontsLoaded;
+    useFriendCard({ user, ownerId: activeOwnerId, books, currentBook, ready: appOwnerStateReady });
 
     useEffect(() => {
         SystemUI.setBackgroundColorAsync(APP_BACKGROUND).catch(() => {});
@@ -618,6 +621,15 @@ function ThemedAppShell({
     useEffect(() => listenForOpenedBookFiles(() => {
         if (navigationRef.isReady()) navigationRef.navigate('Home');
     }), [navigationRef]);
+    // A friend's invite link: Profile's Friends section takes it from there.
+    // (Before the navigator exists the invite waits; onReady shows Profile.)
+    useEffect(() => listenForInviteLinks(() => {
+        if (navigationRef.isReady()) navigationRef.navigate('Profile');
+    }), [navigationRef]);
+    const onNavigationReady = useCallback(() => {
+        trackScreen();
+        if (peekPendingInvite()) navigationRef.navigate('Profile');
+    }, [navigationRef, trackScreen]);
     const sceneContainerStyle = useMemo(() => ({
         backgroundColor: appBackground,
     }), [appBackground]);
@@ -687,7 +699,7 @@ function ThemedAppShell({
             <NavigationContainer
                 ref={navigationRef}
                 theme={navigationTheme}
-                onReady={trackScreen}
+                onReady={onNavigationReady}
                 onStateChange={trackScreen}
             >
                 <Tab.Navigator
@@ -747,6 +759,7 @@ function ThemedAppShell({
                                 {...props}
                                 user={user}
                                 books={books}
+                                currentBook={currentBook}
                                 signOut={signOut}
                                 updateUsername={updateUsername}
                                 updateProfile={updateProfile}

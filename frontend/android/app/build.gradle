@@ -94,6 +94,11 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
         versionName "1.2.1"
+        // -PappIdSuffix=.dev builds a copy that installs next to the Play
+        // Store build (which is signed with a different key) instead of over it.
+        if (project.hasProperty('appIdSuffix')) {
+            applicationIdSuffix project.property('appIdSuffix')
+        }
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
     }

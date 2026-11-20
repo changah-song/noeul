@@ -46,6 +46,7 @@ import ProfileAvatar from '../components/shared/ProfileAvatar';
 import ReaderGuide from '../components/Guide/ReaderGuide';
 import LevelCard from '../components/shared/LevelCard';
 import SyncStatusRow from '../components/shared/SyncStatusRow';
+import FriendsSection from '../components/Friends/FriendsSection';
 import WordStatsCard from '../components/shared/WordStatsCard';
 
 const getProfileColors = (themeColors) => ({
@@ -96,7 +97,7 @@ const NavRow = ({ icon, label, value, valueStyle, onPress, trailingIcon = 'chevr
 
 const PAGE_BOTTOM_PADDING = 32;
 
-const Profile = ({ user, signOut, updateUsername, navigation }) => {
+const Profile = ({ user, books, currentBook, signOut, updateUsername, navigation }) => {
     const [isSigningOut, setIsSigningOut] = useState(false);
     const [showSignOutModal, setShowSignOutModal] = useState(false);
     const [showDeleteModal, setShowDeleteModal] = useState(false);
@@ -382,6 +383,18 @@ const Profile = ({ user, signOut, updateUsername, navigation }) => {
                     profileId={activeProfileId}
                     language={targetLanguage}
                     navigation={navigation}
+                />
+
+                <FriendsSection
+                    user={user}
+                    isGuest={isGuest}
+                    ownerId={activeOwnerId}
+                    books={books}
+                    currentBook={currentBook}
+                    navigation={navigation}
+                    onSignIn={() => openAuthModal('signin')}
+                    styles={styles}
+                    profileColors={profileColors}
                 />
 
                 <Text style={styles.sectionLabel}>{t('profile.sectionLearning')}</Text>
