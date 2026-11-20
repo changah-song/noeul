@@ -65,6 +65,9 @@ dictionary can't be read.
 
 - Point a free uptime monitor at it (UptimeRobot or Better Stack, every 5
   minutes, alert by email after two failures).
+- `cache.db` lives on a Railway volume mounted at `/data`, with the service
+  variable `CACHE_DB_PATH=/data/cache.db`. Without that variable it falls back
+  to `backend/cache.db` inside the container, which every deploy replaces.
 - Watch `dictionary_rows` across a deploy: if it drops back to near zero, `cache.db`
   is not on a persistent Railway volume, and daily quotas, AI spend and the shared
   lookup cache reset with every deploy.

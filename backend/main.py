@@ -226,7 +226,10 @@ DAILY_LOOKUP_LIMIT = 250
 # ─── Server-Side Cache DB ─────────────────────────────────────────────────────
 # This SQLite database lives on the backend server and persists across app restarts.
 # It prevents re-calling KRDICT for words that have already been looked up in any book.
-CACHE_DB_PATH = os.path.join(os.path.dirname(__file__), "cache.db")
+# On Railway, set CACHE_DB_PATH to a file on a mounted volume (e.g. /data/cache.db)
+# so quotas, AI spend and the shared lookup cache survive deploys.
+CACHE_DB_PATH = (os.getenv("CACHE_DB_PATH") or "").strip() or os.path.join(os.path.dirname(__file__), "cache.db")
+os.makedirs(os.path.dirname(os.path.abspath(CACHE_DB_PATH)), exist_ok=True)
 ZH_DICT_DB_PATH = os.path.join(os.path.dirname(__file__), "zh_dict.db")
 # Bundled KRDICT (한국어기초사전) snapshot, English glosses only. When present it
 # serves Korean lookups locally and the live KRDICT API is only hit for the long
