@@ -7,6 +7,9 @@ supabase
 
 anthropic
 
+# Error reporting (observability.py); off unless SENTRY_DSN is set.
+sentry-sdk[fastapi]
+
 requests
 beautifulsoup4
 lxml

@@ -2,6 +2,13 @@ apply plugin: "com.android.application"
 apply plugin: "org.jetbrains.kotlin.android"
 apply plugin: "com.facebook.react"
 
+// Sentry: upload the JS source maps with release builds so crash reports show
+// real file names and lines. Only when SENTRY_AUTH_TOKEN is set (with
+// SENTRY_ORG and SENTRY_PROJECT), so builds without it are unaffected.
+if (System.getenv("SENTRY_AUTH_TOKEN")) {
+    apply from: new File(["node", "--print", "require.resolve('@sentry/react-native/package.json')"].execute().text.trim(), "../sentry.gradle")
+}
+
 def projectRoot = rootDir.getAbsoluteFile().getParentFile().getAbsolutePath()
 
 /**

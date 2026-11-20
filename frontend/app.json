@@ -138,7 +138,8 @@
         }
       ],
       "./plugins/withIosPodFixes",
-      "./plugins/withIosSceneLifecycle"
+      "./plugins/withIosSceneLifecycle",
+      "@sentry/react-native"
     ],
     "extra": {
       "eas": {

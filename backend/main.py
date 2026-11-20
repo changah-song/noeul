@@ -98,6 +98,7 @@ from writing_assessment import (
     strip_learner_delimiters as _strip_learner_delimiters,
 )
 import limits
+import observability
 import woof_tts
 from limits import (
     BodySizeLimitMiddleware,
@@ -150,6 +151,8 @@ except ImportError:
     Kiwi = None
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+# Error reporting. A no-op unless SENTRY_DSN is set (see observability.py).
+observability.init_sentry()
 
 # ─── Rate Limit Config ────────────────────────────────────────────────────────
 ENABLE_RATE_LIMIT_DELAY = True
@@ -984,8 +987,22 @@ nlp_en = None
 kiwi_instance = None
 
 @app.get("/")
-def health():
+def root():
     return {"status": "ok"}
+
+
+@app.get("/health")
+async def health():
+    """For the uptime monitor: 200 when the cache and the Korean dictionary
+    answer, 503 otherwise. dictionary_rows dropping to near zero after a deploy
+    means cache.db is not on a persistent volume."""
+    healthy, body = await asyncio.to_thread(
+        observability.health_report,
+        CACHE_DB_PATH,
+        {"ko_dict": KO_DICT_DB_PATH},
+        {"zh_dict": ZH_DICT_DB_PATH, "proficiency_levels": PROFICIENCY_LEVELS_DB_PATH},
+    )
+    return JSONResponse(body, status_code=200 if healthy else 503)
 
 
 app.add_middleware(
@@ -1220,6 +1237,7 @@ def verify_supabase_token(authorization: str = Header(default="")) -> dict[str, 
         print("[auth] Token missing valid sub claim")
         raise ApiError(401, "auth_failed", "Invalid token")
 
+    observability.set_sentry_user(user_id)
     return {
         "user_id": user_id,
         "is_anonymous": bool(claims.get("is_anonymous", False)),
