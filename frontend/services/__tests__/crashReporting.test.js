@@ -1,4 +1,4 @@
-import { scrubBreadcrumb, scrubEvent, stripQuery } from '../crashReporting';
+import { scrubBreadcrumb, scrubEvent, scrubTransaction, stripQuery } from '../crashReporting';
 
 describe('crashReporting scrubbing', () => {
   test('stripQuery drops query strings and fragments', () => {
@@ -32,5 +32,18 @@ describe('crashReporting scrubbing', () => {
     });
     expect(event.request).toEqual({ url: 'https://x/a' });
     expect(event.user).toEqual({ id: 'u1' });
+  });
+
+  test('transactions lose query strings from span urls and descriptions', () => {
+    const event = scrubTransaction({
+      spans: [{
+        description: 'GET https://api.x/okt_morphs?text=책',
+        data: { url: 'https://api.x/okt_morphs?text=책', 'http.query': 'text=책', 'http.method': 'GET' },
+      }],
+      contexts: { trace: { data: { url: 'https://api.x/a?b=c' } } },
+    });
+    expect(event.spans[0].description).toBe('GET https://api.x/okt_morphs');
+    expect(event.spans[0].data).toEqual({ url: 'https://api.x/okt_morphs', 'http.method': 'GET' });
+    expect(event.contexts.trace.data.url).toBe('https://api.x/a');
   });
 });

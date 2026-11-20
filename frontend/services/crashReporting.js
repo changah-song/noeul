@@ -51,6 +51,36 @@ export const scrubBreadcrumb = (breadcrumb) => {
   return breadcrumb;
 };
 
+const QUERY_KEYS = ['http.query', 'http.fragment'];
+
+const scrubSpan = (span) => {
+  if (!span) {
+    return span;
+  }
+  if (span.data) {
+    for (const key of QUERY_KEYS) {
+      delete span.data[key];
+    }
+    for (const key of ['url', 'http.url', 'url.full']) {
+      if (typeof span.data[key] === 'string') {
+        span.data[key] = stripQuery(span.data[key]);
+      }
+    }
+  }
+  if (typeof span.description === 'string') {
+    span.description = span.description.replace(/(https?:\/\/\S+)/g, (url) => stripQuery(url));
+  }
+  return span;
+};
+
+// Exported for tests. Performance traces carry request URLs in their spans.
+export const scrubTransaction = (event) => {
+  scrubEvent(event);
+  (event?.spans || []).forEach(scrubSpan);
+  scrubSpan(event?.contexts?.trace);
+  return event;
+};
+
 // Exported for tests.
 export const scrubEvent = (event) => {
   if (event?.request) {
@@ -83,6 +113,10 @@ export const initCrashReporting = () => {
       maxBreadcrumbs: 60,
       beforeBreadcrumb: scrubBreadcrumb,
       beforeSend: scrubEvent,
+      beforeSendTransaction: scrubTransaction,
+      // The iOS SDK's own request breadcrumbs keep query strings and skip
+      // beforeBreadcrumb above; the JS ones (scrubbed) cover the same requests.
+      enableNetworkBreadcrumbs: false,
     });
     enabled = true;
   } catch (error) {
