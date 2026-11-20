@@ -67,6 +67,12 @@ import { translate } from './i18n/translations';
 import { getUserFacingErrorMessage } from './i18n/userFacing';
 import { initializeOverlayLookupBridge } from './services/overlayLookup';
 import {
+    initCrashReporting,
+    setCrashReportingScreen,
+    setCrashReportingUser,
+    wrapRoot,
+} from './services/crashReporting';
+import {
     installCrashReporting,
     setTelemetryScreen,
     setTelemetryUser,
@@ -111,16 +117,21 @@ const syncWithStatus = async (args) => {
 };
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
-// Before anything renders, so crashes during startup are captured too.
+// Before anything renders, so crashes during startup are captured too. Sentry
+// first: the telemetry handler then wraps Sentry's, so a fatal error is saved
+// for the dashboard before Sentry reports it and the app closes.
+initCrashReporting();
 installCrashReporting();
 
-export default function App() {
+function App() {
     return (
         <LocalOwnerProvider>
             <AppContent />
         </LocalOwnerProvider>
     );
 }
+
+export default wrapRoot(App);
 
 function AppContent() {
     const { user, loading, signOut, updateUsername, updateProfile } = useAuth();
@@ -174,6 +185,7 @@ function AppContent() {
 
     useEffect(() => {
         setTelemetryUser(user?.id ?? null);
+        setCrashReportingUser(user?.id ?? null);
     }, [user?.id]);
 
     useEffect(() => {
@@ -613,6 +625,7 @@ function ThemedAppShell({
     const trackScreen = useCallback(() => {
         const routeName = navigationRef.getCurrentRoute()?.name ?? null;
         setTelemetryScreen(routeName);
+        setCrashReportingScreen(routeName);
         // The reader's voice pauses on a screen with no player for it.
         noteRouteShown(routeName);
     }, [navigationRef]);

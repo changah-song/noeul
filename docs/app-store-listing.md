@@ -73,7 +73,7 @@ Expected result: **4+**.
 Risk: classic novels and AI explanations can touch mature themes. If you'd rather be cautious, mark "Mature/Suggestive Themes: Infrequent/Mild" for 9+ or 12+.
 
 ### App Privacy (nutrition label)
-None of the data is used for tracking (no ads, no third-party analytics SDKs).
+None of the data is used for tracking (no ads, no third-party analytics SDKs). Crash and performance data also go to Sentry (crash reporting), tagged with the account id only: no email, no IP.
 
 | Data type | Purpose | Linked to user |
 |---|---|---|

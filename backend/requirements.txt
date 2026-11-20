@@ -198,6 +198,8 @@ rich==14.3.4
     # via
     #   pyiceberg
     #   typer
+sentry-sdk[fastapi]==2.75.0
+    # via -r requirements.in
 shellingham==1.5.4
     # via typer
 six==1.17.0
@@ -257,7 +259,9 @@ typing-inspection==0.4.2
     #   fastapi
     #   pydantic
 urllib3==2.7.0
-    # via requests
+    # via
+    #   requests
+    #   sentry-sdk
 uvicorn==0.42.0
     # via -r requirements.in
 wasabi==1.1.3

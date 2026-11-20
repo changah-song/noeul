@@ -5,6 +5,7 @@ __pycache__/
 
 .env
 cache.db
+cache.db-*
 # ko_dict.db is committed: tap lookups and preprocessing read it before the live
 # KRDICT API, so production must ship it. en_dict.db (357 MB) is too big for git.
 en_dict.db

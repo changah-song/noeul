@@ -2403,6 +2403,36 @@ PODS:
     - ReactCommon/turbomodule/core
     - SocketRocket
     - Yoga
+  - RNSentry (7.2.0):
+    - boost
+    - DoubleConversion
+    - fast_float
+    - fmt
+    - glog
+    - hermes-engine
+    - RCT-Folly
+    - RCT-Folly/Fabric
+    - RCTRequired
+    - RCTTypeSafety
+    - React-Core
+    - React-debug
+    - React-Fabric
+    - React-featureflags
+    - React-graphics
+    - React-hermes
+    - React-ImageManager
+    - React-jsi
+    - React-NativeModulesApple
+    - React-RCTFabric
+    - React-renderercss
+    - React-rendererdebug
+    - React-utils
+    - ReactCodegen
+    - ReactCommon/turbomodule/bridging
+    - ReactCommon/turbomodule/core
+    - Sentry/HybridSDK (= 8.56.1)
+    - SocketRocket
+    - Yoga
   - RNVectorIcons (10.3.0):
     - boost
     - DoubleConversion
@@ -2431,6 +2461,7 @@ PODS:
     - ReactCommon/turbomodule/core
     - SocketRocket
     - Yoga
+  - Sentry/HybridSDK (8.56.1)
   - SocketRocket (0.7.1)
   - SwiftDraw (0.29.0):
     - SwiftDrawDOM (~> 0.29.0)
@@ -2535,6 +2566,7 @@ DEPENDENCIES:
   - "RNCAsyncStorage (from `../node_modules/@react-native-async-storage/async-storage`)"
   - "RNGoogleSignin (from `../node_modules/@react-native-google-signin/google-signin`)"
   - RNScreens (from `../node_modules/react-native-screens`)
+  - "RNSentry (from `../node_modules/@sentry/react-native`)"
   - RNVectorIcons (from `../node_modules/react-native-vector-icons`)
   - SocketRocket (~> 0.7.1)
   - TextToSpeech (from `../node_modules/react-native-tts`)
@@ -2546,6 +2578,7 @@ SPEC REPOS:
     - GoogleSignIn
     - GTMAppAuth
     - GTMSessionFetcher
+    - Sentry
     - SocketRocket
     - SwiftDraw
     - SwiftDrawDOM
@@ -2740,6 +2773,8 @@ EXTERNAL SOURCES:
     :path: "../node_modules/@react-native-google-signin/google-signin"
   RNScreens:
     :path: "../node_modules/react-native-screens"
+  RNSentry:
+    :path: "../node_modules/@sentry/react-native"
   RNVectorIcons:
     :path: "../node_modules/react-native-vector-icons"
   TextToSpeech:
@@ -2846,7 +2881,9 @@ SPEC CHECKSUMS:
   RNCAsyncStorage: b44e8a4e798c3e1f56bffccd0f591f674fb9198f
   RNGoogleSignin: 576a84dd0407b912e7a0adf07492de9feb79e5d9
   RNScreens: 35525ebfe219c8709da0d26aebbc9a5e02e1077b
+  RNSentry: 4a7b9be6aa25f91850aa1b1e06906990be3c2517
   RNVectorIcons: 9084b0cf37b3c5690b730c5627a21d750c9f517e
+  Sentry: b3ec44d01708fce73f99b544beb57e890eca4406
   SocketRocket: d4aabe649be1e368d1318fdf28a022d714d65748
   SwiftDraw: 8384ccca4432da70e31bba55ce728c6d08e073dc
   SwiftDrawDOM: 989e1dbed1adbf919f050d7fddfc358bb4c91c88
@@ -2855,4 +2892,4 @@ SPEC CHECKSUMS:
 
 PODFILE CHECKSUM: 1f2b90df228b7760eb5e7a439a7b367e6049b43e
 
-COCOAPODS: 1.16.2
+COCOAPODS: 1.17.0
