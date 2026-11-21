@@ -79,9 +79,10 @@ dictionary can't be read.
 
 ## Worker processes
 
-The backend runs 2 worker processes, so one slow request does not hold up
-everyone else. The Railway service variable `WEB_CONCURRENCY` changes the
-number without a code change.
+The backend runs 1 worker process. With one, a slow request holds up everyone
+else; the Railway service variable `WEB_CONCURRENCY` raises the number without
+a code change (the backend is ready for it: see below). Raise it if Sentry or
+the uptime monitor shows requests queueing behind slow ones.
 
 - Each worker loads its own copy of the language models: about 190 MB when
   idle and about 700 MB once it has served Korean, English and Chinese text
