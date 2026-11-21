@@ -71,3 +71,17 @@ dictionary can't be read.
 - Watch `dictionary_rows` across a deploy: if it drops back to near zero, `cache.db`
   is not on a persistent Railway volume, and daily quotas, AI spend and the shared
   lookup cache reset with every deploy.
+
+## Worker processes
+
+The backend runs 2 worker processes, so one slow request does not hold up
+everyone else. The Railway service variable `WEB_CONCURRENCY` changes the
+number without a code change.
+
+- Each worker loads its own copy of the language models: about 190 MB when
+  idle and about 700 MB once it has served Korean, English and Chinese text
+  (measured on a Mac; the Woof voice adds to it). Check the service's memory
+  graph before raising the number.
+- Quotas, AI spend and the lookup caches live in `cache.db`, which the workers
+  share. The KRDICT cooldown and the song-search cache are kept per worker.
+- `uptime_seconds` on `/health` is that of whichever worker answered.

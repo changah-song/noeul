@@ -17,6 +17,10 @@ import xml.etree.ElementTree as ET
 from typing import Any, Optional
 import os
 import re
+try:
+    import fcntl  # file locks; not on Windows
+except ImportError:
+    fcntl = None
 from datetime import datetime, timezone
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
@@ -6177,7 +6181,22 @@ async def explain_in_context_stream(payload: dict, auth: dict[str, Any] = Depend
 # ─── Run on module load (executes when uvicorn starts the server) ──────────────
 # Defined at the bottom so every helper it calls (create_ops_tables,
 # prune_old_usage_rows, …) is already bound by the time these run.
-init_cache_db()
-migrate_cache_db()
-purge_stale_zh_translations()
-prune_old_usage_rows()
+def run_startup_db_setup():
+    """Set up cache.db, one process at a time.
+
+    The server runs several worker processes (see the Dockerfile) and each one
+    imports this module at the same moment. A lock file next to cache.db makes
+    them take turns, so two workers never switch the journal mode, rebuild the
+    table or purge old rows at once. The lock is released when the file closes,
+    also if the process dies."""
+    lock_path = os.path.abspath(CACHE_DB_PATH) + ".setup.lock"
+    with open(lock_path, "w") as lock_file:
+        if fcntl is not None:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+        init_cache_db()
+        migrate_cache_db()
+        purge_stale_zh_translations()
+        prune_old_usage_rows()
+
+
+run_startup_db_setup()
