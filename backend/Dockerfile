@@ -26,5 +26,9 @@ RUN python woof_tts.py || echo "Woof model not downloaded; /speak/ will answer 5
 # FastAPI will listen on this port
 EXPOSE 8000
 
-# Start the application
-CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# Start the application. One worker process for now; WEB_CONCURRENCY (a
+# Railway service variable) raises the number without a code change, so one
+# slow request no longer holds up everyone else. Each worker loads its own
+# copy of the language models, so memory use grows with it. Workers share
+# cache.db (SQLite in WAL mode), which is where quotas, spend and caches live.
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000} --workers ${WEB_CONCURRENCY:-1}"]

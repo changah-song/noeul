@@ -26,6 +26,26 @@ def test_health_ok_reports_cache_rows(tmp_path):
     assert body["checks"]["ko_dict"] == {"ok": True}
 
 
+def test_health_reports_the_busy_tables_when_they_exist(tmp_path):
+    cache = tmp_path / "cache.db"
+    _make_db(cache, "dictionary_cache")
+    conn = sqlite3.connect(cache)
+    conn.execute("CREATE TABLE lookup_cache (id INTEGER)")
+    conn.executemany("INSERT INTO lookup_cache VALUES (?)", [(1,), (2,)])
+    conn.execute("CREATE TABLE daily_usage (id INTEGER)")
+    conn.commit()
+    conn.close()
+    healthy, body = observability.health_report(str(cache), {})
+    assert healthy
+    # translate_cache does not exist in this file, so it is left out.
+    assert body["checks"]["cache_db"] == {
+        "ok": True,
+        "dictionary_rows": 3,
+        "ai_lookup_rows": 2,
+        "usage_rows_today": 0,
+    }
+
+
 def test_health_degraded_when_a_database_is_missing(tmp_path):
     cache = tmp_path / "cache.db"
     _make_db(cache, "dictionary_cache")
