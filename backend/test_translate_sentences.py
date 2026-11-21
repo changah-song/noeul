@@ -92,3 +92,45 @@ def test_rejects_oversized_batches(client, monkeypatch):
     })
     assert too_long.status_code == 413
     assert too_long.json()["code"] == "request_too_large"
+
+
+def test_a_chapter_sized_request_is_answered_from_the_cache_only(client, monkeypatch):
+    calls = []
+    fake_provider(monkeypatch, calls)
+    monkeypatch.setattr(main, "TRANSLATE_CHAPTERS_AHEAD", False)
+    monkeypatch.setattr(main, "TRANSLATE_ON_DEMAND_MAX_ITEMS", 8)
+    # The reader opened one sentence's translation: translated and cached.
+    client.post("/translate_sentences/", json={"texts": ["문장 3."], "source": "ko", "target": "en"})
+    assert calls == [["문장 3."]]
+    calls.clear()
+    client.quota_calls.clear()
+
+    chapter = [f"문장 {index}." for index in range(20)]
+    response = client.post("/translate_sentences/", json={"texts": chapter, "source": "ko", "target": "en"})
+    assert response.status_code == 200
+    expected = [None] * 20
+    expected[3] = "<en> 문장 3."
+    assert response.json()["translations"] == expected
+    # Nothing sent to the provider, nothing counted against the reader.
+    assert calls == []
+    assert client.quota_calls == []
+
+
+def test_a_span_of_a_few_sentences_is_still_translated(client, monkeypatch):
+    calls = []
+    fake_provider(monkeypatch, calls)
+    monkeypatch.setattr(main, "TRANSLATE_CHAPTERS_AHEAD", False)
+    monkeypatch.setattr(main, "TRANSLATE_ON_DEMAND_MAX_ITEMS", 8)
+    span = [f"문장 {index}." for index in range(8)]
+    response = client.post("/translate_sentences/", json={"texts": span, "source": "ko", "target": "en"})
+    assert response.json()["translations"] == [f"<en> {text}" for text in span]
+
+
+def test_chapters_ahead_can_be_switched_back_on(client, monkeypatch):
+    calls = []
+    fake_provider(monkeypatch, calls)
+    monkeypatch.setattr(main, "TRANSLATE_CHAPTERS_AHEAD", True)
+    chapter = [f"문장 {index}." for index in range(20)]
+    response = client.post("/translate_sentences/", json={"texts": chapter, "source": "ko", "target": "en"})
+    assert response.json()["translations"] == [f"<en> {text}" for text in chapter]
+    assert calls == [chapter]

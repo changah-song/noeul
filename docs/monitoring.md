@@ -71,3 +71,18 @@ dictionary can't be read.
 - Watch `dictionary_rows` across a deploy: if it drops back to near zero, `cache.db`
   is not on a persistent Railway volume, and daily quotas, AI spend and the shared
   lookup cache reset with every deploy.
+
+## Google Translate cost
+
+Google bills every character sent to Translate. Three things bound it:
+
+- `translate_cache` in `cache.db`: a sentence anyone has had translated is free
+  from then on. It only lasts if `cache.db` is on the volume.
+- Sentences are translated when a reader opens one (or listen mode reaches
+  it), not a chapter at a time. The app still asks for whole chapters ahead;
+  the server answers those from the cache only. `TRANSLATE_CHAPTERS_AHEAD=1`
+  (Railway variable) turns whole-chapter translation back on, and
+  `TRANSLATE_ON_DEMAND_MAX_ITEMS` (default 8) is the largest request still
+  translated in full.
+- `DAILY_TRANSLATE_CHAR_BUDGET` (default 2,000,000 characters): the hard stop
+  for one UTC day. Past it, translation answers 503 until midnight.

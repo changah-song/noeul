@@ -4015,6 +4015,17 @@ async def translate_text(payload: dict, auth: dict[str, Any] = Depends(verify_su
 # language costs nothing.
 TRANSLATE_SENTENCES_MAX_ITEMS = 128
 TRANSLATE_SENTENCES_MAX_CHARS = 12_000
+# The app asks for a whole chapter's sentences ahead of time whenever a chapter
+# is opened (services/chapterTranslations.js), about 100 per request, though
+# the reader only ever looks at a few of them. That was nearly all of the
+# Google Translate bill. Unless TRANSLATE_CHAPTERS_AHEAD is on, a request with
+# more sentences than TRANSLATE_ON_DEMAND_MAX_ITEMS is answered from the cache
+# only: sentences nobody has paid for yet come back null and nothing is sent
+# to Google. The app then asks for a sentence by itself when the reader opens
+# its translation (or listen mode reaches it), and that small request is
+# translated as before. Both are Railway service variables.
+TRANSLATE_CHAPTERS_AHEAD = (os.getenv("TRANSLATE_CHAPTERS_AHEAD") or "").strip().lower() in {"1", "true", "yes", "on"}
+TRANSLATE_ON_DEMAND_MAX_ITEMS = parse_positive_int_env(os.getenv("TRANSLATE_ON_DEMAND_MAX_ITEMS"), 8)
 
 
 @app.post("/translate_sentences/")
@@ -4050,11 +4061,19 @@ async def translate_sentences(payload: dict, auth: dict[str, Any] = Depends(veri
     if not any(cleaned) or source == target:
         return {"translations": [text if source == target and text else None for text in cleaned]}
 
+    keys = [translate_cache_key(text, source, target) if text else None for text in cleaned]
+
+    # A chapter fetched ahead: what is already cached, nothing new (see
+    # TRANSLATE_CHAPTERS_AHEAD above). It costs nothing, so it is not counted
+    # against the reader's daily quota either.
+    if not TRANSLATE_CHAPTERS_AHEAD and sum(1 for text in cleaned if text) > TRANSLATE_ON_DEMAND_MAX_ITEMS:
+        cached = await asyncio.to_thread(_translate_cache_get_many, [key for key in keys if key])
+        return {"translations": [cached.get(key) if key else None for key in keys]}
+
     await enforce_daily_quota(auth)
     if not TRANSLATION_PROVIDERS:
         raise ApiError(500, "service_unavailable", "No translation provider configured on server")
 
-    keys = [translate_cache_key(text, source, target) if text else None for text in cleaned]
     cached = await asyncio.to_thread(_translate_cache_get_many, [key for key in keys if key])
     results: list[str | None] = [cached.get(key) if key else None for key in keys]
 
