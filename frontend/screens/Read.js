@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef, useLayoutEffe
 import { Animated, AppState, BackHandler, Easing, Linking, PanResponder, View, StyleSheet, Text, TouchableOpacity, ActivityIndicator, findNodeHandle, ToastAndroid } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Feather, MaterialCommunityIcons, MaterialIcons } from '@expo/vector-icons';
+import { MaterialCommunityIcons, MaterialIcons } from '@expo/vector-icons';
 
 import TopSection from '../components/Read/TopSection/TopSection';
 import SentenceTranslationPopup from '../components/Read/SentenceTranslationPopup';
@@ -150,7 +150,7 @@ import {
     storyRange,
     storyStartBlockId,
 } from '../services/storyRange';
-import PageScrubber, { PAGE_SCRUBBER_HEIGHT } from '../components/Read/PageScrubber';
+import PageScrubber, { PAGE_SCRUBBER_HEIGHT, PAGE_SCRUBBER_PLAY_BUTTON } from '../components/Read/PageScrubber';
 import {
     noteReadingActivity,
     startReadingClock,
@@ -224,9 +224,6 @@ const SEEK_SETTLE_MS = 1500;
 // A jump the reader asked for lands within this long (another chapter has to
 // be read in and laid out first).
 const DELIBERATE_JUMP_MS = 6000;
-// The play button over the bottom line's right end, and its gap above it.
-const PLAY_BUTTON_SIZE = 44;
-const PLAY_BUTTON_GAP = 12;
 // The header and the scrubber slide away (full screen, focus mode) and back
 // in this long, and the page slides with them.
 const CHROME_SLIDE_MS = 260;
@@ -832,10 +829,8 @@ const Read = ({
     // mounts and again as its definition arrives, and as state each change
     // rendered the whole reader. Focus mode alone needs it in a render (the
     // native text and the arrows lift above the panel), so the state copy
-    // follows only there; the play button's lift is animated straight from
-    // the ref (syncPlayButtonLiftRef).
+    // follows only there.
     const lookupPanelHeightRef = useRef(0);
-    const syncPlayButtonLiftRef = useRef(null);
     const [lookupPanelHeight, setLookupPanelHeight] = useState(0);
     // Focus info (sentence index/total) updates on every beam step. It is kept
     // in a ref and pushed to a single subscriber (FocusControls) instead of
@@ -1371,8 +1366,6 @@ const Read = ({
         lookupPanelHeightRef.current = height;
         if (focusModeRef.current) {
             setLookupPanelHeight(height);
-        } else {
-            syncPlayButtonLiftRef.current?.();
         }
     }, []);
     // A lookup panel is up: the dictionary, or the AI explanation (only ever
@@ -4275,9 +4268,9 @@ const Read = ({
     const chromeHidden = isFullscreen || focusMode;
     const scrubberShown = Boolean(currentBook) && bookLoadState === 'ready' && !chromeHidden;
     const scrubberSpace = scrubberShown ? PAGE_SCRUBBER_HEIGHT + insets.bottom : 0;
-    // Listening starts from a play button resting over the line's right end;
-    // it goes with the rest of the controls in full screen, rises above an
-    // open panel or a notice, and turns into the listen bar.
+    // Listening starts from the play button at the line's right end; it goes
+    // with the rest of the controls in full screen and turns into the listen
+    // bar.
     const playButtonShown = scrubberShown && !listenActive;
     // Cards at the bottom of the screen sit just above the scrubber (the play
     // button rises over them).
@@ -5243,49 +5236,14 @@ const Read = ({
         outputRange: [PAGE_SCRUBBER_HEIGHT + insets.bottom, 0],
     }), [insets.bottom, scrubberPresence.progress]);
 
-    // ── The play button ──────────────────────────────────────────────────────
-    // It rests over the scrubber's right end and rises above whatever comes
-    // up at the bottom: the dictionary or AI panel, or a notice.
+    // ── Notices at the bottom ────────────────────────────────────────────────
     const preparingNoticeShown = Boolean(currentBook) && !highlightedWord && !textSelection
         && !focusMode && preparingNoticeVisible;
     const locationPromptShown = locationPrompt && Boolean(currentBook) && !highlightedWord && !textSelection;
-    const [preparingNoticeHeight, setPreparingNoticeHeight] = useState(0);
-    const [locationPromptHeight, setLocationPromptHeight] = useState(0);
-    const noticeHeight = Math.max(
-        preparingNoticeShown ? preparingNoticeHeight : 0,
-        locationPromptShown ? locationPromptHeight : 0
-    );
-    const playButtonRest = PAGE_SCRUBBER_HEIGHT + insets.bottom + PLAY_BUTTON_GAP;
-    const playButtonLiftTargetFor = (panelHeight) => {
-        if (lookupOpen && !shouldPlaceLookupAtTop) {
-            return Math.max(0, panelHeight + PLAY_BUTTON_GAP - playButtonRest);
-        }
-        // The notice sits 16 above the scrubber; the button a gap above it.
-        return noticeHeight > 0 ? 16 + noticeHeight : 0;
-    };
-    const playButtonLiftTarget = playButtonLiftTargetFor(lookupPanelHeightRef.current);
-    const playButtonLift = useRef(new Animated.Value(0)).current;
-    const playButtonLiftedToRef = useRef(0);
-    const liftPlayButtonTo = (target) => {
-        if (playButtonLiftedToRef.current === target) return;
-        playButtonLiftedToRef.current = target;
-        Animated.timing(playButtonLift, {
-            toValue: -target,
-            duration: reduceMotion ? 0 : 280,
-            easing: CHROME_EASING,
-            useNativeDriver: true,
-        }).start();
-    };
-    // The panel's height changing (no render: see lookupPanelHeightRef).
-    syncPlayButtonLiftRef.current = () => liftPlayButtonTo(playButtonLiftTargetFor(lookupPanelHeightRef.current));
-    useEffect(() => {
-        liftPlayButtonTo(playButtonLiftTarget);
-    }, [playButtonLiftTarget, reduceMotion]); // eslint-disable-line react-hooks/exhaustive-deps
-    const playPresence = usePresence(playButtonShown, { duration: 200, reduceMotion });
-    const playButtonScale = useMemo(() => playPresence.progress.interpolate({
-        inputRange: [0, 1],
-        outputRange: [0.6, 1],
-    }), [playPresence.progress]);
+    // Their heights only lifted the old floating play button (now in the
+    // scrubber row); the setters stay wired to the notices' layout callbacks.
+    const [, setPreparingNoticeHeight] = useState(0);
+    const [, setLocationPromptHeight] = useState(0);
 
     // ── The listen bar ───────────────────────────────────────────────────────
     // Tapping play grows the bar out of the button at once, before listening
@@ -5308,11 +5266,12 @@ const Read = ({
         setListenLaunching(true);
         resumeListening().finally(() => setListenLaunching(false));
     }, [resumeListening]);
-    const listenBarOriginBottom = playButtonRest + playButtonLiftTarget;
+    // The play button sits in the scrubber row, at its right end.
+    const listenBarOriginBottom = insets.bottom + PAGE_SCRUBBER_PLAY_BUTTON.bottom;
     const listenBarOrigin = useMemo(() => (listenFromButton ? {
         bottom: listenBarOriginBottom,
-        right: 16,
-        size: PLAY_BUTTON_SIZE,
+        right: PAGE_SCRUBBER_PLAY_BUTTON.right,
+        size: PAGE_SCRUBBER_PLAY_BUTTON.size,
     } : null), [listenBarOriginBottom, listenFromButton]);
 
     return (
@@ -5322,7 +5281,7 @@ const Read = ({
         >
             {/* With no book open, the bookmark, progress and menu controls
                 have nothing to act on, so hide the header. Listening starts
-                from the play button over the bottom line. Kept mounted while
+                from the play button in the bottom line. Kept mounted while
                 hidden in full screen, so coming back is only a slide. */}
             {currentBook ? (
                 <Animated.View
@@ -5520,32 +5479,12 @@ const Read = ({
                         savedAt={heldSpot ? heldSpot.progress : null}
                         onReturnToSaved={returnToHeldSpot}
                         bottomInset={insets.bottom}
+                        // Hidden the moment the listen bar is up: the bar
+                        // grows out of it, and shrinks back into it.
+                        onListen={listenFromPlayButton}
+                        listenHidden={!playButtonShown || listenBarMounted}
+                        listenLabel={t('read.listen')}
                     />
-                </Animated.View>
-            ) : null}
-
-            {/* Hidden the moment the listen bar is up: the bar grows out of it,
-                and shrinks back into it. */}
-            {playPresence.mounted && !listenBarMounted ? (
-                <Animated.View
-                    pointerEvents={playButtonShown ? 'box-none' : 'none'}
-                    style={[
-                        styles.playButtonLayer,
-                        {
-                            bottom: playButtonRest,
-                            opacity: playPresence.progress,
-                            transform: [{ translateY: playButtonLift }, { scale: playButtonScale }],
-                        },
-                    ]}
-                >
-                    <TouchableOpacity
-                        style={styles.playButton}
-                        onPress={listenFromPlayButton}
-                        accessibilityRole="button"
-                        accessibilityLabel={t('read.listen')}
-                    >
-                        <Feather name="play" size={20} color={themeColors.readerPaper} style={styles.playIcon} />
-                    </TouchableOpacity>
                 </Animated.View>
             ) : null}
 
@@ -5879,31 +5818,6 @@ const createStyles = (themeColors) => StyleSheet.create({
         left: 0,
         right: 0,
         paddingHorizontal: 16,
-    },
-    // Quiet, on the page's own surface: it's there when wanted, not a call
-    // to action over the text.
-    playButtonLayer: {
-        position: 'absolute',
-        right: 16,
-        zIndex: 12,
-    },
-    playButton: {
-        width: PLAY_BUTTON_SIZE,
-        height: PLAY_BUTTON_SIZE,
-        borderRadius: PLAY_BUTTON_SIZE / 2,
-        // The ink's colour: dark on a light page, light on a dark one.
-        backgroundColor: themeColors.readerBodyInk,
-        alignItems: 'center',
-        justifyContent: 'center',
-        shadowColor: 'rgba(27, 28, 28, 0.10)',
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 1,
-        shadowRadius: 12,
-        elevation: 3,
-    },
-    // The triangle's weight sits left of its box: nudge it to look centred.
-    playIcon: {
-        marginLeft: 2,
     },
     returnLayer: {
         alignItems: 'center',

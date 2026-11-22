@@ -3,7 +3,7 @@ import { Animated, Easing, Modal, Text, TouchableOpacity, useWindowDimensions, V
 import { Confetti } from '../Goal/GoalCompleteModal';
 import Book3D from './Book3D';
 import FinishedRibbon from './FinishedRibbon';
-import { fontFamilies, useTheme } from '../../theme';
+import { fontFamilies, radii, useTheme } from '../../theme';
 import { useTranslation } from '../../hooks/useTranslation';
 import { formatNumber } from '../../services/interfaceLanguage';
 
@@ -132,12 +132,18 @@ const createStyles = (colors) => ({
     card: {
         width: '100%',
         maxWidth: 360,
-        borderRadius: 22,
+        borderRadius: radii.sheet,
         backgroundColor: colors.surface,
         paddingTop: 28,
-        paddingBottom: 18,
+        paddingBottom: 22,
         paddingHorizontal: 22,
         alignItems: 'center',
+        // A pop-up floats over the page: the one place a shadow belongs.
+        shadowColor: colors.panelShadow,
+        shadowOffset: { width: 0, height: 10 },
+        shadowOpacity: 1,
+        shadowRadius: 28,
+        elevation: 12,
     },
     coverWrap: {
         width: COVER_WIDTH,
@@ -149,17 +155,17 @@ const createStyles = (colors) => ({
         right: 12,
     },
     title: {
-        marginTop: 20,
+        marginTop: 22,
         fontFamily: fontFamilies.displaySemiBold,
-        fontSize: 22,
+        fontSize: 23,
         lineHeight: 28,
         color: colors.text,
         textAlign: 'center',
     },
     bookTitle: {
-        marginTop: 4,
+        marginTop: 6,
         fontFamily: fontFamilies.serifMedium,
-        fontSize: 16,
+        fontSize: 15,
         lineHeight: 22,
         color: colors.textSecondary,
         textAlign: 'center',
@@ -168,6 +174,7 @@ const createStyles = (colors) => ({
         marginTop: 1,
         fontFamily: fontFamilies.sansRegular,
         fontSize: 13,
+        lineHeight: 18,
         color: colors.textTertiary,
         textAlign: 'center',
     },
@@ -177,41 +184,40 @@ const createStyles = (colors) => ({
         flexWrap: 'wrap',
         justifyContent: 'space-between',
         rowGap: 8,
-        marginTop: 18,
+        marginTop: 22,
     },
     tile: {
         width: '48.5%',
         paddingVertical: 12,
-        paddingHorizontal: 12,
-        borderRadius: 12,
-        backgroundColor: colors.surfaceMuted,
+        paddingHorizontal: 14,
+        borderRadius: radii.control,
+        backgroundColor: colors.surfaceAssist,
     },
     tileValue: {
-        fontFamily: fontFamilies.displaySemiBold,
-        fontSize: 22,
-        lineHeight: 27,
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 20,
+        lineHeight: 26,
         color: colors.text,
     },
     tileLabel: {
-        marginTop: 1,
-        fontFamily: fontFamilies.sansMedium,
-        fontSize: 12.5,
-        lineHeight: 16,
-        color: colors.textSecondary,
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 13,
+        lineHeight: 18,
+        color: colors.textTertiary,
     },
     button: {
         alignSelf: 'stretch',
-        marginTop: 18,
-        height: 48,
-        borderRadius: 14,
+        marginTop: 22,
+        height: 52,
+        borderRadius: radii.control,
         alignItems: 'center',
         justifyContent: 'center',
-        backgroundColor: colors.text,
+        backgroundColor: colors.inkSlate,
     },
     buttonText: {
         fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 15,
-        color: colors.surface,
+        fontSize: 16,
+        color: colors.white,
     },
 });
 

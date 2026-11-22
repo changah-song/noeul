@@ -1250,7 +1250,7 @@ const DictionaryContent = ({
         const isEntry = variant === 'entry';
         const hanjaStyle = [
             isEntry ? styles.entryHanja : styles.extraHanja,
-            { color: isEntry ? colors.textMuted : palette.mutedText },
+            { color: isEntry ? colors.textSecondary : palette.mutedText },
         ];
         const hanjaCharacters = getHanjaCharacters(hanja);
         let hanjaTokenIndex = -1;
@@ -1436,17 +1436,21 @@ const DictionaryContent = ({
         // headword itself as "simplified / traditional" rather than a separate row.
         const headwordText = showBothScripts ? `${simplifiedText} / ${traditionalText}` : word;
 
+        // Word and hanja on the left on one baseline, the pronunciation an
+        // italic meta line under them (Chinese keeps its pinyin face), the
+        // save button at the top right; the word arrows sit beside it when
+        // there are several words to step through.
         return (
             <View style={styles.entryHeading}>
                 <View style={styles.headwordRow}>
-                    <View style={styles.saveIconSpacer} />
-                    {renderHeadwordChevron('previous')}
-                    <View style={styles.wordLine}>
-                        {renderHeadwordText(
-                            headwordText,
-                            [styles.entryWord, isChineseBook && styles.zhEntryWord, { color: palette.text }]
-                        )}
-                        {hanjaElement}
+                    <View style={styles.headwordMain}>
+                        <View style={styles.wordLine}>
+                            {renderHeadwordText(
+                                headwordText,
+                                [styles.entryWord, isChineseBook && styles.zhEntryWord, { color: palette.text }]
+                            )}
+                            {hanjaElement}
+                        </View>
                         {pronunciationText && !isEnglishBook ? (
                             <Text
                                 // Android lays a selectable text out narrower than
@@ -1462,20 +1466,21 @@ const DictionaryContent = ({
                                 {pronunciationText}
                             </Text>
                         ) : null}
+                        {pronunciationControls || (isEnglishBook && pronunciationText) ? (
+                            <View style={styles.entryMetaRow}>
+                                {isEnglishBook && pronunciationText ? (
+                                    <Text selectable style={[styles.ipaText, { color: colors.textTertiary }]}>
+                                        {pronunciationText}
+                                    </Text>
+                                ) : null}
+                                {pronunciationControls}
+                            </View>
+                        ) : null}
                     </View>
-                    {renderHeadwordChevron('next')}
+                    {hasWordNavigation ? renderHeadwordChevron('previous') : null}
+                    {hasWordNavigation ? renderHeadwordChevron('next') : null}
                     {renderSaveIcon({ word, hanja, definition })}
                 </View>
-                {pronunciationControls || (isEnglishBook && pronunciationText) ? (
-                    <View style={styles.entryMetaRow}>
-                        {isEnglishBook && pronunciationText ? (
-                            <Text selectable style={[styles.ipaText, { color: colors.textTertiary }]}>
-                                {pronunciationText}
-                            </Text>
-                        ) : null}
-                        {pronunciationControls}
-                    </View>
-                ) : null}
             </View>
         );
     };
@@ -1811,14 +1816,14 @@ const DictionaryContent = ({
                     <>
                         <View style={[styles.definitionRow, !posLabel && styles.definitionRowSolo]}>
                             {posLabel ? (
-                                <View style={[styles.posBadge, { borderColor: colors.border }]}>
-                                    <Text style={[styles.posBadgeText, { color: colors.textMuted }]}>
+                                <View style={[styles.posBadge, { backgroundColor: colors.surfaceMuted }]}>
+                                    <Text style={[styles.posBadgeText, { color: colors.textSecondary }]}>
                                         {posLabel}
                                     </Text>
                                 </View>
                             ) : null}
                             {definition ? (
-                                <Text selectable style={[styles.definitionText, { color: palette.text }]}>
+                                <Text selectable style={[styles.definitionText, styles.entryDefinitionText, { color: palette.text }]}>
                                     {definition}
                                 </Text>
                             ) : (
@@ -1868,14 +1873,14 @@ const DictionaryContent = ({
             <>
                 <View style={[styles.definitionRow, !posLabel && styles.definitionRowSolo]}>
                     {posLabel ? (
-                        <View style={[styles.posBadge, { borderColor: colors.border }]}>
-                            <Text style={[styles.posBadgeText, { color: colors.textMuted }]}>
+                        <View style={[styles.posBadge, { backgroundColor: colors.surfaceMuted }]}>
+                            <Text style={[styles.posBadgeText, { color: colors.textSecondary }]}>
                                 {posLabel}
                             </Text>
                         </View>
                     ) : null}
                     {shortMeaning ? (
-                        <Text selectable style={[styles.definitionText, { color: palette.text }]}>
+                        <Text selectable style={[styles.definitionText, styles.entryDefinitionText, { color: palette.text }]}>
                             {shortMeaning}
                         </Text>
                     ) : (
@@ -2210,7 +2215,7 @@ const createStyles = (colors) => StyleSheet.create({
     // full senses wait behind the expanded panel.
     primaryEntry: {
         gap: 4,
-        paddingHorizontal: 22,
+        paddingHorizontal: 24,
         paddingTop: 0,
         paddingBottom: 0,
     },
@@ -2219,12 +2224,17 @@ const createStyles = (colors) => StyleSheet.create({
     },
     headwordRow: {
         flexDirection: 'row',
-        alignItems: 'center',
-        gap: 8,
+        alignItems: 'flex-start',
+        gap: 0,
+    },
+    headwordMain: {
+        flex: 1,
+        minWidth: 0,
+        paddingTop: 4,
     },
     headwordChevronButton: {
-        width: 24,
-        height: 34,
+        width: 32,
+        height: 44,
         alignItems: 'center',
         justifyContent: 'center',
         flexShrink: 0,
@@ -2241,11 +2251,10 @@ const createStyles = (colors) => StyleSheet.create({
         alignItems: 'center',
     },
     wordLine: {
-        flex: 1,
         minWidth: 0,
         flexDirection: 'row',
         alignItems: 'baseline',
-        justifyContent: 'center',
+        justifyContent: 'flex-start',
         flexWrap: 'wrap',
         columnGap: 10,
         rowGap: 0,
@@ -2259,6 +2268,12 @@ const createStyles = (colors) => StyleSheet.create({
         paddingTop: 0,
         includeFontPadding: true,
     },
+    // The meaning beside the part-of-speech chip, left-aligned under the heading.
+    entryDefinitionText: {
+        fontSize: 17,
+        lineHeight: 24,
+        textAlign: 'left',
+    },
     entryHanja: {
         fontFamily: fontFamilies.krSerifMedium,
         fontSize: 18,
@@ -2267,8 +2282,8 @@ const createStyles = (colors) => StyleSheet.create({
     entryMeta: {
         fontFamily: fontFamilies.sansRegular,
         fontStyle: 'italic',
-        fontSize: 14,
-        lineHeight: 20,
+        fontSize: 13,
+        lineHeight: 18,
         marginTop: 0,
         textAlign: 'left',
     },
@@ -2276,14 +2291,15 @@ const createStyles = (colors) => StyleSheet.create({
     // measures an italic fallback run too narrow and clips it.
     ipaText: {
         fontFamily: fontFamilies.sansRegular,
-        fontSize: 14,
-        lineHeight: 20,
+        fontStyle: 'italic',
+        fontSize: 13,
+        lineHeight: 18,
         marginRight: 4,
     },
     entryMetaRow: {
         flexDirection: 'row',
         alignItems: 'center',
-        justifyContent: 'center',
+        justifyContent: 'flex-start',
         gap: 4,
         marginTop: 0,
         flexWrap: 'wrap',
@@ -2328,18 +2344,20 @@ const createStyles = (colors) => StyleSheet.create({
         alignItems: 'center',
         justifyContent: 'center',
     },
-    // The saved mark's slot (same width as saveIconSpacer, so the headword
-    // stays centred whether or not the mark is showing).
+    // The saved mark's slot, kept when the mark isn't showing. A 44 box at the heading's top right, its icon lined up with the
+    // panel's right padding.
     saveIconButton: {
-        width: 34,
-        height: 34,
+        width: 44,
+        height: 44,
+        marginRight: -11,
         alignItems: 'center',
         justifyContent: 'center',
         flexShrink: 0,
     },
-    // Balances the save icon so the headword stays centred.
+    // Balances the save icon (44 less its -11 margin) so a centred headword
+    // stays centred.
     saveIconSpacer: {
-        width: 34,
+        width: 33,
         flexShrink: 0,
     },
     notFoundWordLine: {
@@ -2362,12 +2380,10 @@ const createStyles = (colors) => StyleSheet.create({
         minHeight: 36,
     },
     posBadge: {
-        borderRadius: 6,
-        paddingHorizontal: 7,
+        borderRadius: radii.chip,
+        paddingHorizontal: 8,
         paddingVertical: 3,
-        borderWidth: 1,
-        borderColor: colors.border,
-        backgroundColor: colors.transparent,
+        backgroundColor: colors.surfaceMuted,
     },
     posBadgeText: {
         fontFamily: fontFamilies.sansSemiBold,
@@ -2411,13 +2427,14 @@ const createStyles = (colors) => StyleSheet.create({
         flexDirection: 'row',
         flexWrap: 'wrap',
         alignItems: 'center',
-        justifyContent: 'center',
+        justifyContent: 'flex-start',
         gap: 10,
         paddingHorizontal: 0,
-        paddingVertical: 2,
+        paddingTop: 8,
+        paddingBottom: 2,
     },
     definitionRowSolo: {
-        justifyContent: 'center',
+        justifyContent: 'flex-start',
     },
     // --- Chinese readings body ---
     // Keep the characters intact (never break between them) so the pinyin, not the

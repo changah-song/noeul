@@ -55,6 +55,7 @@ const CalendarDrop = ({ open, days = {}, goalMinutes, onClose }) => {
   const now = new Date();
   const month = new Date(now.getFullYear(), now.getMonth() + monthOffset, 1);
   const cells = monthDays(days, month.getFullYear(), month.getMonth(), undefined, goalMinutes * 60000);
+  const isToday = (day) => monthOffset === 0 && day === now.getDate();
   const goalDays = cells.filter((cell) => cell?.state === 'met').length;
   const goalText = goalMinutes >= 30
     ? t('goal.perDayPlus', { count: goalMinutes })
@@ -87,20 +88,20 @@ const CalendarDrop = ({ open, days = {}, goalMinutes, onClose }) => {
           <View style={styles.arrows}>
             <TouchableOpacity
               onPress={() => setMonthOffset((value) => value - 1)}
-              hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }}
+              style={styles.arrow}
               accessibilityRole="button"
               accessibilityLabel={t('goal.previousMonth')}
             >
-              <Feather name="chevron-left" size={18} color={colors.textSecondary} />
+              <Feather name="chevron-left" size={22} color={colors.text} />
             </TouchableOpacity>
             <TouchableOpacity
               onPress={() => setMonthOffset((value) => Math.min(0, value + 1))}
               disabled={monthOffset >= 0}
-              hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }}
+              style={styles.arrow}
               accessibilityRole="button"
               accessibilityLabel={t('goal.nextMonth')}
             >
-              <Feather name="chevron-right" size={18} color={monthOffset >= 0 ? colors.textSubtle : colors.textSecondary} />
+              <Feather name="chevron-right" size={22} color={monthOffset >= 0 ? colors.textSubtle : colors.text} />
             </TouchableOpacity>
           </View>
         </View>
@@ -121,9 +122,17 @@ const CalendarDrop = ({ open, days = {}, goalMinutes, onClose }) => {
                   cell.state === 'met' ? t('goal.minutesCount', { count: Math.floor(cell.ms / 60000) }) : null,
                 ].filter(Boolean).join(', ')}
               >
-                {cell.state === 'met'
-                  ? <CalendarSunsetGlyph stage={cell.stage} color={colors.text} />
-                  : <View style={styles[cell.state]} />}
+                <View style={styles.glyph}>
+                  {cell.state === 'met'
+                    ? <CalendarSunsetGlyph stage={cell.stage} color={colors.text} />
+                    : <View style={styles[cell.state]} />}
+                </View>
+                <Text
+                  allowFontScaling={false}
+                  style={[styles.date, isToday(cell.day) && styles.dateToday]}
+                >
+                  {cell.day}
+                </Text>
               </View>
             ) : (
               // eslint-disable-next-line react/no-array-index-key
@@ -162,8 +171,10 @@ const CalendarDrop = ({ open, days = {}, goalMinutes, onClose }) => {
               hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
               accessibilityRole="button"
               accessibilityLabel={`${t('goal.dailyGoal')}, ${goalText}`}
+              style={styles.goalButton}
             >
-              <Text style={styles.footerText}>{goalText}</Text>
+              <Text style={styles.goalText}>{goalText}</Text>
+              <Feather name="chevron-right" size={16} color={colors.textTertiary} />
             </TouchableOpacity>
           </View>
         )}
@@ -172,7 +183,7 @@ const CalendarDrop = ({ open, days = {}, goalMinutes, onClose }) => {
   );
 };
 
-const DOT_CELL = 36;
+const DOT_CELL = 50;
 
 const createStyles = (colors, isDarkMode) => ({
   layer: {
@@ -201,24 +212,32 @@ const createStyles = (colors, isDarkMode) => ({
     borderBottomRightRadius: 22,
     borderBottomWidth: 1,
     borderColor: colors.border,
-    paddingHorizontal: 28,
-    paddingTop: 10,
-    paddingBottom: 18,
+    paddingHorizontal: 24,
+    paddingTop: 6,
+    paddingBottom: 6,
   },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 8,
+    height: 44,
+    marginBottom: 6,
   },
   month: {
     fontFamily: fontFamilies.displaySemiBold,
-    fontSize: 19,
+    fontSize: 23,
+    lineHeight: 28,
     color: colors.text,
   },
   arrows: {
     flexDirection: 'row',
-    gap: 18,
+    marginRight: -11,
+  },
+  arrow: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   grid: {
     flexDirection: 'row',
@@ -227,16 +246,34 @@ const createStyles = (colors, isDarkMode) => ({
   weekday: {
     width: `${100 / 7}%`,
     textAlign: 'center',
-    paddingBottom: 4,
-    fontFamily: fontFamilies.sansMedium,
-    fontSize: 11.5,
+    height: 22,
+    lineHeight: 22,
+    fontFamily: fontFamilies.sansSemiBold,
+    fontSize: 12,
     color: colors.textTertiary,
   },
   cell: {
     width: `${100 / 7}%`,
     height: DOT_CELL,
     alignItems: 'center',
+    justifyContent: 'flex-end',
+  },
+  glyph: {
+    height: 26,
+    alignItems: 'center',
     justifyContent: 'center',
+  },
+  date: {
+    marginTop: 3,
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 11,
+    lineHeight: 14,
+    color: colors.textTertiary,
+    fontVariant: ['tabular-nums'],
+  },
+  dateToday: {
+    fontFamily: fontFamilies.sansSemiBold,
+    color: colors.text,
   },
   met: {
     width: 8,
@@ -251,10 +288,10 @@ const createStyles = (colors, isDarkMode) => ({
     backgroundColor: colors.borderStrong,
   },
   none: {
-    width: 3,
-    height: 3,
-    borderRadius: 1.5,
-    backgroundColor: colors.border,
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: colors.dotInactive,
   },
   today: {
     width: 10,
@@ -268,23 +305,44 @@ const createStyles = (colors, isDarkMode) => ({
     height: 0,
   },
   footer: {
-    marginTop: 10,
+    marginTop: 14,
+    height: 44,
+    borderTopWidth: 1,
+    borderTopColor: colors.divider,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
   },
   footerText: {
     fontFamily: fontFamilies.sansRegular,
-    fontSize: 12.5,
+    fontSize: 13,
+    lineHeight: 18,
     color: colors.textTertiary,
   },
+  goalButton: {
+    height: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  goalText: {
+    fontFamily: fontFamilies.sansSemiBold,
+    fontSize: 13,
+    lineHeight: 18,
+    color: colors.text,
+  },
   goalOptions: {
-    marginTop: 10,
+    marginTop: 14,
+    height: 44,
+    borderTopWidth: 1,
+    borderTopColor: colors.divider,
     flexDirection: 'row',
     justifyContent: 'space-between',
+    alignItems: 'center',
   },
   goalOption: {
-    paddingVertical: 4,
+    minHeight: 44,
+    justifyContent: 'center',
   },
   goalOptionText: {
     fontFamily: fontFamilies.sansRegular,

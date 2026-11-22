@@ -23,7 +23,7 @@ export const ReaderBackButton = memo(({ styles, themeColors, onPress, accessibil
         accessibilityRole="button"
         accessibilityLabel={accessibilityLabel}
     >
-        <Feather name="chevron-left" size={26} color={themeColors.inkSlate} />
+        <Feather name="chevron-left" size={22} color={themeColors.inkSlate} />
     </TouchableOpacity>
 ));
 ReaderBackButton.displayName = 'ReaderBackButton';
@@ -45,7 +45,7 @@ export const ReaderCheckpointButton = memo(({
         accessibilityLabel={accessibilityLabel}
     >
         {active ? (
-            <MaterialCommunityIcons name="bookmark" size={25} color={themeColors.inkSlate} />
+            <MaterialCommunityIcons name="bookmark" size={22} color={themeColors.inkSlate} />
         ) : (
             <Feather name="bookmark" size={22} color={themeColors.inkSlate} />
         )}
@@ -60,7 +60,7 @@ export const ReaderSavedWordsButton = memo(({ styles, themeColors, count = 0, on
         accessibilityRole="button"
         accessibilityLabel={accessibilityLabel}
     >
-        <MaterialCommunityIcons name="cards-outline" size={21} color={themeColors.inkSlate} />
+        <MaterialCommunityIcons name="cards-outline" size={22} color={themeColors.inkSlate} />
         {count > 0 ? (
             <View style={styles.savedBadge}>
                 <Text style={styles.savedBadgeText}>{count > 99 ? '99+' : count}</Text>
@@ -78,7 +78,7 @@ export const ReaderFocusModeButton = memo(({ styles, themeColors, active, onPres
         accessibilityState={{ selected: !!active }}
         accessibilityLabel={accessibilityLabel}
     >
-        <Feather name="eye" size={23} color={themeColors.inkSlate} />
+        <Feather name="eye" size={22} color={themeColors.inkSlate} />
     </TouchableOpacity>
 ));
 ReaderFocusModeButton.displayName = 'ReaderFocusModeButton';
@@ -159,8 +159,8 @@ export const ReaderTitleButton = memo(({
             {disabled ? null : (
                 <Feather
                     name={open ? 'chevron-up' : 'chevron-down'}
-                    size={16}
-                    color={themeColors.textSecondary}
+                    size={17}
+                    color={themeColors.textTertiary}
                     style={styles.titleChevron}
                 />
             )}
@@ -176,7 +176,7 @@ export const ReaderFullscreenButton = memo(({ styles, themeColors, onPress, acce
         accessibilityRole="button"
         accessibilityLabel={accessibilityLabel}
     >
-        <Feather name="maximize" size={18} color={themeColors.inkSlate} />
+        <Feather name="maximize" size={22} color={themeColors.inkSlate} />
     </TouchableOpacity>
 ));
 ReaderFullscreenButton.displayName = 'ReaderFullscreenButton';
@@ -189,7 +189,7 @@ export const ReaderMenuButton = memo(({ styles, themeColors, open, onPress, acce
         accessibilityState={{ expanded: !!open }}
         accessibilityLabel={accessibilityLabel}
     >
-        <Feather name="menu" size={24} color={themeColors.inkSlate} />
+        <Feather name="menu" size={22} color={themeColors.inkSlate} />
     </TouchableOpacity>
 ));
 ReaderMenuButton.displayName = 'ReaderMenuButton';

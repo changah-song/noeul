@@ -129,10 +129,11 @@ const ListenBar = ({
             seed: {
                 width: barHeight,
                 height: barHeight,
+                borderRadius: barHeight / 2,
                 opacity: appear.interpolate({ inputRange: [0, 0.35], outputRange: [1, 0], extrapolate: 'clamp' }),
             },
-            // The button's icon, 20 across and nudged 2 right, at the start's scale.
-            seedIconSize: 20 / startScale,
+            // The button's icon, 18 across and nudged 2 right, at the start's scale.
+            seedIconSize: 18 / startScale,
             seedNudge: 2 / startScale,
         };
     }, [anchor, appear, bottom, styles.listenBar, styles.listenBarWrap, windowWidth]);
@@ -154,7 +155,7 @@ const ListenBar = ({
                                     accessibilityRole="button"
                                     accessibilityLabel={t('read.focusPreviousSentence')}
                                 >
-                                    <MaterialIcons name="skip-previous" size={24} color={themeColors.inkSlate} />
+                                    <Feather name="skip-back" size={22} color={themeColors.text} />
                                 </TouchableOpacity>
                                 <TouchableOpacity
                                     style={styles.listenPlayButton}
@@ -164,7 +165,12 @@ const ListenBar = ({
                                     accessibilityState={{ selected: playing }}
                                     accessibilityLabel={playing ? t('read.listenPause') : t('read.listenPlay')}
                                 >
-                                    <MaterialIcons name={playing ? 'pause' : 'play-arrow'} size={26} color={themeColors.readerPaper} />
+                                    <Feather
+                                        name={playing ? 'pause' : 'play'}
+                                        size={20}
+                                        color={themeColors.white}
+                                        style={playing ? null : localStyles.playNudge}
+                                    />
                                 </TouchableOpacity>
                                 <TouchableOpacity
                                     style={styles.listenButton}
@@ -173,7 +179,7 @@ const ListenBar = ({
                                     accessibilityRole="button"
                                     accessibilityLabel={t('read.focusNextSentence')}
                                 >
-                                    <MaterialIcons name="skip-next" size={24} color={themeColors.inkSlate} />
+                                    <Feather name="skip-forward" size={22} color={themeColors.text} />
                                 </TouchableOpacity>
                                 <View style={styles.listenDivider} />
                                 <TouchableOpacity
@@ -184,7 +190,7 @@ const ListenBar = ({
                                     accessibilityRole="button"
                                     accessibilityLabel={`${t('read.listenVoiceTitle')}, ${t('read.listenSpeed', { rate: rateLabel })}`}
                                 >
-                                    <MaterialCommunityIcons name="waveform" size={15} color={themeColors.inkSlate} />
+                                    <MaterialCommunityIcons name="waveform" size={17} color={themeColors.text} />
                                     <Text style={styles.listenSpeedLabel} maxFontSizeMultiplier={1.2}>{rateLabel}</Text>
                                 </TouchableOpacity>
                                 <TouchableOpacity
@@ -198,8 +204,8 @@ const ListenBar = ({
                                 >
                                     <MaterialIcons
                                         name="school"
-                                        size={17}
-                                        color={explainWords ? themeColors.readerPaper : themeColors.inkSlate}
+                                        size={20}
+                                        color={explainWords ? themeColors.text : themeColors.textSecondary}
                                     />
                                 </TouchableOpacity>
                                 <TouchableOpacity
@@ -213,8 +219,8 @@ const ListenBar = ({
                                 >
                                     <MaterialIcons
                                         name="translate"
-                                        size={17}
-                                        color={translateSentences ? themeColors.readerPaper : themeColors.inkSlate}
+                                        size={20}
+                                        color={translateSentences ? themeColors.text : themeColors.textSecondary}
                                     />
                                 </TouchableOpacity>
                                 <View style={styles.listenSpacer} />
@@ -225,15 +231,18 @@ const ListenBar = ({
                                     accessibilityRole="button"
                                     accessibilityLabel={t('read.listenStop')}
                                 >
-                                    <Feather name="x" size={20} color={themeColors.textTertiary} />
+                                    <Feather name="x" size={22} color={themeColors.textTertiary} />
                                 </TouchableOpacity>
                             </Animated.View>
                             {motion.seed ? (
-                                <Animated.View pointerEvents="none" style={[localStyles.seed, motion.seed]}>
+                                <Animated.View
+                                    pointerEvents="none"
+                                    style={[localStyles.seed, { backgroundColor: themeColors.inkSlate }, motion.seed]}
+                                >
                                     <Feather
                                         name="play"
                                         size={motion.seedIconSize}
-                                        color={themeColors.readerBodyInk}
+                                        color={themeColors.white}
                                         style={{ marginLeft: motion.seedNudge }}
                                     />
                                 </Animated.View>
@@ -285,6 +294,10 @@ const localStyles = StyleSheet.create({
         paddingVertical: 3,
         borderRadius: 9,
         overflow: 'hidden',
+    },
+    // The play triangle's weight sits left of its box.
+    playNudge: {
+        marginLeft: 2,
     },
     seed: {
         position: 'absolute',

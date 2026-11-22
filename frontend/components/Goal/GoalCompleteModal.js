@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { Animated, Easing, Modal, Text, TouchableOpacity, useWindowDimensions, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
-import { fontFamilies, useTheme } from '../../theme';
+import { fontFamilies, radii, useTheme } from '../../theme';
 import { useTranslation } from '../../hooks/useTranslation';
 
 const PIECES = 18;
@@ -108,14 +108,14 @@ const GoalCompleteModal = ({ event, onClose }) => {
                     accessibilityLiveRegion="polite"
                 >
                     <View style={styles.badge}>
-                        <Feather name="check" size={26} color={colors.surface} />
+                        <Feather name="check" size={26} color={colors.white} />
                     </View>
                     <Text style={styles.title}>{t('goal.completeTitle')}</Text>
                     <Text style={styles.minutes}>{t('goal.completeMinutes', { count: event.goalMinutes })}</Text>
                     <View style={styles.highlights}>
                         {event.highlights.slice(0, 3).map((item) => (
                             <View key={item.kind} style={styles.highlight}>
-                                <Feather name={HIGHLIGHT_ICONS[item.kind]} size={16} color={colors.text} />
+                                <Feather name={HIGHLIGHT_ICONS[item.kind]} size={17} color={colors.text} />
                                 <Text style={styles.highlightText}>{highlightText(item)}</Text>
                             </View>
                         ))}
@@ -140,12 +140,18 @@ const createStyles = (colors) => ({
     card: {
         width: '100%',
         maxWidth: 360,
-        borderRadius: 22,
+        borderRadius: radii.sheet,
         backgroundColor: colors.surface,
-        paddingTop: 26,
-        paddingBottom: 18,
+        paddingTop: 28,
+        paddingBottom: 22,
         paddingHorizontal: 22,
         alignItems: 'center',
+        // A pop-up floats over the page: the one place a shadow belongs.
+        shadowColor: colors.panelShadow,
+        shadowOffset: { width: 0, height: 10 },
+        shadowOpacity: 1,
+        shadowRadius: 28,
+        elevation: 12,
     },
     badge: {
         width: 52,
@@ -153,55 +159,58 @@ const createStyles = (colors) => ({
         borderRadius: 26,
         alignItems: 'center',
         justifyContent: 'center',
-        backgroundColor: colors.text,
+        backgroundColor: colors.inkSlate,
     },
     title: {
-        marginTop: 14,
+        marginTop: 18,
         fontFamily: fontFamilies.displaySemiBold,
-        fontSize: 22,
+        fontSize: 23,
         lineHeight: 28,
         color: colors.text,
         textAlign: 'center',
     },
     minutes: {
-        marginTop: 2,
+        marginTop: 4,
         fontFamily: fontFamilies.sansRegular,
-        fontSize: 14,
+        fontSize: 15,
+        lineHeight: 22,
         color: colors.textSecondary,
     },
     highlights: {
         alignSelf: 'stretch',
-        marginTop: 18,
+        marginTop: 22,
         gap: 8,
     },
     highlight: {
+        minHeight: 44,
         flexDirection: 'row',
         alignItems: 'center',
         gap: 10,
         paddingVertical: 10,
         paddingHorizontal: 14,
-        borderRadius: 12,
-        backgroundColor: colors.surfaceMuted,
+        borderRadius: radii.control,
+        backgroundColor: colors.surfaceAssist,
     },
     highlightText: {
         flex: 1,
         fontFamily: fontFamilies.sansMedium,
-        fontSize: 14.5,
+        fontSize: 15,
+        lineHeight: 20,
         color: colors.text,
     },
     button: {
         alignSelf: 'stretch',
-        marginTop: 18,
-        height: 48,
-        borderRadius: 14,
+        marginTop: 22,
+        height: 52,
+        borderRadius: radii.control,
         alignItems: 'center',
         justifyContent: 'center',
-        backgroundColor: colors.text,
+        backgroundColor: colors.inkSlate,
     },
     buttonText: {
         fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 15,
-        color: colors.surface,
+        fontSize: 16,
+        color: colors.white,
     },
 });
 

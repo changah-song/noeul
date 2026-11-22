@@ -37,7 +37,6 @@ import {
     SettingRow,
     Stepper,
     ToggleSwitch,
-    Checkbox,
     createReaderSettingsControlStyles,
 } from './ReaderSettingsControls';
 
@@ -259,8 +258,8 @@ const ReaderSettingsSheet = ({
                     onChange={(value) => onSettingChange('readingMode', value)}
                     accessibilityLabel={t('read.settingsPageTurns')}
                     options={[
-                        { value: 'paged', label: t('read.readingHorizontal'), icon: 'swap-horiz', iconOnly: true },
-                        { value: 'scroll', label: t('read.readingVertical'), icon: 'swap-vert', iconOnly: true },
+                        { value: 'paged', label: t('read.readingHorizontal'), icon: 'swap-horiz' },
+                        { value: 'scroll', label: t('read.readingVertical'), icon: 'swap-vert' },
                     ]}
                 />
             </SettingRow>
@@ -389,7 +388,7 @@ const ReaderSettingsSheet = ({
                 label: t('read.hideSavedAnnotations'),
                 below: <Text style={styles.legendHint}>{t('read.hideSavedAnnotationsHint')}</Text>,
                 control: (
-                    <Checkbox
+                    <ToggleSwitch
                         styles={controlStyles}
                         colors={colors}
                         value={hideSavedOn}

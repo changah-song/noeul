@@ -8,7 +8,7 @@ import { localizeGeneratedSectionLabel } from '../../i18n/userFacing';
 import { formatNumber } from '../../services/interfaceLanguage';
 import { activeTocIndex } from '../../services/tocAnchors';
 import { tocAncestors, tocGroups } from '../../services/tocLinkedSections';
-import { colors as defaultColors, elevation, fontFamilies, layout, useTheme } from '../../theme';
+import { colors as defaultColors, elevation, fontFamilies, layout, radii, useTheme } from '../../theme';
 
 const stripHref = (href) => {
     if (!href) return '';
@@ -140,7 +140,7 @@ const TocDrawer = ({
         sheet: colors.readerSurface,
         border: colors.readerBorder,
         headerText: colors.textTertiary,
-        summaryText: colors.textSubtle,
+        summaryText: colors.textTertiary,
         activeBg: colors.surfaceAssist,
         numberRead: colors.readerSubtleInk,
         numberCurrent: colors.readerBodyInk,
@@ -351,7 +351,7 @@ const styles = StyleSheet.create({
         position: 'absolute',
         left: 12,
         maxHeight: 520,
-        borderRadius: 16,
+        borderRadius: radii.sheet,
         borderWidth: StyleSheet.hairlineWidth,
         overflow: 'hidden',
         paddingTop: 14,
@@ -370,15 +370,16 @@ const styles = StyleSheet.create({
         gap: 12,
         marginBottom: 10,
     },
+    // Section-label style, with its count beside it.
     headerTitle: {
         fontFamily: fontFamilies.sansSemiBold,
         fontSize: 13,
-        lineHeight: 17,
+        lineHeight: 18,
     },
     chapterSummary: {
         fontFamily: fontFamilies.sansRegular,
-        fontSize: 12,
-        lineHeight: 16,
+        fontSize: 13,
+        lineHeight: 18,
         fontVariant: ['tabular-nums'],
     },
     bookProgressRow: {
@@ -388,7 +389,7 @@ const styles = StyleSheet.create({
     },
     bookProgressTrack: {
         flex: 1,
-        height: 4,
+        height: 3,
         borderRadius: 2,
         overflow: 'hidden',
     },

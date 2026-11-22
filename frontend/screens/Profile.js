@@ -13,6 +13,7 @@ import {
     View,
 } from 'react-native';
 import { Feather } from '@expo/vector-icons';
+import { SegmentedControl, createReaderSettingsControlStyles } from '../components/Read/ReaderSettingsControls';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
 import { AuthModal } from './Auth';
@@ -57,6 +58,7 @@ const getProfileColors = (themeColors) => ({
     ink: themeColors.text,
     inkSlate: themeColors.inkSlate,
     body: themeColors.textMuted,
+    secondary: themeColors.textSecondary,
     sub: themeColors.textTertiary,
     faint: themeColors.textSubtle,
     border: themeColors.divider,
@@ -87,10 +89,10 @@ const NavRow = ({ icon, label, value, valueStyle, onPress, trailingIcon = 'chevr
             accessibilityRole="button"
             accessibilityLabel={value ? `${label}, ${value}` : label}
         >
-            {icon ? <Feather name={icon} size={18} color={profileColors.body} /> : null}
+            {icon ? <Feather name={icon} size={19} color={profileColors.ink} /> : null}
             <Text style={[styles.rowLabel, styles.rowLabelFlex]} numberOfLines={1}>{label}</Text>
             {value ? <Text style={[styles.rowValue, valueStyle]} numberOfLines={1}>{value}</Text> : null}
-            {trailingIcon ? <Feather name={trailingIcon} size={16} color={profileColors.faint} /> : null}
+            {trailingIcon ? <Feather name={trailingIcon} size={17} color={profileColors.sub} /> : null}
         </TouchableOpacity>
     </>
 );
@@ -129,6 +131,7 @@ const Profile = ({ user, books, currentBook, signOut, updateUsername, navigation
     const theme = useTheme();
     const profileColors = useMemo(() => getProfileColors(theme.colors), [theme.colors]);
     const styles = useMemo(() => createStyles(profileColors, theme.colors), [profileColors, theme.colors]);
+    const controlStyles = useMemo(() => createReaderSettingsControlStyles(theme.colors), [theme.colors]);
     const navigationButtonsInset = useNavigationButtonsInset();
     const { t, language } = useTranslation();
     const isAnonymous = Boolean(user?.is_anonymous);
@@ -311,10 +314,8 @@ const Profile = ({ user, books, currentBook, signOut, updateUsername, navigation
     };
 
     const appearanceModes = ['light', 'sepia', 'dark'].map((mode) => ({
-        key: mode,
+        value: mode,
         label: t(`profile.${mode}`),
-        selected: themeMode === mode,
-        onPress: () => setThemeMode(mode),
     }));
 
     return (
@@ -333,8 +334,8 @@ const Profile = ({ user, books, currentBook, signOut, updateUsername, navigation
                 showsVerticalScrollIndicator={false}
                 keyboardShouldPersistTaps="handled"
             >
-                {/* One row: back, then who you are (avatar, name and account
-                    line, and for an account the edit button). */}
+                {/* Back on its own row, then who you are: avatar, name and
+                    account line (and for an account the edit button). */}
                 <View style={styles.topBar}>
                     <TouchableOpacity
                         onPress={goBack}
@@ -342,27 +343,49 @@ const Profile = ({ user, books, currentBook, signOut, updateUsername, navigation
                         accessibilityRole="button"
                         accessibilityLabel={t('common.back')}
                     >
-                        <Feather name="chevron-left" size={24} color={profileColors.inkSlate} />
+                        <Feather name="chevron-left" size={22} color={profileColors.ink} />
                     </TouchableOpacity>
-                    <View style={styles.profileHeader}>
-                        <ProfileAvatar user={user} size={48} />
-                        <View style={styles.profileIdentity}>
-                            <Text style={styles.profileName} numberOfLines={1}>{shownName}</Text>
-                            <Text style={styles.profileSubtitle} numberOfLines={1}>{identitySubtitle}</Text>
-                        </View>
-                        {!isGuest ? (
-                            <TouchableOpacity
-                                accessibilityRole="button"
-                                accessibilityLabel={t('profile.editUsername')}
-                                activeOpacity={0.78}
-                                onPress={openNameEditor}
-                                style={styles.editUsernameButton}
-                            >
-                                <Feather name="edit-2" size={16} color={profileColors.sub} />
-                            </TouchableOpacity>
-                        ) : null}
-                    </View>
                 </View>
+                <View style={styles.profileHeader}>
+                    <ProfileAvatar user={user} size={52} />
+                    <View style={styles.profileIdentity}>
+                        <Text style={styles.profileName} numberOfLines={1}>{shownName}</Text>
+                        <Text style={styles.profileSubtitle} numberOfLines={1}>{identitySubtitle}</Text>
+                    </View>
+                    {!isGuest ? (
+                        <TouchableOpacity
+                            accessibilityRole="button"
+                            accessibilityLabel={t('profile.editUsername')}
+                            activeOpacity={0.78}
+                            onPress={openNameEditor}
+                            style={styles.editUsernameButton}
+                        >
+                            <Feather name="edit-2" size={17} color={profileColors.sub} />
+                        </TouchableOpacity>
+                    ) : null}
+                </View>
+
+                {/* A guest's way to an account sits right under who they are. */}
+                {isGuest ? (
+                    <View style={styles.accountActions}>
+                        <TouchableOpacity
+                            activeOpacity={0.86}
+                            onPress={() => openAuthModal('signup')}
+                            style={[styles.accountButton, styles.accountButtonPrimary]}
+                            accessibilityRole="button"
+                        >
+                            <Text style={styles.accountButtonPrimaryText} numberOfLines={1}>{t('auth.createAccount')}</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                            activeOpacity={0.86}
+                            onPress={() => openAuthModal('signin')}
+                            style={[styles.accountButton, styles.accountButtonSecondary]}
+                            accessibilityRole="button"
+                        >
+                            <Text style={styles.accountButtonSecondaryText} numberOfLines={1}>{t('profile.signIn')}</Text>
+                        </TouchableOpacity>
+                    </View>
+                ) : null}
 
                 {showVocabRow ? (
                     <>
@@ -424,24 +447,16 @@ const Profile = ({ user, books, currentBook, signOut, updateUsername, navigation
                 <View style={styles.card}>
                     <SyncStatusRow styles={styles} profileColors={profileColors} dividerBelow />
                     <View style={styles.row}>
-                        <Feather name="moon" size={18} color={profileColors.body} />
+                        <Feather name="moon" size={19} color={profileColors.ink} />
                         <Text style={[styles.rowLabel, styles.rowLabelFlex]} numberOfLines={1}>{t('profile.appearance')}</Text>
-                        <View style={styles.segmentControl} accessibilityRole="radiogroup" accessibilityLabel={t('profile.appearance')}>
-                            {appearanceModes.map((mode) => (
-                                <Pressable
-                                    key={mode.key}
-                                    accessibilityRole="radio"
-                                    accessibilityState={{ selected: mode.selected }}
-                                    onPress={mode.onPress}
-                                    hitSlop={{ top: 6, bottom: 6 }}
-                                    style={[styles.segmentButton, mode.selected && styles.segmentButtonActive]}
-                                >
-                                    <Text style={[styles.segmentText, mode.selected && styles.segmentTextActive]}>
-                                        {mode.label}
-                                    </Text>
-                                </Pressable>
-                            ))}
-                        </View>
+                        <SegmentedControl
+                            styles={controlStyles}
+                            colors={theme.colors}
+                            options={appearanceModes}
+                            value={themeMode}
+                            onChange={setThemeMode}
+                            accessibilityLabel={t('profile.appearance')}
+                        />
                     </View>
                     <NavRow
                         icon="play-circle"
@@ -482,32 +497,13 @@ const Profile = ({ user, books, currentBook, signOut, updateUsername, navigation
                     />
                 </View>
 
-                {isGuest ? (
-                    <View style={styles.accountActions}>
-                        <TouchableOpacity
-                            activeOpacity={0.86}
-                            onPress={() => openAuthModal('signin')}
-                            style={[styles.accountButton, styles.accountButtonSecondary]}
-                            accessibilityRole="button"
-                        >
-                            <Text style={styles.accountButtonSecondaryText}>{t('profile.signIn')}</Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                            activeOpacity={0.86}
-                            onPress={() => openAuthModal('signup')}
-                            style={[styles.accountButton, styles.accountButtonPrimary]}
-                            accessibilityRole="button"
-                        >
-                            <Text style={styles.accountButtonPrimaryText}>{t('auth.createAccount')}</Text>
-                        </TouchableOpacity>
-                    </View>
-                ) : (
+                {!isGuest ? (
                     <View style={styles.accountColumn}>
                         <TouchableOpacity
                             activeOpacity={0.86}
                             onPress={() => setShowSignOutModal(true)}
                             disabled={isSigningOut}
-                            style={[styles.accountButton, styles.accountButtonSecondary, isSigningOut && styles.buttonDisabled]}
+                            style={[styles.accountButton, styles.accountButtonSecondary, styles.signOutButton, isSigningOut && styles.buttonDisabled]}
                             accessibilityRole="button"
                         >
                             <Text style={styles.logoutText}>
@@ -526,7 +522,7 @@ const Profile = ({ user, books, currentBook, signOut, updateUsername, navigation
                             </Text>
                         </TouchableOpacity>
                     </View>
-                )}
+                ) : null}
             </ScrollView>
 
             <WordCheckModal visible={showWordCheck} onClose={() => setShowWordCheck(false)} />
@@ -792,11 +788,10 @@ const createStyles = (profileColors, themeColors) => StyleSheet.create({
     },
     topBar: {
         paddingTop: 6,
-        paddingLeft: 8,
-        paddingRight: 20,
+        paddingHorizontal: 5,
+        height: 58,
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 8,
     },
     backButton: {
         width: 44,
@@ -804,82 +799,64 @@ const createStyles = (profileColors, themeColors) => StyleSheet.create({
         alignItems: 'center',
         justifyContent: 'center',
     },
-    // The rest of the top bar, after the back button.
+    // Who you are, under the back button.
     profileHeader: {
-        flex: 1,
-        minWidth: 0,
+        marginTop: 4,
+        marginHorizontal: 24,
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 12,
-    },
-    avatar: {
-        width: 56,
-        height: 56,
-        borderRadius: 28,
-        alignItems: 'center',
-        justifyContent: 'center',
-        backgroundColor: profileColors.inkSlate,
-    },
-    avatarInitial: {
-        fontFamily: fontFamilies.displaySemiBold,
-        fontSize: 24,
-        lineHeight: 30,
-        color: profileColors.white,
+        gap: 14,
     },
     profileIdentity: {
         flex: 1,
         minWidth: 0,
-        gap: 1,
     },
     profileName: {
         fontFamily: fontFamilies.displaySemiBold,
-        fontSize: 21,
-        lineHeight: 27,
+        fontSize: 23,
+        lineHeight: 28,
         color: profileColors.ink,
     },
     profileSubtitle: {
         fontFamily: fontFamilies.sansRegular,
-        fontSize: 14,
-        lineHeight: 19,
-        color: profileColors.body,
+        fontSize: 13,
+        lineHeight: 18,
+        color: profileColors.sub,
     },
     editUsernameButton: {
         width: 44,
         height: 44,
-        borderRadius: radii.pill,
         alignItems: 'center',
         justifyContent: 'center',
-        borderWidth: 1,
-        borderColor: profileColors.border,
-        backgroundColor: profileColors.surface,
+        marginRight: -10,
     },
     sectionLabel: {
-        marginTop: 22,
+        marginTop: 24,
         marginBottom: 8,
-        marginHorizontal: 20,
+        marginHorizontal: 24,
         fontFamily: fontFamilies.sansSemiBold,
         fontSize: 13,
         lineHeight: 18,
         color: profileColors.sub,
     },
     card: {
-        marginHorizontal: 16,
-        borderRadius: 18,
+        marginHorizontal: 24,
+        borderRadius: radii.control,
         borderWidth: 1,
         borderColor: profileColors.border,
         backgroundColor: profileColors.surface,
         overflow: 'hidden',
     },
     row: {
-        minHeight: 54,
+        minHeight: 52,
         paddingHorizontal: 16,
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 10,
+        gap: 12,
     },
     rowDivider: {
         height: 1,
-        marginLeft: 16,
+        marginHorizontal: 16,
         backgroundColor: profileColors.border,
     },
     rowLabel: {
@@ -894,66 +871,35 @@ const createStyles = (profileColors, themeColors) => StyleSheet.create({
     },
     rowValue: {
         maxWidth: '45%',
-        fontFamily: fontFamilies.sansRegular,
-        fontSize: 14,
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 15,
         lineHeight: 20,
-        color: profileColors.body,
+        color: profileColors.secondary,
     },
     rowValueStrong: {
         fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 15,
-        color: profileColors.ink,
+        color: profileColors.secondary,
     },
+    // The language being learned is named in its own script.
     rowValueGlyph: {
         fontFamily: fontFamilies.krSerifSemiBold,
-        fontSize: 15,
-        color: profileColors.ink,
-    },
-    segmentControl: {
-        flexDirection: 'row',
-        padding: 3,
-        borderRadius: 10,
-        backgroundColor: profileColors.muted,
-    },
-    segmentButton: {
-        height: 32,
-        paddingHorizontal: 14,
-        borderRadius: 8,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    segmentButtonActive: {
-        backgroundColor: profileColors.surface,
-        shadowColor: themeColors.text,
-        shadowOffset: { width: 0, height: 1 },
-        shadowOpacity: 0.12,
-        shadowRadius: 3,
-        elevation: 1,
-    },
-    segmentText: {
-        fontFamily: fontFamilies.sansMedium,
-        fontSize: 14,
-        color: profileColors.body,
-    },
-    segmentTextActive: {
-        fontFamily: fontFamilies.sansSemiBold,
-        color: profileColors.ink,
+        color: profileColors.secondary,
     },
     accountActions: {
-        marginTop: 18,
-        marginHorizontal: 16,
+        marginTop: 16,
+        marginHorizontal: 24,
         flexDirection: 'row',
-        gap: 8,
+        gap: 10,
     },
     accountColumn: {
-        marginTop: 18,
-        marginHorizontal: 16,
+        marginTop: 24,
+        marginHorizontal: 24,
         gap: 8,
     },
     accountButton: {
         flex: 1,
-        minHeight: 48,
-        borderRadius: 14,
+        minHeight: 46,
+        borderRadius: radii.control,
         alignItems: 'center',
         justifyContent: 'center',
         paddingHorizontal: 14,
@@ -979,10 +925,14 @@ const createStyles = (profileColors, themeColors) => StyleSheet.create({
     buttonDisabled: {
         opacity: 0.6,
     },
+    signOutButton: {
+        flex: 0,
+        minHeight: 52,
+    },
     logoutText: {
         fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 15,
-        color: profileColors.danger,
+        fontSize: 16,
+        color: profileColors.ink,
     },
     deleteAccountButton: {
         minHeight: 44,
@@ -1002,33 +952,33 @@ const createStyles = (profileColors, themeColors) => StyleSheet.create({
     },
     modalCard: {
         backgroundColor: themeColors.surfaceElevated,
-        borderRadius: 20,
-        padding: 20,
+        borderRadius: radii.sheet,
+        padding: 22,
         gap: spacing.md,
     },
     modalTitle: {
         fontFamily: fontFamilies.displaySemiBold,
-        fontSize: 21,
+        fontSize: 23,
         lineHeight: 28,
         color: profileColors.ink,
     },
     modalHelper: {
         ...textStyles.bodyMuted,
         fontFamily: fontFamilies.sansRegular,
-        fontSize: 14,
-        lineHeight: 20,
-        color: profileColors.body,
+        fontSize: 15,
+        lineHeight: 22,
+        color: profileColors.secondary,
     },
     contactEmailField: {
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'space-between',
         gap: 12,
-        minHeight: 48,
-        paddingHorizontal: spacing.md,
+        minHeight: 52,
+        paddingHorizontal: 16,
         borderWidth: 1,
         borderColor: profileColors.hardBorder,
-        borderRadius: 14,
+        borderRadius: radii.control,
         backgroundColor: profileColors.surface,
     },
     contactEmailText: {
@@ -1046,8 +996,8 @@ const createStyles = (profileColors, themeColors) => StyleSheet.create({
     },
     modalButton: {
         minWidth: 88,
-        minHeight: 44,
-        borderRadius: 12,
+        minHeight: 46,
+        borderRadius: radii.control,
         paddingHorizontal: spacing.md,
         alignItems: 'center',
         justifyContent: 'center',
@@ -1064,11 +1014,11 @@ const createStyles = (profileColors, themeColors) => StyleSheet.create({
         backgroundColor: profileColors.danger,
     },
     usernameInput: {
-        minHeight: 48,
+        minHeight: 52,
         borderWidth: 1,
         borderColor: profileColors.hardBorder,
-        borderRadius: 14,
-        paddingHorizontal: spacing.md,
+        borderRadius: radii.control,
+        paddingHorizontal: 16,
         paddingVertical: spacing.sm,
         backgroundColor: profileColors.surface,
         color: profileColors.ink,

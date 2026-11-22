@@ -282,8 +282,8 @@ export const Checkbox = ({ styles, colors, value, onChange, accessibilityLabel }
 );
 
 /**
- * ResetLink — the small reset-to-default icon button that closes each tab
- * (`label` is its accessibility label).
+ * ResetLink — the reset-to-default button that closes each tab: the icon and
+ * `label` side by side, centred under the rows.
  */
 export const ResetLink = ({ styles, colors, label, onPress }) => (
     <TouchableOpacity
@@ -294,7 +294,8 @@ export const ResetLink = ({ styles, colors, label, onPress }) => (
         accessibilityRole="button"
         accessibilityLabel={label}
     >
-        <Feather name="rotate-ccw" size={19} color={colors?.textTertiary} />
+        <Feather name="rotate-ccw" size={15} color={colors?.textSecondary} />
+        <Text style={styles.resetLinkText} numberOfLines={1}>{label}</Text>
     </TouchableOpacity>
 );
 
@@ -421,24 +422,27 @@ export const createReaderSettingsControlStyles = (colors) => StyleSheet.create({
         alignItems: 'flex-end',
         justifyContent: 'center',
     },
+    // The same muted track as the segmented controls, with two raised keys.
     stepper: {
         flexDirection: 'row',
         alignItems: 'center',
+        padding: 3,
+        borderRadius: 12,
+        backgroundColor: colors.surfaceMuted,
     },
     stepperButton: {
-        width: 36,
-        height: 36,
-        borderRadius: 18,
+        width: 34,
+        height: 34,
+        borderRadius: 9,
         alignItems: 'center',
         justifyContent: 'center',
         backgroundColor: colors.surface,
-        borderWidth: 1,
-        borderColor: colors.border,
+        ...chipShadow,
     },
     // Room on both sides, so a long value ("1.65×") never crowds the buttons.
     stepperValue: {
         minWidth: 56,
-        marginHorizontal: 8,
+        marginHorizontal: 4,
         textAlign: 'center',
         fontFamily: fontFamilies.sansSemiBold,
         fontSize: 15,
@@ -542,11 +546,19 @@ export const createReaderSettingsControlStyles = (colors) => StyleSheet.create({
         elevation: 2,
     },
     resetLink: {
-        alignSelf: 'flex-end',
-        marginTop: 10,
-        width: 36,
-        height: 36,
+        alignSelf: 'center',
+        marginTop: 6,
+        minHeight: 44,
+        paddingHorizontal: 12,
+        flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'center',
+        gap: 7,
+    },
+    resetLinkText: {
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 14,
+        lineHeight: 19,
+        color: colors.textSecondary,
     },
 });

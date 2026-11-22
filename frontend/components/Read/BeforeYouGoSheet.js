@@ -43,6 +43,8 @@ const BeforeYouGoSheet = ({
     const { t } = useTranslation();
     const styles = useMemo(() => createStyles(colors), [colors]);
     const chrome = useMemo(() => createSheetChromeStyles(colors, insets), [colors, insets]);
+    // The shared header with this sheet's title at 22.
+    const headerStyles = useMemo(() => ({ ...chrome, title: [chrome.title, styles.title] }), [chrome, styles]);
     const { height: windowHeight } = useWindowDimensions();
 
     const [note, setNote] = useState('');
@@ -134,7 +136,7 @@ const BeforeYouGoSheet = ({
                     >
                         <SheetHandle styles={chrome} />
                         <SheetHeader
-                            styles={chrome}
+                            styles={headerStyles}
                             colors={colors}
                             title={t('read.notePromptTitle')}
                             onClose={onClose}
@@ -144,6 +146,7 @@ const BeforeYouGoSheet = ({
                         <View style={styles.body}>
                             <Text style={styles.subtitle}>{t('read.notePromptSubtitle')}</Text>
 
+                            <Text style={styles.inputLabel}>{t('home.noteToSelfLabel')}</Text>
                             <TextInput
                                 style={styles.noteInput}
                                 value={note}
@@ -152,7 +155,8 @@ const BeforeYouGoSheet = ({
                                     if (saveFailed) setSaveFailed(false);
                                 }}
                                 placeholder={t('read.notePlaceholder')}
-                                placeholderTextColor={colors.textSubtle}
+                                placeholderTextColor={colors.textTertiary}
+                                accessibilityLabel={t('home.noteToSelfLabel')}
                                 multiline
                                 textAlignVertical="top"
                                 autoFocus
@@ -181,7 +185,7 @@ const BeforeYouGoSheet = ({
                                     accessibilityRole="button"
                                     accessibilityState={{ disabled: !note.trim() || saving }}
                                 >
-                                    <Feather name="check" size={17} color={colors.surface} />
+                                    <Feather name="check" size={18} color={colors.white} />
                                     <Text style={styles.primaryButtonText}>{t('common.save')}</Text>
                                 </TouchableOpacity>
                             </View>
@@ -206,23 +210,37 @@ const createStyles = (colors) => StyleSheet.create({
     sheet: {
         maxHeight: '86%',
     },
+    title: {
+        fontSize: 22,
+        lineHeight: 28,
+    },
     body: {
         paddingHorizontal: SHEET_PADDING,
     },
     subtitle: {
         fontFamily: fontFamilies.sansRegular,
-        fontSize: 14,
-        lineHeight: 20,
-        color: colors.textMuted,
-        marginTop: 4,
-        marginBottom: 14,
+        fontSize: 15,
+        lineHeight: 22,
+        color: colors.textSecondary,
+        marginTop: 2,
+    },
+    // Section-label style above the input.
+    inputLabel: {
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 13,
+        lineHeight: 18,
+        color: colors.textTertiary,
+        marginTop: 18,
+        marginBottom: 6,
     },
     noteInput: {
-        minHeight: 120,
+        minHeight: 132,
         borderWidth: 1,
         borderColor: colors.border,
         borderRadius: 14,
-        padding: 14,
+        paddingHorizontal: 16,
+        paddingTop: 14,
+        paddingBottom: 14,
         fontFamily: fontFamilies.sansRegular,
         fontSize: 16,
         lineHeight: 24,
@@ -242,11 +260,12 @@ const createStyles = (colors) => StyleSheet.create({
         flexDirection: 'row',
         alignItems: 'center',
         gap: 10,
-        marginTop: 6,
+        marginTop: 4,
     },
     secondaryButton: {
-        height: 48,
-        paddingHorizontal: 20,
+        width: 112,
+        height: 52,
+        paddingHorizontal: 12,
         borderRadius: 14,
         borderWidth: 1,
         borderColor: colors.border,
@@ -256,12 +275,12 @@ const createStyles = (colors) => StyleSheet.create({
     },
     secondaryButtonText: {
         fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 15,
+        fontSize: 16,
         color: colors.text,
     },
     primaryButton: {
         flex: 1,
-        height: 48,
+        height: 52,
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'center',
@@ -273,8 +292,8 @@ const createStyles = (colors) => StyleSheet.create({
     primaryButtonDisabled: { opacity: 0.4 },
     primaryButtonText: {
         fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 15,
-        color: colors.surface,
+        fontSize: 16,
+        color: colors.white,
     },
 });
 

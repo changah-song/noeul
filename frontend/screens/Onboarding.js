@@ -31,7 +31,7 @@ import { useLocalOwner } from '../contexts/LocalOwnerContext';
 import { DEFAULT_GOAL_MINUTES, GOAL_OPTIONS, setGoalMinutes } from '../services/readingGoal';
 import { hasWordCheck } from '../services/wordCheck';
 import ReaderGuide from '../components/Guide/ReaderGuide';
-import { fontFamilies, useTheme } from '../theme';
+import { fontFamilies, radii, useTheme } from '../theme';
 // One entry per bundled book (generate_catalog_levels.py), with its language:
 // how many free books each language starts with, so the cards stay right as
 // books are added. (The catalog itself pulls in the book texts.)
@@ -331,14 +331,21 @@ const Onboarding = ({ onDone }) => {
 
     const renderWelcome = () => (
         <View style={styles.welcome}>
-            <View style={styles.appTile}>
-                <Text style={styles.appTileLetter}>N</Text>
+            {/* The app mark beside the name ("Noeul" is the brand, not copy). */}
+            <View
+                style={styles.brandRow}
+                accessible
+                accessibilityLabel={t('onboarding.welcome')}
+            >
+                <View style={styles.appTile}>
+                    <Text style={styles.appTileLetter} allowFontScaling={false}>N</Text>
+                </View>
+                <Text style={styles.brandName}>Noeul</Text>
             </View>
-            <Text style={styles.welcomeEyebrow}>{t('onboarding.welcome')}</Text>
-            <Text style={[styles.headline, styles.headlineCenter]} accessibilityRole="header">
+            <Text style={styles.headline} accessibilityRole="header">
                 {t('onboarding.welcomeHeadline')}
             </Text>
-            <Text style={[styles.lead, styles.leadCenter]}>{t('onboarding.welcomeBody')}</Text>
+            <Text style={[styles.lead, styles.leadWelcome]}>{t('onboarding.welcomeBody')}</Text>
         </View>
     );
 
@@ -356,9 +363,11 @@ const Onboarding = ({ onDone }) => {
                             selected={option.id === activeTargetId}
                             onPress={() => selectTarget(option)}
                             styles={styles}
-                            minHeight={76}
+                            minHeight={72}
                         >
-                            <Text style={styles.cardGlyph}>{card.glyph}</Text>
+                            <View style={styles.glyphTile}>
+                                <Text style={styles.cardGlyph} allowFontScaling={false}>{card.glyph}</Text>
+                            </View>
                             <View style={styles.cardCopy}>
                                 <Text style={styles.cardTitle}>{t(card.nameKey)}</Text>
                                 <Text style={styles.cardDetail}>{t(card.detailKey, { count: BUNDLED_BOOK_COUNTS[card.id] ?? 0 })}</Text>
@@ -374,9 +383,9 @@ const Onboarding = ({ onDone }) => {
                 accessibilityRole="button"
                 accessibilityLabel={`${t('profile.interfaceLanguage')}, ${getInterfaceLanguageLabel(interfaceLanguage)}`}
             >
-                <Text style={styles.languageRowLabel}>{t('profile.interfaceLanguage')}</Text>
-                <Text style={styles.languageRowValue}>{getInterfaceLanguageLabel(interfaceLanguage)}</Text>
-                <Feather name="chevron-right" size={16} color={colors.textSubtle} />
+                <Text style={styles.languageRowLabel} numberOfLines={1}>{t('profile.interfaceLanguage')}</Text>
+                <Text style={styles.languageRowValue} numberOfLines={1}>{getInterfaceLanguageLabel(interfaceLanguage)}</Text>
+                <Feather name="chevron-right" size={17} color={colors.textTertiary} />
             </TouchableOpacity>
             <Text style={styles.note}>{t('profile.interfaceLanguageDesc')}</Text>
         </View>
@@ -395,7 +404,7 @@ const Onboarding = ({ onDone }) => {
                         selected={activeLevelChoice === option.id}
                         onPress={() => setLevelChoice(option.id)}
                         styles={styles}
-                        minHeight={72}
+                        minHeight={76}
                     >
                         <View style={styles.cardCopy}>
                             <Text style={styles.cardTitle}>{t(option.titleKey)}</Text>
@@ -413,23 +422,28 @@ const Onboarding = ({ onDone }) => {
         <View>
             <Text style={styles.title} accessibilityRole="header">{t('goal.onboardingTitle')}</Text>
             <Text style={styles.lead}>{t('goal.onboardingBody')}</Text>
-            <View style={styles.cards} accessibilityRole="radiogroup">
-                {GOAL_OPTIONS.map((minutes) => (
-                    <ChoiceCard
-                        key={minutes}
-                        selected={goalChoice === minutes}
-                        onPress={() => setGoalChoice(minutes)}
-                        styles={styles}
-                        minHeight={56}
-                    >
-                        <View style={styles.cardCopy}>
-                            <Text style={styles.cardTitle}>
-                                {minutes === 30 ? t('goal.minutesPlus', { count: 30 }) : t('goal.minutesCount', { count: minutes })}
-                            </Text>
-                            <Text style={styles.cardDetail}>{t(GOAL_DETAIL_KEYS[minutes])}</Text>
-                        </View>
-                    </ChoiceCard>
-                ))}
+            {/* One card, a row per goal: minutes, what it feels like, radio. */}
+            <View style={styles.goalCard} accessibilityRole="radiogroup">
+                {GOAL_OPTIONS.map((minutes, index) => {
+                    const selected = goalChoice === minutes;
+                    return (
+                        <React.Fragment key={minutes}>
+                            {index > 0 ? <View style={styles.goalDivider} /> : null}
+                            <Pressable
+                                accessibilityRole="radio"
+                                accessibilityState={{ selected }}
+                                onPress={() => setGoalChoice(minutes)}
+                                style={({ pressed }) => [styles.goalRow, pressed && !selected && styles.goalRowPressed]}
+                            >
+                                <Text style={styles.goalMinutes}>
+                                    {minutes === 30 ? t('goal.minutesPlus', { count: 30 }) : t('goal.minutesCount', { count: minutes })}
+                                </Text>
+                                <Text style={styles.goalDetail}>{t(GOAL_DETAIL_KEYS[minutes])}</Text>
+                                <View style={[styles.radio, selected && styles.radioSelected]} />
+                            </Pressable>
+                        </React.Fragment>
+                    );
+                })}
             </View>
         </View>
     );
@@ -455,7 +469,7 @@ const Onboarding = ({ onDone }) => {
                             accessibilityRole="button"
                             accessibilityLabel={t('common.back')}
                         >
-                            <Feather name="chevron-left" size={24} color={colors.inkSlate} />
+                            <Feather name="chevron-left" size={22} color={colors.text} />
                         </TouchableOpacity>
                     ) : null}
                 </View>
@@ -555,7 +569,7 @@ const createStyles = (colors) => StyleSheet.create({
         backgroundColor: colors.bgPage,
     },
     header: {
-        height: 44,
+        height: 52,
         flexDirection: 'row',
         alignItems: 'center',
     },
@@ -565,7 +579,7 @@ const createStyles = (colors) => StyleSheet.create({
     backButton: {
         width: 44,
         height: 44,
-        marginLeft: -12,
+        marginLeft: -19,
         alignItems: 'center',
         justifyContent: 'center',
     },
@@ -591,63 +605,65 @@ const createStyles = (colors) => StyleSheet.create({
         justifyContent: 'center',
     },
     welcome: {
+        alignItems: 'flex-start',
+    },
+    brandRow: {
+        flexDirection: 'row',
         alignItems: 'center',
-        gap: 18,
+        gap: 12,
     },
     appTile: {
-        width: 84,
-        height: 84,
-        borderRadius: 22,
+        width: 48,
+        height: 48,
+        borderRadius: radii.control,
         backgroundColor: colors.inkSlate,
         alignItems: 'center',
         justifyContent: 'center',
     },
     appTileLetter: {
         fontFamily: fontFamilies.displaySemiBold,
-        fontSize: 44,
-        lineHeight: 52,
+        fontSize: 26,
+        lineHeight: 32,
         color: colors.white,
     },
-    welcomeEyebrow: {
-        fontFamily: fontFamilies.sansMedium,
-        fontSize: 15,
-        color: colors.textMuted,
+    brandName: {
+        fontFamily: fontFamilies.displaySemiBold,
+        fontSize: 23,
+        lineHeight: 28,
+        letterSpacing: -0.2,
+        color: colors.text,
     },
     headline: {
-        fontFamily: fontFamilies.displayMedium,
-        fontSize: 34,
-        lineHeight: 40,
+        marginTop: 28,
+        fontFamily: fontFamilies.displaySemiBold,
+        fontSize: 32,
+        lineHeight: 39,
         letterSpacing: -0.4,
         color: colors.text,
     },
-    headlineCenter: {
-        textAlign: 'center',
-    },
     title: {
-        marginTop: 36,
-        marginBottom: 8,
-        marginHorizontal: 4,
-        fontFamily: fontFamilies.displayMedium,
+        marginTop: 26,
+        fontFamily: fontFamilies.displaySemiBold,
         fontSize: 30,
         lineHeight: 36,
-        letterSpacing: -0.3,
+        letterSpacing: -0.4,
         color: colors.text,
     },
     lead: {
-        marginHorizontal: 4,
+        marginTop: 10,
         fontFamily: fontFamilies.sansRegular,
         fontSize: 15,
         lineHeight: 22,
-        color: colors.textMuted,
+        color: colors.textSecondary,
     },
-    leadCenter: {
-        maxWidth: 300,
+    leadWelcome: {
+        marginTop: 14,
+        maxWidth: 310,
         fontSize: 16,
         lineHeight: 24,
-        textAlign: 'center',
     },
     cards: {
-        marginTop: 24,
+        marginTop: 26,
         gap: 10,
     },
     card: {
@@ -655,9 +671,8 @@ const createStyles = (colors) => StyleSheet.create({
         alignItems: 'center',
         gap: 14,
         paddingVertical: 12,
-        paddingLeft: 14,
-        paddingRight: 18,
-        borderRadius: 18,
+        paddingHorizontal: 16,
+        borderRadius: radii.control,
         borderWidth: 1,
         borderColor: colors.border,
         backgroundColor: colors.surface,
@@ -665,38 +680,40 @@ const createStyles = (colors) => StyleSheet.create({
     cardSelected: {
         borderWidth: 1.5,
         borderColor: colors.inkSlate,
-        shadowColor: colors.text,
-        shadowOffset: { width: 0, height: 6 },
-        shadowOpacity: 0.08,
-        shadowRadius: 18,
-        elevation: 3,
     },
     cardPressed: {
         backgroundColor: colors.surfaceAssist,
     },
+    glyphTile: {
+        width: 40,
+        height: 40,
+        borderRadius: radii.chip,
+        backgroundColor: colors.surfaceMuted,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
     cardGlyph: {
-        width: 44,
-        textAlign: 'center',
         fontFamily: fontFamilies.krSerifRegular,
-        fontSize: 26,
-        lineHeight: 34,
+        fontSize: 22,
+        lineHeight: 30,
+        textAlign: 'center',
         color: colors.text,
     },
     cardCopy: {
         flex: 1,
-        gap: 3,
+        gap: 2,
     },
     cardTitle: {
         fontFamily: fontFamilies.sansSemiBold,
         fontSize: 16,
-        lineHeight: 21,
+        lineHeight: 22,
         color: colors.text,
     },
     cardDetail: {
         fontFamily: fontFamilies.sansRegular,
         fontSize: 13,
         lineHeight: 18,
-        color: colors.textMuted,
+        color: colors.textTertiary,
     },
     radio: {
         width: 22,
@@ -710,32 +727,71 @@ const createStyles = (colors) => StyleSheet.create({
         borderWidth: 7,
         borderColor: colors.inkSlate,
     },
-    languageRow: {
-        marginTop: 18,
-        minHeight: 56,
-        borderRadius: 16,
+    goalCard: {
+        marginTop: 26,
+        borderRadius: radii.control,
         borderWidth: 1,
-        borderColor: colors.border,
+        borderColor: colors.divider,
+        backgroundColor: colors.surface,
+        overflow: 'hidden',
+    },
+    goalRow: {
+        minHeight: 60,
+        paddingHorizontal: 16,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 12,
+    },
+    goalRowPressed: {
+        backgroundColor: colors.surfaceAssist,
+    },
+    goalDivider: {
+        height: 1,
+        marginHorizontal: 16,
+        backgroundColor: colors.divider,
+    },
+    goalMinutes: {
+        minWidth: 76,
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 16,
+        lineHeight: 22,
+        color: colors.text,
+    },
+    goalDetail: {
+        flex: 1,
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 13,
+        lineHeight: 18,
+        color: colors.textTertiary,
+    },
+    languageRow: {
+        marginTop: 26,
+        minHeight: 52,
+        borderRadius: radii.control,
+        borderWidth: 1,
+        borderColor: colors.divider,
         backgroundColor: colors.surface,
         flexDirection: 'row',
         alignItems: 'center',
-        paddingHorizontal: 18,
-        gap: 12,
+        paddingHorizontal: 16,
+        gap: 8,
     },
     languageRowLabel: {
         flex: 1,
-        fontFamily: fontFamilies.sansMedium,
+        fontFamily: fontFamilies.sansRegular,
         fontSize: 15,
-        color: colors.textSecondary,
-    },
-    languageRowValue: {
-        fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 15,
+        lineHeight: 20,
         color: colors.text,
     },
+    languageRowValue: {
+        maxWidth: '50%',
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 15,
+        lineHeight: 20,
+        color: colors.textSecondary,
+    },
     note: {
-        marginTop: 10,
-        marginHorizontal: 4,
+        marginTop: 8,
         fontFamily: fontFamilies.sansRegular,
         fontSize: 13,
         lineHeight: 18,
@@ -892,12 +948,13 @@ const createStyles = (colors) => StyleSheet.create({
         color: colors.textMuted,
     },
     footer: {
-        gap: 10,
+        gap: 4,
         paddingTop: 8,
+        paddingBottom: 6,
     },
     primaryButton: {
-        minHeight: 54,
-        borderRadius: 16,
+        minHeight: 52,
+        borderRadius: radii.control,
         backgroundColor: colors.inkSlate,
         alignItems: 'center',
         justifyContent: 'center',
@@ -908,14 +965,14 @@ const createStyles = (colors) => StyleSheet.create({
         color: colors.white,
     },
     textButton: {
-        minHeight: 44,
+        minHeight: 48,
         alignItems: 'center',
         justifyContent: 'center',
     },
     textButtonText: {
-        fontFamily: fontFamilies.sansMedium,
+        fontFamily: fontFamilies.sansSemiBold,
         fontSize: 15,
-        color: colors.textSecondary,
+        color: colors.text,
     },
 });
 

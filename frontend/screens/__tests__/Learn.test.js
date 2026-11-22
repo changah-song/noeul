@@ -121,8 +121,25 @@ const renderLearn = async (navigation = { navigate: jest.fn() }) => {
   return tree;
 };
 
-// What the screen shows, as one string (tab labels carry their counts).
-const textOf = (tree) => JSON.stringify(tree.toJSON());
+// What the screen shows, as one string (tab labels carry their counts, as a
+// nested Text, so each Text's nested strings are joined into one).
+const textOf = (tree) => {
+  const flatten = (node) => {
+    if (node == null) return '';
+    if (typeof node === 'string' || typeof node === 'number') return String(node);
+    if (Array.isArray(node)) return node.map(flatten).join('');
+    return [].concat(node.children || []).map(flatten).join('');
+  };
+  const texts = [];
+  const walk = (node) => {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) { node.forEach(walk); return; }
+    if (node.type === 'Text') { texts.push(flatten(node)); return; }
+    [].concat(node.children || []).forEach(walk);
+  };
+  walk(tree.toJSON());
+  return texts.join('\n');
+};
 const pressTab = async (tree, label) => {
   const tab = tree.root.findAll((node) => typeof node.props.onPress === 'function'
     && node.findAll((child) => child.type === 'Text' && [].concat(child.props.children).join('').startsWith(label)).length > 0)
