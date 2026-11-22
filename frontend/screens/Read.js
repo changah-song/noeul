@@ -58,7 +58,7 @@ import ListenBar from '../components/Read/ListenBar';
 import ListenVoiceSheet from '../components/Read/ListenVoiceSheet';
 import VocabLevelModal from '../components/shared/VocabLevelModal';
 import { hasVocabSizeGrid } from '../services/vocabSizeLevels';
-import { cloudVoiceFor, createListenPlayer, voiceLocaleFor, voiceSampleFor, LISTEN_PITCHES, LISTEN_RATES } from '../services/listenPlayer';
+import { createListenPlayer, savedVoices, voiceLocaleFor, voiceSampleFor, LISTEN_PITCHES, LISTEN_RATES } from '../services/listenPlayer';
 import { remainingFrom, spokenRangeAt, voicedSentence } from '../services/listenSpokenWord';
 import {
     PREPROCESS_VERSION,
@@ -4589,16 +4589,12 @@ const Read = ({
         );
         const earlyNext = knownNext();
         const earlyNextText = earlyNext?.moved ? cleanListenText(earlyNext.text) : '';
-        // An online voice fetches the next sentence's audio while this one
-        // plays: the words it will be asked to say, not the sentence as printed.
+        // The words the voice is asked to say, not the sentence as printed.
         const voicedFor = (payload) => voicedSentence(payload?.text, {
             segments: payload?.segments,
             blocks: chapterBlocksForReaderPackage(nativeReaderPackageRef.current),
             language: ctx.language,
         });
-        if (earlyNextText) {
-            player.prefetch([{ text: voicedFor(earlyNext).voiced, ...listenVoiceFor(prefs, ctx.targetLocale) }]);
-        }
         const nextTranslation = prefs.translateSentences && earlyNextText
             ? chapterTranslations.translate(earlyNextText, ctx.language, ctx.interfaceLanguage).catch(() => '')
             : null;
@@ -4903,13 +4899,10 @@ const Read = ({
             .then((raw) => {
                 if (cancelled || !raw) return;
                 const parsed = JSON.parse(raw);
-                const voices = parsed?.voices && typeof parsed.voices === 'object' ? parsed.voices : {};
                 const next = {
                     rate: LISTEN_RATES.includes(parsed?.rate) ? parsed.rate : 1,
                     pitch: LISTEN_PITCHES.includes(parsed?.pitch) ? parsed.pitch : 1,
-                    voices: Object.fromEntries(
-                        Object.entries(voices).filter(([, id]) => typeof id === 'string' && id)
-                    ),
+                    voices: savedVoices(parsed?.voices),
                     explainWords: !!parsed?.explainWords,
                     translateSentences: !!parsed?.translateSentences,
                 };
@@ -5561,7 +5554,6 @@ const Read = ({
                     onToggleExplain={() => updateListenPrefs({ explainWords: !listenPrefsRef.current.explainWords })}
                     onToggleTranslate={() => updateListenPrefs({ translateSentences: !listenPrefsRef.current.translateSentences })}
                     onClose={() => pauseListening({ keepActive: false })}
-                    credit={cloudVoiceFor(listenPrefs.voices?.[listenTargetLocale], listenTargetLocale)}
                     bottom={focusControlsBaseBottom}
                     translateY={focusControlsTranslate}
                     styles={chrome}

@@ -1,4 +1,6 @@
 import sqlite3
+import sys
+import types
 
 import observability
 
@@ -24,6 +26,26 @@ def test_health_ok_reports_cache_rows(tmp_path):
     assert body["status"] == "ok"
     assert body["checks"]["cache_db"] == {"ok": True, "dictionary_rows": 3}
     assert body["checks"]["ko_dict"] == {"ok": True}
+
+
+def test_health_reports_the_busy_tables_when_they_exist(tmp_path):
+    cache = tmp_path / "cache.db"
+    _make_db(cache, "dictionary_cache")
+    conn = sqlite3.connect(cache)
+    conn.execute("CREATE TABLE lookup_cache (id INTEGER)")
+    conn.executemany("INSERT INTO lookup_cache VALUES (?)", [(1,), (2,)])
+    conn.execute("CREATE TABLE daily_usage (id INTEGER)")
+    conn.commit()
+    conn.close()
+    healthy, body = observability.health_report(str(cache), {})
+    assert healthy
+    # translate_cache does not exist in this file, so it is left out.
+    assert body["checks"]["cache_db"] == {
+        "ok": True,
+        "dictionary_rows": 3,
+        "ai_lookup_rows": 2,
+        "usage_rows_today": 0,
+    }
 
 
 def test_health_degraded_when_a_database_is_missing(tmp_path):
@@ -72,6 +94,20 @@ def test_release_name_prefers_railway_commit(monkeypatch):
 def test_init_sentry_is_a_no_op_without_dsn(monkeypatch):
     monkeypatch.delenv("SENTRY_DSN", raising=False)
     assert observability.init_sentry() is False
+
+
+def test_report_handled_error_sends_only_when_sentry_is_configured(monkeypatch):
+    sent = []
+    monkeypatch.setitem(sys.modules, "sentry_sdk", types.SimpleNamespace(capture_exception=sent.append))
+    error = RuntimeError("cache busy")
+
+    monkeypatch.delenv("SENTRY_DSN", raising=False)
+    observability.report_handled_error(error)
+    assert sent == []
+
+    monkeypatch.setenv("SENTRY_DSN", "https://key@example.invalid/1")
+    observability.report_handled_error(error)
+    assert sent == [error]
 
 
 def test_optional_databases_are_reported_but_never_unhealthy(tmp_path):

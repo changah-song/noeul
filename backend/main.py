@@ -17,6 +17,10 @@ import xml.etree.ElementTree as ET
 from typing import Any, Optional
 import os
 import re
+try:
+    import fcntl  # file locks; not on Windows
+except ImportError:
+    fcntl = None
 from datetime import datetime, timezone
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
@@ -82,6 +86,7 @@ from translation import (
     configured_providers as configured_translation_providers,
     normalize_language_code as normalize_translate_language,
     translate_texts,
+    translate_with_claude,
 )
 from content_i18n import (
     ApiError,
@@ -99,7 +104,6 @@ from writing_assessment import (
 )
 import limits
 import observability
-import woof_tts
 from limits import (
     BodySizeLimitMiddleware,
     ENTRY_BODY_HARD_MAX_CHARS,
@@ -230,6 +234,13 @@ DAILY_LOOKUP_LIMIT = 250
 # so quotas, AI spend and the shared lookup cache survive deploys.
 CACHE_DB_PATH = (os.getenv("CACHE_DB_PATH") or "").strip() or os.path.join(os.path.dirname(__file__), "cache.db")
 os.makedirs(os.path.dirname(os.path.abspath(CACHE_DB_PATH)), exist_ok=True)
+# How long a cache.db write waits for another write to finish before it fails
+# with "database is locked". SQLite lets one writer in at a time, and each write
+# here is short, so the wait only shows under a burst (several chapters being
+# preprocessed at once, or more than one server process). Every connection gets
+# this wait from get_db_connection(); only the hit counter (_count_cache_hit)
+# uses a shorter one.
+CACHE_DB_BUSY_TIMEOUT_SECONDS = parse_positive_int_env(os.getenv("CACHE_DB_BUSY_TIMEOUT_SECONDS"), 15)
 ZH_DICT_DB_PATH = os.path.join(os.path.dirname(__file__), "zh_dict.db")
 # Bundled KRDICT (한국어기초사전) snapshot, English glosses only. When present it
 # serves Korean lookups locally and the live KRDICT API is only hit for the long
@@ -278,7 +289,7 @@ BOOK_LEVEL_SYSTEMS = {
 
 def get_db_connection():
     """Open a connection to the server-side SQLite cache database."""
-    conn = sqlite3.connect(CACHE_DB_PATH)
+    conn = sqlite3.connect(CACHE_DB_PATH, timeout=CACHE_DB_BUSY_TIMEOUT_SECONDS)
     conn.row_factory = sqlite3.Row  # Rows accessible as dicts
     return conn
 
@@ -1005,6 +1016,12 @@ async def health():
         {"ko_dict": KO_DICT_DB_PATH},
         {"zh_dict": ZH_DICT_DB_PATH, "proficiency_levels": PROFICIENCY_LEVELS_DB_PATH},
     )
+    # Which settings a deploy picked up (see TRANSLATE_ENGINE), never a key.
+    body["translation"] = {
+        "engine": TRANSLATE_MODEL if CLAUDE_TRANSLATION else "google",
+        "google_fallback": bool(TRANSLATION_PROVIDERS),
+        "chapters_ahead": TRANSLATE_CHAPTERS_AHEAD,
+    }
     return JSONResponse(body, status_code=200 if healthy else 503)
 
 
@@ -1047,6 +1064,18 @@ TRANSLATION_PROVIDERS = configured_translation_providers(
 # The app gives up on /translate/ after 8 s; two providers at 3.8 s each fit inside it.
 INTERACTIVE_TRANSLATE_TIMEOUT_SECONDS = 3.8
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
+# What translates the reader's sentences (/translate/ and /translate_sentences/).
+# "claude", the default when an Anthropic key is set, sends them to
+# TRANSLATE_MODEL and keeps Google Translate as the fallback for a sentence a
+# reader is waiting on. "google" goes back to Google Translate alone, as a
+# rollback switch. Both are Railway service variables. Dictionary glosses and
+# bundled content (translate_texts_cached, _translate_batch) stay on Google.
+TRANSLATE_MODEL = os.getenv("TRANSLATE_MODEL", "claude-haiku-5-5").strip() or "claude-haiku-5-5"
+TRANSLATE_ENGINE = (os.getenv("TRANSLATE_ENGINE") or "claude").strip().lower()
+CLAUDE_TRANSLATION = TRANSLATE_ENGINE == "claude" and bool(ANTHROPIC_API_KEY) and anthropic_sdk is not None
+# Claude's share of the app's 8 s for /translate/, leaving Google room after it.
+# Haiku answers one sentence in about a second.
+INTERACTIVE_CLAUDE_TIMEOUT_SECONDS = 3.0
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
 SUPABASE_JWT_AUDIENCE = os.getenv("SUPABASE_JWT_AUDIENCE", "").strip() or "authenticated"
 SUPABASE_ISSUER = f"{SUPABASE_URL}/auth/v1" if SUPABASE_URL else ""
@@ -1433,7 +1462,6 @@ def _usage_check_and_increment(user_id: str, bucket: str, limit: int, amount: in
     today = _utc_today()
     conn = get_db_connection()
     try:
-        conn.execute("PRAGMA busy_timeout=3000")
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             "SELECT count FROM daily_usage WHERE user_id=? AND day=? AND bucket=?",
@@ -1462,7 +1490,6 @@ def prune_old_usage_rows() -> None:
     today = _utc_today()
     conn = get_db_connection()
     try:
-        conn.execute("PRAGMA busy_timeout=3000")
         conn.execute("DELETE FROM daily_usage WHERE day < ?", (today,))
         conn.execute("DELETE FROM daily_spend WHERE day < ?", (today,))
         conn.commit()
@@ -1490,7 +1517,6 @@ def _add_daily_spend(cost_usd: float) -> None:
     today = _utc_today()
     conn = get_db_connection()
     try:
-        conn.execute("PRAGMA busy_timeout=3000")
         conn.execute(
             """
             INSERT INTO daily_spend (day, micro_usd) VALUES (?, ?)
@@ -1530,6 +1556,50 @@ async def record_ai_spend(model: str, usage) -> None:
         await asyncio.to_thread(_add_daily_spend, cost)
 
 
+async def _claude_translation_call(request: dict, *, timeout: float, retries: int):
+    """One translation call to TRANSLATE_MODEL -> (text, stop_reason, usage).
+    Thinking is off and effort low, as for explanations: a translation needs
+    neither, and both would add delay."""
+    params = explain_model_params(TRANSLATE_MODEL, request["max_tokens"])
+    if request.get("output_format"):
+        params["output_config"] = {**params.get("output_config", {}), "format": request["output_format"]}
+    client = get_anthropic_async_client().with_options(timeout=timeout, max_retries=retries)
+    message = await client.messages.create(
+        **params,
+        system=request["system"],
+        messages=request["messages"],
+    )
+    text = "".join(block.text for block in message.content if getattr(block, "type", None) == "text")
+    return text, message.stop_reason, message.usage
+
+
+async def claude_translations(
+    texts: list[str],
+    source: str,
+    target: str,
+    *,
+    timeout: float,
+    retries: int = ANTHROPIC_MAX_RETRIES,
+) -> list[str | None]:
+    """Translate with TRANSLATE_MODEL; aligned with `texts`, None for every text
+    it did not translate. Nothing is sent when Claude translation is off or
+    today's AI budget (shared with explanations) is spent, and every completed
+    call is added to that budget."""
+    if not texts or not CLAUDE_TRANSLATION:
+        return [None] * len(texts)
+    if await asyncio.to_thread(_get_daily_spend_usd) >= DAILY_AI_BUDGET_USD:
+        print("[main] Claude translation skipped: daily AI budget reached")
+        return [None] * len(texts)
+
+    async def call(request: dict):
+        return await _claude_translation_call(request, timeout=timeout, retries=retries)
+
+    translations, usages = await translate_with_claude(call, texts, source=source, target=target)
+    for usage in usages:
+        await record_ai_spend(TRANSLATE_MODEL, usage)
+    return translations
+
+
 # --- Contextual-lookup response cache --------------------------------------
 
 def _normalize_for_cache(text: str) -> str:
@@ -1548,21 +1618,32 @@ def lookup_cache_key(word: str, sentence: str, target_language: str, interface_l
     return hashlib.sha256(parts.encode("utf-8")).hexdigest()
 
 
+def _count_cache_hit(conn: sqlite3.Connection, table: str, key_hash: str) -> None:
+    """Add one to a cached row's hit_count, as the last thing done on `conn`.
+
+    The counter is only a statistic and bumping it is a write, so a cache read
+    must not queue behind other writers for it: it waits a quarter of a second
+    at most, and when cache.db is still busy the count is skipped and the read
+    succeeds. `table` is one of our own table names, never input.
+    """
+    try:
+        conn.execute("PRAGMA busy_timeout=250")
+        conn.execute(f"UPDATE {table} SET hit_count = hit_count + 1 WHERE key_hash=?", (key_hash,))
+        conn.commit()
+    except sqlite3.OperationalError as error:
+        print(f"[main] {table} hit count skipped: {error!r}")
+
+
 def _lookup_cache_get(key_hash: str) -> dict[str, str | None] | None:
     conn = get_db_connection()
     try:
-        conn.execute("PRAGMA busy_timeout=3000")
         row = conn.execute(
             "SELECT lemma, gloss, explanation FROM lookup_cache WHERE key_hash=?",
             (key_hash,),
         ).fetchone()
         if not row:
             return None
-        conn.execute(
-            "UPDATE lookup_cache SET hit_count = hit_count + 1 WHERE key_hash=?",
-            (key_hash,),
-        )
-        conn.commit()
+        _count_cache_hit(conn, "lookup_cache", key_hash)
         return {
             "explanation": row["explanation"],
             "gloss": row["gloss"],
@@ -1578,7 +1659,6 @@ def _lookup_cache_put(key_hash: str, parsed: dict[str, str | None]) -> None:
         return
     conn = get_db_connection()
     try:
-        conn.execute("PRAGMA busy_timeout=3000")
         conn.execute(
             """
             INSERT INTO lookup_cache (key_hash, lemma, gloss, explanation, created_at, hit_count)
@@ -1608,6 +1688,16 @@ def _lookup_cache_put(key_hash: str, parsed: dict[str, str | None]) -> None:
         conn.close()
 
 
+async def cache_lookup(key_hash: str, parsed: dict[str, str | None]) -> None:
+    """Save an AI answer to lookup_cache. The reader already has the answer (and
+    it is already paid for), so a failed save is reported, never raised."""
+    try:
+        await asyncio.to_thread(_lookup_cache_put, key_hash, parsed)
+    except sqlite3.Error as error:
+        print(f"[main] lookup_cache save failed: {error!r}")
+        observability.report_handled_error(error)
+
+
 # --- Translation response cache + daily character budget --------------------
 #
 # Every character sent to Google Translate is billed, so identical requests are
@@ -1630,35 +1720,38 @@ class TranslateBudgetExceeded(Exception):
 def _translate_cache_get(key_hash: str) -> str | None:
     conn = get_db_connection()
     try:
-        conn.execute("PRAGMA busy_timeout=3000")
         row = conn.execute(
             "SELECT translated FROM translate_cache WHERE key_hash=?", (key_hash,)
         ).fetchone()
         if not row:
             return None
-        conn.execute(
-            "UPDATE translate_cache SET hit_count = hit_count + 1 WHERE key_hash=?",
-            (key_hash,),
-        )
-        conn.commit()
+        _count_cache_hit(conn, "translate_cache", key_hash)
         return row["translated"]
     finally:
         conn.close()
 
 
-def _translate_cache_put(key_hash: str, translated: str) -> None:
-    if not translated:
+def _translate_cache_put_many(rows: list[tuple[str, str]]) -> None:
+    """Save (key_hash, translated) pairs in one transaction (blocking).
+
+    A chapter's fresh glosses used to be saved one transaction each: hundreds of
+    writes in a row, all queueing for cache.db's single write lock, which is how
+    another request came to wait past the timeout ("database is locked"). One
+    connection, one commit and one size check per batch keeps the lock short.
+    """
+    created_at = datetime.now(timezone.utc).isoformat()
+    values = [(key_hash, translated, created_at) for key_hash, translated in rows if key_hash and translated]
+    if not values:
         return
     conn = get_db_connection()
     try:
-        conn.execute("PRAGMA busy_timeout=3000")
-        conn.execute(
+        conn.executemany(
             """
             INSERT INTO translate_cache (key_hash, translated, created_at, hit_count)
             VALUES (?, ?, ?, 0)
             ON CONFLICT(key_hash) DO NOTHING
             """,
-            (key_hash, translated, datetime.now(timezone.utc).isoformat()),
+            values,
         )
         count = conn.execute("SELECT COUNT(*) AS c FROM translate_cache").fetchone()["c"]
         if count > limits.TRANSLATE_CACHE_MAX_ROWS:
@@ -1673,6 +1766,22 @@ def _translate_cache_put(key_hash: str, translated: str) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+async def cache_translations(rows: list[tuple[str, str]]) -> None:
+    """Save fresh (key_hash, translated) pairs to translate_cache.
+
+    The caller already holds the translations, so a save that fails (cache.db
+    busy past the timeout, disk full) is reported and the request carries on:
+    the only cost is paying to translate those strings again next time.
+    """
+    if not rows:
+        return
+    try:
+        await asyncio.to_thread(_translate_cache_put_many, rows)
+    except sqlite3.Error as error:
+        print(f"[main] translate_cache save failed for {len(rows)} rows: {error!r}")
+        observability.report_handled_error(error)
 
 
 async def reserve_translate_chars(char_count: int) -> bool:
@@ -3044,10 +3153,12 @@ async def translate_en_missing_senses(results: list[dict], interface_language: s
         translated_by_sense = {sense: cached[key] for sense, key in keys.items() if key in cached}
         fresh = [sense for sense in pending if sense not in translated_by_sense]
         if fresh:
+            to_cache: list[tuple[str, str]] = []
             for sense, text in zip(fresh, await _translate_batch(fresh, source="en", target=target)):
                 if text and text.strip():
                     translated_by_sense[sense] = text.strip()
-                    await asyncio.to_thread(_translate_cache_put, keys[sense], text.strip())
+                    to_cache.append((keys[sense], text.strip()))
+            await cache_translations(to_cache)
 
     out = []
     for result in results:
@@ -3138,11 +3249,13 @@ async def translate_en_missing_glosses(results: list[dict], interface_language: 
     fresh_items = [item for item in pending if item not in gloss_by_item]
     if fresh_items:
         fresh = await _translate_batch([queries[item] for item in fresh_items], source="en", target=target)
+        to_cache: list[tuple[str, str]] = []
         for item, translated in zip(fresh_items, fresh):
             gloss = en_gloss_from_translation(item[0], item[1], translated)
             if gloss:
                 gloss_by_item[item] = gloss
-                await asyncio.to_thread(_translate_cache_put, keys[item], gloss)
+                to_cache.append((keys[item], gloss))
+        await cache_translations(to_cache)
 
     def item_of(result: dict):
         return (result.get("word"), result.get("pos"))
@@ -3549,63 +3662,34 @@ async def romanize_text(text: str, auth: dict[str, Any] = Depends(verify_supabas
     return {"romanization": await asyncio.to_thread(romanize_korean_text, normalized)}
 
 
-@app.get("/speak/")
-async def speak_text(
+async def _translate_one_cached(
     text: str,
-    voice: str = woof_tts.DEFAULT_VOICE,
-    auth: dict[str, Any] = Depends(verify_supabase_token),
-):
-    """Listen mode's natural English voice (woof_tts.py): one sentence in,
-    MP3 audio out (WAV when the MP3 encoder is not installed). The same
-    sentence is synthesized once and served from the cache afterwards."""
-    cleaned = woof_tts.clean_text(text)
-    voice_name = woof_tts.normalize_voice(voice)
-    if not cleaned or not voice_name:
-        raise ApiError(400, "invalid_request", "text and a known voice are required")
-    if len(cleaned) > woof_tts.MAX_TEXT_CHARS:
-        raise ApiError(
-            413,
-            "text_too_long",
-            f"text exceeds {woof_tts.MAX_TEXT_CHARS} characters",
-            {"limit": woof_tts.MAX_TEXT_CHARS},
-        )
-
-    audio = await asyncio.to_thread(woof_tts.cached_audio, cleaned, voice_name)
-    if audio is None:
-        if not woof_tts.available():
-            raise ApiError(503, "service_unavailable", "The Woof voice model is not installed on the backend")
-        # Only text the server has to synthesize counts against the day.
-        allowed = await asyncio.to_thread(
-            _usage_check_and_increment, auth["user_id"], "speech", woof_tts.DAILY_CHARS, len(cleaned)
-        )
-        if not allowed:
-            raise ApiError(429, "daily_quota_exceeded", "Daily speech quota exceeded")
-        started = time.perf_counter()
-        audio = await asyncio.to_thread(woof_tts.synthesize, cleaned, voice_name)
-        print(
-            f"[main] /speak/ | voice={voice_name} | chars={len(cleaned)} | "
-            f"bytes={len(audio[0]):,} | {time.perf_counter() - started:.2f}s"
-        )
-
-    data, media_type = audio
-    return Response(
-        content=data,
-        media_type=media_type,
-        headers={"Cache-Control": "private, max-age=31536000, immutable"},
-    )
-
-
-async def _translate_one_cached(text: str, source: str, target: str, timeout: float) -> str | None:
+    source: str,
+    target: str,
+    timeout: float,
+    *,
+    use_claude: bool = False,
+) -> str | None:
     """Translate one string through translate_cache and the daily character budget.
 
-    `source`/`target` must already be normalized. Raises TranslateBudgetExceeded
-    when a cache miss would go over today's budget, and TranslationError when every
-    provider fails.
+    `source`/`target` must already be normalized. With `use_claude`, a cache miss
+    goes to TRANSLATE_MODEL first and to Google only if that fails. Raises
+    TranslateBudgetExceeded when a miss would go over today's Google budget, and
+    TranslationError when every provider fails.
     """
     key = translate_cache_key(text, source, target)
     cached = await asyncio.to_thread(_translate_cache_get, key)
     if cached is not None:
         return cached
+    if use_claude:
+        [translated] = await claude_translations(
+            [text], source, target, timeout=INTERACTIVE_CLAUDE_TIMEOUT_SECONDS, retries=0
+        )
+        if translated:
+            await cache_translations([(key, translated)])
+            return translated
+    if not TRANSLATION_PROVIDERS:
+        raise TranslationError("No translation provider answered")
     if not await reserve_translate_chars(len(text)):
         raise TranslateBudgetExceeded()
     async with httpx.AsyncClient() as client:
@@ -3618,7 +3702,7 @@ async def _translate_one_cached(text: str, source: str, target: str, timeout: fl
             timeout=timeout,
         )
     if translated:
-        await asyncio.to_thread(_translate_cache_put, key, translated)
+        await cache_translations([(key, translated)])
     return translated
 
 
@@ -3816,7 +3900,6 @@ def _translate_cache_get_many(key_hashes: list[str]) -> dict[str, str]:
     found: dict[str, str] = {}
     conn = get_db_connection()
     try:
-        conn.execute("PRAGMA busy_timeout=3000")
         for chunk in chunked_values(unique_keys):
             placeholders = ",".join(["?"] * len(chunk))
             for row in conn.execute(
@@ -3862,10 +3945,12 @@ async def translate_ko_preprocess_results(results: list[dict], interface_languag
     pending = [text for text in unique_texts if text not in translated_by_text]
     if pending:
         fresh = await _translate_batch(pending, source="en", target=normalized_lang)
+        to_cache: list[tuple[str, str]] = []
         for text, translated in zip(pending, fresh):
             if translated:
                 translated_by_text[text] = translated
-                await asyncio.to_thread(_translate_cache_put, keys[text], translated)
+                to_cache.append((keys[text], translated))
+        await cache_translations(to_cache)
 
     out: list[dict] = []
     for result in results:
@@ -3974,7 +4059,7 @@ async def translate_text(payload: dict, auth: dict[str, Any] = Depends(verify_su
     )
     await enforce_daily_quota(auth)
 
-    if not TRANSLATION_PROVIDERS:
+    if not TRANSLATION_PROVIDERS and not CLAUDE_TRANSLATION:
         raise ApiError(500, "service_unavailable", "No translation provider configured on server")
 
     try:
@@ -3983,6 +4068,7 @@ async def translate_text(payload: dict, auth: dict[str, Any] = Depends(verify_su
             normalize_translate_language(source, "ko"),
             normalize_translate_language(target, "en"),
             INTERACTIVE_TRANSLATE_TIMEOUT_SECONDS,
+            use_claude=True,
         )
     except TranslateBudgetExceeded:
         raise ApiError(
@@ -3992,8 +4078,8 @@ async def translate_text(payload: dict, auth: dict[str, Any] = Depends(verify_su
         )
     except TranslationError as error:
         if error.timed_out:
-            raise ApiError(504, "translate_timeout", "Google Translate request timed out")
-        raise ApiError(502, "translate_failed", "Google Translate request failed")
+            raise ApiError(504, "translate_timeout", "Translation request timed out")
+        raise ApiError(502, "translate_failed", "Translation request failed")
     translated_text = translated or ""
 
     # For Chinese source text the panels show tone-marked pinyin above the
@@ -4017,15 +4103,31 @@ TRANSLATE_SENTENCES_MAX_ITEMS = 128
 TRANSLATE_SENTENCES_MAX_CHARS = 12_000
 # The app asks for a whole chapter's sentences ahead of time whenever a chapter
 # is opened (services/chapterTranslations.js), about 100 per request, though
-# the reader only ever looks at a few of them. That was nearly all of the
-# Google Translate bill. Unless TRANSLATE_CHAPTERS_AHEAD is on, a request with
-# more sentences than TRANSLATE_ON_DEMAND_MAX_ITEMS is answered from the cache
-# only: sentences nobody has paid for yet come back null and nothing is sent
-# to Google. The app then asks for a sentence by itself when the reader opens
-# its translation (or listen mode reaches it), and that small request is
-# translated as before. Both are Railway service variables.
-TRANSLATE_CHAPTERS_AHEAD = (os.getenv("TRANSLATE_CHAPTERS_AHEAD") or "").strip().lower() in {"1", "true", "yes", "on"}
+# the reader only ever looks at a few of them. On Google Translate that was
+# nearly all of the bill; on Claude a chapter costs a fraction of a cent, so
+# TRANSLATE_CHAPTERS_AHEAD defaults to on when Claude translates and off when
+# Google does. While it is off, a request with more sentences than
+# TRANSLATE_ON_DEMAND_MAX_ITEMS is answered from the cache only: sentences
+# nobody has paid for yet come back null and nothing is sent anywhere. The app
+# then asks for a sentence by itself when the reader opens its translation (or
+# listen mode reaches it), and that small request is translated. Even while it
+# is on, a chapter fetched ahead never falls back to Google when Claude fails.
+# All are Railway service variables.
+def chapters_ahead_setting(value: str | None, claude_translation: bool) -> bool:
+    """TRANSLATE_CHAPTERS_AHEAD: on/off when set, else on exactly when Claude translates."""
+    value = (value or "").strip().lower()
+    if not value:
+        return claude_translation
+    return value in {"1", "true", "yes", "on"}
+
+
+TRANSLATE_CHAPTERS_AHEAD = chapters_ahead_setting(os.getenv("TRANSLATE_CHAPTERS_AHEAD"), CLAUDE_TRANSLATION)
 TRANSLATE_ON_DEMAND_MAX_ITEMS = parse_positive_int_env(os.getenv("TRANSLATE_ON_DEMAND_MAX_ITEMS"), 8)
+# Per Claude call: a chapter fetched ahead can wait (its chunks run side by side,
+# well inside the app's 45 s); a few sentences a reader opened need Google's
+# turn soon if Claude stalls.
+AHEAD_CLAUDE_TIMEOUT_SECONDS = 30.0
+ON_DEMAND_CLAUDE_TIMEOUT_SECONDS = 6.0
 
 
 @app.post("/translate_sentences/")
@@ -4062,16 +4164,17 @@ async def translate_sentences(payload: dict, auth: dict[str, Any] = Depends(veri
         return {"translations": [text if source == target and text else None for text in cleaned]}
 
     keys = [translate_cache_key(text, source, target) if text else None for text in cleaned]
+    ahead = sum(1 for text in cleaned if text) > TRANSLATE_ON_DEMAND_MAX_ITEMS
 
     # A chapter fetched ahead: what is already cached, nothing new (see
     # TRANSLATE_CHAPTERS_AHEAD above). It costs nothing, so it is not counted
     # against the reader's daily quota either.
-    if not TRANSLATE_CHAPTERS_AHEAD and sum(1 for text in cleaned if text) > TRANSLATE_ON_DEMAND_MAX_ITEMS:
+    if not TRANSLATE_CHAPTERS_AHEAD and ahead:
         cached = await asyncio.to_thread(_translate_cache_get_many, [key for key in keys if key])
         return {"translations": [cached.get(key) if key else None for key in keys]}
 
     await enforce_daily_quota(auth)
-    if not TRANSLATION_PROVIDERS:
+    if not TRANSLATION_PROVIDERS and not CLAUDE_TRANSLATION:
         raise ApiError(500, "service_unavailable", "No translation provider configured on server")
 
     cached = await asyncio.to_thread(_translate_cache_get_many, [key for key in keys if key])
@@ -4082,37 +4185,67 @@ async def translate_sentences(payload: dict, auth: dict[str, Any] = Depends(veri
         text for text, result in zip(cleaned, results) if text and result is None
     ))
     if missing:
-        if not await reserve_translate_chars(sum(len(text) for text in missing)):
-            raise ApiError(
-                503,
-                "translate_budget_exhausted",
-                "Translation is resting for today. Please try again tomorrow.",
-            )
-        try:
-            async with httpx.AsyncClient() as client:
-                fresh = await translate_texts(
-                    client,
-                    TRANSLATION_PROVIDERS,
-                    missing,
-                    source=source,
-                    target=target,
-                    timeout=30.0,
-                )
-        except TranslationError as error:
-            if error.timed_out:
-                raise ApiError(504, "translate_timeout", "Google Translate request timed out")
-            raise ApiError(502, "translate_failed", "Google Translate request failed")
-        fresh_by_text = {}
-        for text, translated in zip(missing, fresh):
-            if translated:
-                fresh_by_text[text] = translated
-                await asyncio.to_thread(_translate_cache_put, translate_cache_key(text, source, target), translated)
+        fresh_by_text = await _translate_missing_sentences(missing, source, target, ahead=ahead)
+        await cache_translations(
+            [(translate_cache_key(text, source, target), translated) for text, translated in fresh_by_text.items()]
+        )
         results = [
             result if result is not None else (fresh_by_text.get(text) if text else None)
             for text, result in zip(cleaned, results)
         ]
 
     return {"translations": results}
+
+
+async def _translate_missing_sentences(missing: list[str], source: str, target: str, *, ahead: bool) -> dict[str, str]:
+    """Translations for the distinct uncached sentences of a /translate_sentences/
+    request: Claude first, then Google for what Claude left, except for a chapter
+    fetched ahead while Claude is the engine (what it leaves waits until a reader
+    opens it, so Google is never paid for sentences nobody looks at). Raises the
+    endpoint's coded errors only when nothing at all was translated."""
+    fresh: dict[str, str] = {}
+    claude = await claude_translations(
+        missing,
+        source,
+        target,
+        timeout=AHEAD_CLAUDE_TIMEOUT_SECONDS if ahead else ON_DEMAND_CLAUDE_TIMEOUT_SECONDS,
+        retries=ANTHROPIC_MAX_RETRIES if ahead else 0,
+    )
+    fresh.update({text: value for text, value in zip(missing, claude) if value})
+    left = [text for text in missing if text not in fresh]
+    if not left:
+        return fresh
+    if (ahead and CLAUDE_TRANSLATION) or not TRANSLATION_PROVIDERS:
+        if not fresh and not ahead:
+            raise ApiError(502, "translate_failed", "Translation request failed")
+        return fresh
+
+    if not await reserve_translate_chars(sum(len(text) for text in left)):
+        if fresh:
+            return fresh
+        raise ApiError(
+            503,
+            "translate_budget_exhausted",
+            "Translation is resting for today. Please try again tomorrow.",
+        )
+    try:
+        async with httpx.AsyncClient() as client:
+            google = await translate_texts(
+                client,
+                TRANSLATION_PROVIDERS,
+                left,
+                source=source,
+                target=target,
+                timeout=30.0,
+            )
+    except TranslationError as error:
+        if fresh:
+            return fresh
+        if error.timed_out:
+            raise ApiError(504, "translate_timeout", "Translation request timed out")
+        raise ApiError(502, "translate_failed", "Translation request failed")
+    fresh.update({text: value for text, value in zip(left, google) if value})
+    return fresh
 
 
 # ─── Content translation (bundled English content -> interface language) ─────
@@ -4161,10 +4294,6 @@ async def translate_texts_cached(texts: list[str], source: str, target: str) -> 
     pending_texts = list(pending)
     translated = await _translate_batch(pending_texts, source=normalized_source, target=normalized_target)
 
-    def store(rows: list[tuple[str, str]]) -> None:
-        for key, value in rows:
-            _translate_cache_put(key, value)
-
     fresh: list[tuple[str, str]] = []
     for text, value in zip(pending_texts, translated):
         if not value:
@@ -4172,8 +4301,7 @@ async def translate_texts_cached(texts: list[str], source: str, target: str) -> 
         for index in pending[text]:
             results[index] = value
         fresh.append((translate_cache_key(text, normalized_source, normalized_target), value))
-    if fresh:
-        await asyncio.to_thread(store, fresh)
+    await cache_translations(fresh)
     return results
 
 
@@ -5841,7 +5969,7 @@ async def explain_in_context(payload: dict, auth: dict[str, Any] = Depends(verif
     parsed = _finalize_explain_result(req, parsed)
 
     if not req.personalized:
-        await asyncio.to_thread(_lookup_cache_put, req.cache_key, parsed)
+        await cache_lookup(req.cache_key, parsed)
 
     return parsed
 
@@ -6033,7 +6161,7 @@ async def ko_sense_in_context(payload: dict, auth: dict[str, Any] = Depends(veri
         )
         picked = parse_sense_pick(raw, len(candidates))
         index = picked if picked is not None else 0
-        await asyncio.to_thread(_lookup_cache_put, cache_key, {
+        await cache_lookup(cache_key, {
             "lemma": str(index),
             "gloss": None,
             "explanation": None,
@@ -6080,7 +6208,7 @@ async def explain_grammar(payload: dict, auth: dict[str, Any] = Depends(verify_s
     parsed = parse_grammar_reply(raw, req.target_language, req.sentence, req.word)
     if not parsed:
         raise ApiError(502, "ai_bad_response", "AI returned no grammar explanation")
-    await asyncio.to_thread(_lookup_cache_put, cache_key, {
+    await cache_lookup(cache_key, {
         "lemma": parsed["pattern_id"],
         "gloss": None,
         "explanation": json.dumps(parsed, ensure_ascii=False),
@@ -6187,7 +6315,7 @@ async def explain_in_context_stream(payload: dict, auth: dict[str, Any] = Depend
 
         parsed = _finalize_explain_result(req, parsed)
         if not req.personalized:
-            await asyncio.to_thread(_lookup_cache_put, req.cache_key, parsed)
+            await cache_lookup(req.cache_key, parsed)
         yield _ndjson({"type": "done", "result": parsed})
 
     return StreamingResponse(_events(), media_type="application/x-ndjson", headers=stream_headers)
@@ -6196,7 +6324,22 @@ async def explain_in_context_stream(payload: dict, auth: dict[str, Any] = Depend
 # ─── Run on module load (executes when uvicorn starts the server) ──────────────
 # Defined at the bottom so every helper it calls (create_ops_tables,
 # prune_old_usage_rows, …) is already bound by the time these run.
-init_cache_db()
-migrate_cache_db()
-purge_stale_zh_translations()
-prune_old_usage_rows()
+def run_startup_db_setup():
+    """Set up cache.db, one process at a time.
+
+    The server runs several worker processes (see the Dockerfile) and each one
+    imports this module at the same moment. A lock file next to cache.db makes
+    them take turns, so two workers never switch the journal mode, rebuild the
+    table or purge old rows at once. The lock is released when the file closes,
+    also if the process dies."""
+    lock_path = os.path.abspath(CACHE_DB_PATH) + ".setup.lock"
+    with open(lock_path, "w") as lock_file:
+        if fcntl is not None:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+        init_cache_db()
+        migrate_cache_db()
+        purge_stale_zh_translations()
+        prune_old_usage_rows()
+
+
+run_startup_db_setup()

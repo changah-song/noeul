@@ -57,7 +57,8 @@ See `frontend/services/crashReporting.js` and `backend/observability.py`.
 
 ```json
 {"status":"ok","release":"noeul-backend@<commit>","uptime_seconds":1234,
- "checks":{"cache_db":{"ok":true,"dictionary_rows":12345},"ko_dict":{"ok":true}, ...}}
+ "checks":{"cache_db":{"ok":true,"dictionary_rows":12345,"ai_lookup_rows":678,
+   "translation_rows":90,"usage_rows_today":42},"ko_dict":{"ok":true}, ...}}
 ```
 
 and 503 with `"status":"degraded"` when the cache database or a bundled
@@ -68,21 +69,53 @@ dictionary can't be read.
 - `cache.db` lives on a Railway volume mounted at `/data`, with the service
   variable `CACHE_DB_PATH=/data/cache.db`. Without that variable it falls back
   to `backend/cache.db` inside the container, which every deploy replaces.
-- Watch `dictionary_rows` across a deploy: if it drops back to near zero, `cache.db`
+- Watch the `cache_db` counts across a deploy: if they drop back to zero, `cache.db`
   is not on a persistent Railway volume, and daily quotas, AI spend and the shared
+  lookup cache reset with every deploy. `dictionary_rows` alone can sit at 0 for
+  days (the bundled dictionaries answer most lookups); `ai_lookup_rows` and
+  `translation_rows` grow with use and are the ones to compare.
+  `usage_rows_today` also empties at the first start after midnight UTC, so
+  compare it only within one UTC day.
+
+## Worker processes
+
+The backend runs 1 worker process. With one, a slow request holds up everyone
+else; the Railway service variable `WEB_CONCURRENCY` raises the number without
+a code change (the backend is ready for it: see below). Raise it if Sentry or
+the uptime monitor shows requests queueing behind slow ones.
+
+- Each worker loads its own copy of the language models: about 190 MB when
+  idle and about 700 MB once it has served Korean, English and Chinese text
+  (measured on a Mac). Check the service's memory
+  graph before raising the number.
+- Quotas, AI spend and the lookup caches live in `cache.db`, which the workers
+  share. The KRDICT cooldown and the song-search cache are kept per worker.
+- `uptime_seconds` on `/health` is that of whichever worker answered.
+
   lookup cache reset with every deploy.
 
-## Google Translate cost
+## Translation cost
 
-Google bills every character sent to Translate. Three things bound it:
+The reader's sentences (`/translate/`, `/translate_sentences/`) are translated
+by Claude Haiku 5.5, about $0.55-0.80 per million source characters, with
+Google Translate ($20 per million) as the fallback. `/health` shows what a
+deploy picked up under `translation`.
 
+- `TRANSLATE_ENGINE` (Railway variable): `claude` (the default when
+  `ANTHROPIC_API_KEY` is set) or `google`, the rollback switch.
+  `TRANSLATE_MODEL` (default `claude-haiku-5-5`) picks the Claude model; keep it
+  in `MODEL_PRICING_PER_MTOK` so its spend is counted.
+- Claude's spend counts against `DAILY_AI_BUDGET_USD` (default $25), shared with
+  the word explanations. Past it, translation goes to Google instead.
 - `translate_cache` in `cache.db`: a sentence anyone has had translated is free
-  from then on. It only lasts if `cache.db` is on the volume.
-- Sentences are translated when a reader opens one (or listen mode reaches
-  it), not a chapter at a time. The app still asks for whole chapters ahead;
-  the server answers those from the cache only. `TRANSLATE_CHAPTERS_AHEAD=1`
-  (Railway variable) turns whole-chapter translation back on, and
-  `TRANSLATE_ON_DEMAND_MAX_ITEMS` (default 8) is the largest request still
-  translated in full.
+  from then on (at most 50,000 rows, oldest dropped first). It only lasts if
+  `cache.db` is on the volume.
+- Whole chapters are translated ahead when a chapter opens while Claude is the
+  engine; `TRANSLATE_CHAPTERS_AHEAD=0` stops that, and it is off by default
+  under Google. A chapter fetched ahead never falls back to Google: a sentence
+  Claude could not do waits until a reader opens it. Requests of up to
+  `TRANSLATE_ON_DEMAND_MAX_ITEMS` (default 8) sentences count as a reader
+  waiting, and those do fall back to Google.
 - `DAILY_TRANSLATE_CHAR_BUDGET` (default 2,000,000 characters): the hard stop
-  for one UTC day. Past it, translation answers 503 until midnight.
+  on characters sent to Google in one UTC day. Past it, a sentence Claude
+  could not translate answers 503 until midnight.

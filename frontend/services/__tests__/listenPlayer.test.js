@@ -3,7 +3,7 @@ jest.mock('../../modules/tts-voice-check/src', () => ({ checkVoices: jest.fn(asy
 
 const {
   createListenPlayer, voiceLocaleFor, voiceSampleFor, onDeviceVoicesFor, LISTEN_RATES,
-  applyVoiceCheck, loadWorkingVoices, cloudVoicesFor, isCloudVoice, JUNO_VOICE_ID,
+  applyVoiceCheck, loadWorkingVoices, savedVoices,
 } = require('../listenPlayer');
 
 // A stand-in engine: speak() hands back an id, and the test fires the finish
@@ -387,89 +387,11 @@ describe('listenPlayer word progress', () => {
   });
 });
 
-describe('online voices', () => {
-  // A stand-in for services/cloudVoice.js: each speak() waits for the test
-  // to settle it.
-  const fakeCloud = () => {
-    const pending = [];
-    return {
-      spoken: [],
-      prefetched: [],
-      speak: jest.fn(function speak(request) {
-        this.spoken.push(request);
-        return new Promise((resolve) => pending.push(resolve));
-      }),
-      prefetch: jest.fn(function prefetch(text, voiceName) {
-        this.prefetched.push({ text, voiceName });
-      }),
-      stop: jest.fn(() => pending.splice(0).forEach((resolve) => resolve('cancel'))),
-      settle: (outcome) => pending.shift()?.(outcome),
-    };
-  };
-
-  it('offers Juno for English only', () => {
-    expect(cloudVoicesFor('en-US').map((voice) => voice.id)).toEqual([JUNO_VOICE_ID]);
-    expect(cloudVoicesFor('en_GB')).toHaveLength(1);
-    expect(cloudVoicesFor('ko-KR')).toEqual([]);
-    expect(isCloudVoice(JUNO_VOICE_ID)).toBe(true);
-    expect(isCloudVoice('en-US-SMTf00')).toBe(false);
-    expect(isCloudVoice(null)).toBe(false);
-  });
-
-  it('plays an online voice through the cloud speaker, not the phone engine', async () => {
-    const tts = fakeTts();
-    const cloud = fakeCloud();
-    const player = createListenPlayer({ tts, cloud });
-    const result = player.speakSequence([
-      { text: 'Hello there.', locale: 'en-US', rate: 1.2, voice: JUNO_VOICE_ID },
-    ]);
-    await flush();
-    expect(cloud.spoken).toEqual([{ text: 'Hello there.', voiceName: 'juno', rate: 1.2 }]);
-    expect(tts.speak).not.toHaveBeenCalled();
-    cloud.settle('finish');
-    await expect(result).resolves.toBe('done');
-  });
-
-  it('reads the sentence with the phone voice when the online voice fails', async () => {
-    const tts = fakeTts();
-    const cloud = fakeCloud();
-    const player = createListenPlayer({ tts, cloud, now: () => 0 });
-    const result = player.speakSequence([
-      { text: 'Hi.', locale: 'en-US', rate: 1, voice: JUNO_VOICE_ID },
-    ]);
-    await flush();
-    cloud.settle('error');
-    await flush();
-    await flush();
-    expect(tts.spoken.map((s) => s.text)).toEqual(['Hi.']);
-    // The online id is never handed to the engine as a voice.
-    expect(tts.setDefaultVoice).not.toHaveBeenCalled();
-    tts.finish('u1');
-    await expect(result).resolves.toBe('done');
-  });
-
-  it('stops the online voice when the sequence is stopped', async () => {
-    const tts = fakeTts();
-    const cloud = fakeCloud();
-    const player = createListenPlayer({ tts, cloud });
-    const result = player.speakSequence([
-      { text: 'Hello there.', locale: 'en-US', rate: 1, voice: JUNO_VOICE_ID },
-    ]);
-    await flush();
-    player.stop();
-    await expect(result).resolves.toBe('stopped');
-    expect(cloud.stop).toHaveBeenCalled();
-    expect(tts.speak).not.toHaveBeenCalled();
-  });
-
-  it('prefetches only what an online voice will read', () => {
-    const cloud = fakeCloud();
-    const player = createListenPlayer({ tts: fakeTts(), cloud });
-    player.prefetch([
-      { text: ' Next sentence. ', locale: 'en-US', voice: JUNO_VOICE_ID },
-      { text: '다음 문장', locale: 'ko-KR', voice: 'ko-KR-SMTf00' },
-      { text: 'Phone default', locale: 'en-US', voice: null },
-    ]);
-    expect(cloud.prefetched).toEqual([{ text: 'Next sentence.', voiceName: 'juno' }]);
+describe('savedVoices', () => {
+  it('keeps phone voice ids and drops the old online voice', () => {
+    expect(savedVoices({ 'en-US': 'cloud:juno', 'ko-KR': 'ko-KR-SMTf00', 'ja-JP': '' })).toEqual({ 'ko-KR': 'ko-KR-SMTf00' });
+    expect(savedVoices(null)).toEqual({});
+    expect(savedVoices('nope')).toEqual({});
   });
 });
+
