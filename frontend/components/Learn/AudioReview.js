@@ -22,7 +22,7 @@ import {
     saveAudioLesson,
 } from '../../services/Database';
 import { chapterTranslations } from '../../services/chapterTranslations';
-import { createListenPlayer, LISTEN_RATES, voiceLocaleFor, voiceSampleFor } from '../../services/listenPlayer';
+import { createListenPlayer, LISTEN_RATES, savedVoices, voiceLocaleFor, voiceSampleFor } from '../../services/listenPlayer';
 import {
     AUDIO_REVIEW_REPEATS,
     buildAudioReviewSentencePart,
@@ -489,7 +489,7 @@ const AudioReview = ({ visible, words: candidates = [], targetLanguage, interfac
                 if (cancelled || !raw) return;
                 const parsed = JSON.parse(raw);
                 setVoicePrefs({
-                    voices: parsed?.voices && typeof parsed.voices === 'object' ? parsed.voices : {},
+                    voices: savedVoices(parsed?.voices),
                     pitch: Number.isFinite(parsed?.pitch) ? parsed.pitch : 1,
                 });
                 if (LISTEN_RATES.includes(parsed?.rate)) setRate(parsed.rate);
