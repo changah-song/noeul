@@ -221,6 +221,26 @@ def synthesize(text: str, voice: str = DEFAULT_VOICE) -> tuple[bytes, str]:
         return data, media_type
 
 
+def warm_up(voice: str = DEFAULT_VOICE) -> None:
+    """Load the model and make one short line, so the first reader after a
+    restart does not also wait for the weights to load and the MP3 encoder to
+    start (about half a second of the first request). Nothing is cached or
+    counted against anyone's day."""
+    if not available():
+        return
+    import time
+
+    started = time.perf_counter()
+    try:
+        with _lock:
+            samples = _model(voice)("Hello there.", seed=0)
+        encode_audio(samples)
+    except Exception as error:  # a failed warm-up only means a slower first request
+        print(f"[woof_tts] warm-up failed: {error}")
+        return
+    print(f"[woof_tts] warmed up in {time.perf_counter() - started:.2f}s")
+
+
 def _ssl_context():
     """certifi's certificates when installed: python.org's macOS Python has
     none of its own until its Install Certificates script is run."""

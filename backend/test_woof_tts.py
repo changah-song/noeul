@@ -52,3 +52,35 @@ def test_encode_audio_returns_playable_bytes():
     assert len(data) > 1_000
     if media_type == "audio/wav":
         assert data[:4] == b"RIFF"
+
+
+def test_warm_up_makes_one_line_without_caching_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(woof_tts, "CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(woof_tts, "available", lambda: True)
+    heard = []
+
+    def fake_model(text, seed=None):
+        heard.append(text)
+        return np.zeros(2400, dtype=np.float32)
+
+    monkeypatch.setattr(woof_tts, "_model", lambda voice: fake_model)
+    woof_tts.warm_up()
+    assert heard == ["Hello there."]
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_warm_up_does_nothing_without_the_model(monkeypatch):
+    monkeypatch.setattr(woof_tts, "available", lambda: False)
+    monkeypatch.setattr(woof_tts, "_model", lambda voice: (_ for _ in ()).throw(AssertionError("loaded")))
+    woof_tts.warm_up()
+
+
+def test_warm_up_survives_a_failing_model(monkeypatch, capsys):
+    monkeypatch.setattr(woof_tts, "available", lambda: True)
+
+    def broken(voice):
+        raise RuntimeError("weights missing")
+
+    monkeypatch.setattr(woof_tts, "_model", broken)
+    woof_tts.warm_up()
+    assert "warm-up failed" in capsys.readouterr().out

@@ -9,6 +9,7 @@ import hashlib
 import unicodedata
 import ssl
 import httpx
+import threading
 import time
 import logging
 import asyncio
@@ -6264,3 +6265,7 @@ def run_startup_db_setup():
 
 
 run_startup_db_setup()
+# The listen voice loads in the background, so the first reader after a
+# deploy does not wait for it; the server answers as usual meanwhile. Each
+# worker process has its own model and warms its own.
+threading.Thread(target=woof_tts.warm_up, name="woof-warm-up", daemon=True).start()
