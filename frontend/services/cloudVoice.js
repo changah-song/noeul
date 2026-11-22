@@ -11,6 +11,11 @@ import { listenDelay, withListenTimeout } from './listenDelay';
 // Each sentence is kept as a small MP3 in the cache folder, so a sentence
 // heard once plays again without the network, and the next sentence can be
 // fetched while the current one plays.
+//
+// A long sentence is asked for in clause-sized pieces (speechPieces): the
+// first piece plays as soon as it is made and the next is made meanwhile,
+// instead of the reader waiting for the whole sentence. The model splits a
+// long sentence at the same places itself, so it sounds the same.
 
 const CACHE_FOLDER = `${FileSystem.cacheDirectory || ''}listen-voice/`;
 // A sentence's audio arrives in a second or two; past this the phone's own
@@ -34,6 +39,64 @@ const hashText = (text) => {
     b = Math.imul(b ^ code, 0x85ebca6b) >>> 0;
   }
   return `${a.toString(16).padStart(8, '0')}${b.toString(16).padStart(8, '0')}${text.length.toString(16)}`;
+};
+
+// The model's own rule (underdog_woof/textsplit.py): a sentence over
+// CLAUSE_MAX characters is cut at clause punctuation (, ; : and dashes),
+// merging clauses back up to CLAUSE_MAX; a piece still too long is cut once
+// before a conjunction near its middle. Never at a full stop: the reader
+// sends one sentence at a time, and "Mr." is not a sentence end.
+export const CLAUSE_MAX = 120;
+const MIN_PIECE = 30;
+const CLAUSE_END = /[,;:](?=\s)|—|--/g;
+const CONJUNCTION = /\s(?=(?:and|but|or|nor|that|which|who|whom|whose|when|where|while|because|although|though|so|if|as|than|until)\b)/g;
+
+const splitAtConjunction = (piece) => {
+  if (piece.length <= CLAUSE_MAX) return [piece];
+  const cuts = [];
+  CONJUNCTION.lastIndex = 0;
+  let match = CONJUNCTION.exec(piece);
+  while (match) {
+    if (match.index >= MIN_PIECE && piece.length - match.index >= MIN_PIECE) cuts.push(match.index);
+    match = CONJUNCTION.exec(piece);
+  }
+  if (!cuts.length) return [piece];
+  const middle = piece.length / 2;
+  const cut = cuts.reduce((best, at) => (Math.abs(at - middle) < Math.abs(best - middle) ? at : best));
+  return [
+    ...splitAtConjunction(piece.slice(0, cut).trim()),
+    ...splitAtConjunction(piece.slice(cut).trim()),
+  ];
+};
+
+export const speechPieces = (rawText) => {
+  const text = String(rawText || '').replace(/\s+/g, ' ').trim();
+  if (text.length <= CLAUSE_MAX) return text ? [text] : [];
+  const clauses = [];
+  let start = 0;
+  CLAUSE_END.lastIndex = 0;
+  let match = CLAUSE_END.exec(text);
+  while (match) {
+    const end = match.index + match[0].length;
+    clauses.push(text.slice(start, end).trim());
+    start = end;
+    match = CLAUSE_END.exec(text);
+  }
+  clauses.push(text.slice(start).trim());
+  const merged = [];
+  let current = '';
+  clauses.filter(Boolean).forEach((clause) => {
+    if (current && current.length + 1 + clause.length > CLAUSE_MAX) {
+      merged.push(current);
+      current = clause;
+    } else if (!current) {
+      current = clause;
+    } else {
+      current = /(—|--)$/.test(current) ? `${current}${clause}` : `${current} ${clause}`;
+    }
+  });
+  if (current) merged.push(current);
+  return merged.flatMap(splitAtConjunction);
 };
 
 export const speechFileName = (text, voiceName) => `${voiceName}-${hashText(text)}.mp3`;
@@ -85,79 +148,112 @@ export const fetchSpeech = (rawText, voiceName) => {
 };
 
 export const createCloudSpeaker = () => {
-  let current = null; // { sound, resolve }
+  // The sentence being read: { done, stopPlayback }.
+  let current = null;
   let audioModeSet = false;
 
-  const finish = (entry, outcome) => {
-    if (!entry || entry.done) return;
-    entry.done = true;
-    if (current === entry) current = null;
-    entry.sound?.unloadAsync?.().catch(() => {});
-    entry.resolve(outcome);
+  // Play one file to its end. Resolves 'finish', 'cancel' (stop()) or
+  // 'error' (the player could not open it, or it never reported an end).
+  const playFile = async (reading, fileUri, rate, chars) => {
+    if (!audioModeSet) {
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: false,
+        playsInSilentModeIOS: true,
+        // Listen mode keeps reading with the screen off.
+        staysActiveInBackground: true,
+        shouldDuckAndroid: true,
+      });
+      audioModeSet = true;
+    }
+    return new Promise((resolve) => {
+      let sound = null;
+      let settled = false;
+      const settle = (outcome) => {
+        if (settled) return;
+        settled = true;
+        reading.stopPlayback = null;
+        sound?.unloadAsync?.().catch(() => {});
+        resolve(outcome);
+      };
+      reading.stopPlayback = () => settle('cancel');
+      const speed = Number.isFinite(rate) && rate > 0 ? rate : 1;
+      Audio.Sound.createAsync(
+        { uri: fileUri },
+        { shouldPlay: true, rate: speed, shouldCorrectPitch: true },
+        (status) => {
+          if (status?.didJustFinish) settle('finish');
+          else if (status && status.isLoaded === false && status.error) settle('error');
+        }
+      ).then(({ sound: loaded }) => {
+        sound = loaded;
+        // stop() arrived while the file was loading.
+        if (settled) loaded.unloadAsync().catch(() => {});
+      }, () => settle('error'));
+      const limit = Math.max(PLAY_TIMEOUT_MIN_MS, chars * PLAY_TIMEOUT_PER_CHAR_MS);
+      withListenTimeout(new Promise(() => {}), limit, 'timeout').then(() => settle('error'));
+    });
+  };
+
+  // Fetches and plays a sentence's pieces in turn, fetching the next piece
+  // while one plays.
+  const readPieces = async (reading, end, text, voiceName, rate) => {
+    const pieces = speechPieces(text);
+    if (!pieces.length) return end('finish');
+    try {
+      for (let i = 0; i < pieces.length; i += 1) {
+        const fileUri = await withListenTimeout(fetchSpeech(pieces[i], voiceName), FETCH_TIMEOUT_MS, null);
+        if (reading.done) return 'cancel';
+        if (!fileUri) return end('error');
+        // The next piece is made while this one plays.
+        if (i + 1 < pieces.length) fetchSpeech(pieces[i + 1], voiceName).catch(() => {});
+        const outcome = await playFile(reading, fileUri, rate, pieces[i].length);
+        if (reading.done) return 'cancel';
+        if (outcome !== 'finish') return end(outcome);
+      }
+      return end('finish');
+    } catch {
+      return reading.done ? 'cancel' : end('error');
+    }
   };
 
   return {
-    // Fetch ahead of time, behind the sentence being read; failures are left
-    // for speak() to meet again.
+    // Fetch ahead of time, behind the sentence being read, first piece first;
+    // failures are left for speak() to meet again.
     prefetch(text, voiceName) {
+      const pieces = speechPieces(text);
       listenDelay(PREFETCH_HOLD_MS)
         .then(() => Promise.allSettled([...inFlight.values()]))
-        .then(() => fetchSpeech(text, voiceName))
+        .then(() => pieces.reduce(
+          (previous, piece) => previous.then(() => fetchSpeech(piece, voiceName)),
+          Promise.resolve()
+        ))
         .catch(() => {});
     },
 
-    // Play `text` in `voiceName`. Resolves 'finish', 'cancel' (stop() was
-    // called) or 'error' (no network, server down, unplayable file).
+    // Play `text` in `voiceName`, piece by piece. Resolves 'finish', 'cancel'
+    // (stop() was called) or 'error' (no network, server down, unplayable file).
     async speak({ text, voiceName, rate }) {
-      const entry = { sound: null, done: false, resolve: () => {} };
-      const outcome = new Promise((resolve) => {
-        entry.resolve = resolve;
+      const reading = { done: false, stopPlayback: null, cancelled: null };
+      // stop() answers 'cancel' at once, even while a piece is being fetched.
+      const cancelled = new Promise((resolve) => {
+        reading.cancelled = () => resolve('cancel');
       });
-      current = entry;
-      try {
-        const fileUri = await withListenTimeout(fetchSpeech(text, voiceName), FETCH_TIMEOUT_MS, null);
-        if (entry.done) return outcome;
-        if (!fileUri) {
-          finish(entry, 'error');
-          return outcome;
-        }
-        if (!audioModeSet) {
-          await Audio.setAudioModeAsync({
-            allowsRecordingIOS: false,
-            playsInSilentModeIOS: true,
-            // Listen mode keeps reading with the screen off.
-            staysActiveInBackground: true,
-            shouldDuckAndroid: true,
-          });
-          audioModeSet = true;
-        }
-        const speed = Number.isFinite(rate) && rate > 0 ? rate : 1;
-        const { sound } = await Audio.Sound.createAsync(
-          { uri: fileUri },
-          { shouldPlay: true, rate: speed, shouldCorrectPitch: true },
-          (status) => {
-            if (status?.didJustFinish) finish(entry, 'finish');
-            else if (status && status.isLoaded === false && status.error) finish(entry, 'error');
-          }
-        );
-        if (entry.done) {
-          // stop() arrived while the file was loading.
-          sound.unloadAsync().catch(() => {});
-          return outcome;
-        }
-        entry.sound = sound;
-        const limit = Math.max(PLAY_TIMEOUT_MIN_MS, text.length * PLAY_TIMEOUT_PER_CHAR_MS);
-        withListenTimeout(outcome, limit, 'timeout').then((result) => {
-          if (result === 'timeout') finish(entry, 'error');
-        });
-      } catch {
-        finish(entry, 'error');
-      }
-      return outcome;
+      current = reading;
+      const end = (outcome) => {
+        reading.done = true;
+        if (current === reading) current = null;
+        return outcome;
+      };
+      return Promise.race([cancelled, readPieces(reading, end, text, voiceName, rate)]);
     },
 
     stop() {
-      finish(current, 'cancel');
+      const reading = current;
+      if (!reading) return;
+      reading.done = true;
+      current = null;
+      reading.stopPlayback?.();
+      reading.cancelled?.();
     },
   };
 };

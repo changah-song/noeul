@@ -9,6 +9,7 @@ import hashlib
 import unicodedata
 import ssl
 import httpx
+import threading
 import time
 import logging
 import asyncio
@@ -6200,3 +6201,6 @@ init_cache_db()
 migrate_cache_db()
 purge_stale_zh_translations()
 prune_old_usage_rows()
+# The listen voice loads in the background, so the first reader after a
+# deploy does not wait for it; the server answers as usual meanwhile.
+threading.Thread(target=woof_tts.warm_up, name="woof-warm-up", daemon=True).start()
