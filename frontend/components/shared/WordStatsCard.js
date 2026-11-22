@@ -149,18 +149,21 @@ const createStyles = (colors) => ({
         borderColor: colors.divider,
         backgroundColor: colors.surface,
         flexDirection: 'row',
-        alignItems: 'center',
+        // Cells stretch to the tallest one and keep their numbers on one top
+        // line, so a label that wraps to two lines can't push its number up.
+        alignItems: 'stretch',
         overflow: 'hidden',
     },
     cell: {
         flex: 1,
         minWidth: 0,
         minHeight: 72,
-        justifyContent: 'center',
+        justifyContent: 'flex-start',
         paddingVertical: 12,
         paddingHorizontal: 16,
     },
     cellDivider: {
+        alignSelf: 'center',
         width: 1,
         height: 40,
         backgroundColor: colors.divider,
