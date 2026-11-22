@@ -128,8 +128,8 @@ describe('ReaderSettingsSheet', () => {
     // Line spacing steps one stop at a time (2.05 by default).
     await press(tree, 'Decrease line spacing');
     expect(props.onSettingChange).toHaveBeenCalledWith('lineSpacing', 1.85);
-    // Page turns are icons; their names stay as accessibility labels.
-    expect(tree.root.findAll((node) => node.props.children === 'Vertical')).toHaveLength(0);
+    // Page turns show an icon and their name.
+    expect(tree.root.findAll((node) => node.props.children === 'Vertical').length).toBeGreaterThan(0);
     await press(tree, 'Vertical');
     expect(props.onSettingChange).toHaveBeenCalledWith('readingMode', 'scroll');
 
@@ -179,8 +179,8 @@ describe('ReaderSettingsSheet', () => {
 
   it('resets the active tab only', async () => {
     const { tree, props } = await renderSheet();
-    // An icon now, labelled for accessibility.
-    expect(tree.root.findAll((node) => node.props.children === 'Reset to default')).toHaveLength(0);
+    // The icon and its label, side by side.
+    expect(tree.root.findAll((node) => node.props.children === 'Reset to default').length).toBeGreaterThan(0);
     await press(tree, 'Reset to default');
     expect(props.onResetTextSettings).toHaveBeenCalledTimes(1);
     expect(props.onResetWordSettings).not.toHaveBeenCalled();
