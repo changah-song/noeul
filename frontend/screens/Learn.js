@@ -2583,7 +2583,7 @@ const createStyles = (colors) => StyleSheet.create({
     bottom: SEGMENT_TRACK_PADDING,
     left: SEGMENT_TRACK_PADDING,
     borderRadius: 9,
-    backgroundColor: colors.surface,
+    backgroundColor: colors.segmentChip,
     shadowColor: '#1b1c1c',
     shadowOpacity: 0.08,
     shadowRadius: 2,

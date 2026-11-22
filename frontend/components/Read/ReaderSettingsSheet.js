@@ -250,18 +250,30 @@ const ReaderSettingsSheet = ({
                     options={THEME_MODES.map((mode) => ({ value: mode, label: t(`profile.${mode}`) }))}
                 />
             </SettingRow>
-            <SettingRow styles={controlStyles} label={t('read.settingsPageTurns')} last>
-                <SegmentedControl
-                    styles={controlStyles}
-                    colors={colors}
-                    value={readingMode}
-                    onChange={(value) => onSettingChange('readingMode', value)}
-                    accessibilityLabel={t('read.settingsPageTurns')}
-                    options={[
-                        { value: 'paged', label: t('read.readingHorizontal'), icon: 'swap-horiz' },
-                        { value: 'scroll', label: t('read.readingVertical'), icon: 'swap-vert' },
-                    ]}
-                />
+            {/* The two named choices are too wide to share the label's line,
+                so they sit under it at full width. */}
+            <SettingRow
+                styles={controlStyles}
+                label={t('read.settingsPageTurns')}
+                last
+                below={(
+                    <View style={styles.fullWidthControl}>
+                        <SegmentedControl
+                            styles={controlStyles}
+                            colors={colors}
+                            value={readingMode}
+                            onChange={(value) => onSettingChange('readingMode', value)}
+                            accessibilityLabel={t('read.settingsPageTurns')}
+                            stretch
+                            options={[
+                                { value: 'paged', label: t('read.readingHorizontal'), icon: 'swap-horiz' },
+                                { value: 'scroll', label: t('read.readingVertical'), icon: 'swap-vert' },
+                            ]}
+                        />
+                    </View>
+                )}
+            >
+                {null}
             </SettingRow>
             <ResetLink styles={controlStyles} colors={colors} label={t('read.resetSection')} onPress={onResetTextSettings} />
         </>
@@ -562,6 +574,9 @@ const createStyles = (colors, popupMaxHeight = 520, popupWidth = POPUP_WIDTH) =>
         paddingHorizontal: POPUP_PADDING,
         paddingTop: 4,
         paddingBottom: 10,
+    },
+    fullWidthControl: {
+        paddingBottom: 14,
     },
     legend: {
         paddingBottom: 14,

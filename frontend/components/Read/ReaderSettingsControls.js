@@ -119,16 +119,17 @@ export const Stepper = ({
  * SegmentedControl — `options` is [{ value, label, icon?, iconOnly? }] where
  * `icon` is a MaterialIcons name; `iconOnly` draws just a larger icon (the
  * label stays as its accessibility label). A muted track; the selected
- * segment is a raised white chip with semibold text.
+ * segment is a raised white chip with semibold text. `stretch` shares a
+ * full-width track equally between the segments.
  */
-export const SegmentedControl = ({ styles, colors, options, value, onChange, accessibilityLabel }) => (
+export const SegmentedControl = ({ styles, colors, options, value, onChange, accessibilityLabel, stretch = false }) => (
     <View style={styles.segmentTrack} accessibilityRole="radiogroup" accessibilityLabel={accessibilityLabel}>
         {options.map((option) => {
             const selected = option.value === value;
             return (
                 <TouchableOpacity
                     key={String(option.value)}
-                    style={[styles.segment, selected && styles.segmentActive]}
+                    style={[styles.segment, stretch && { flex: 1 }, selected && styles.segmentActive]}
                     onPress={() => onChange(option.value)}
                     activeOpacity={0.7}
                     accessibilityRole="button"
@@ -436,7 +437,7 @@ export const createReaderSettingsControlStyles = (colors) => StyleSheet.create({
         borderRadius: 9,
         alignItems: 'center',
         justifyContent: 'center',
-        backgroundColor: colors.surface,
+        backgroundColor: colors.segmentChip,
         ...chipShadow,
     },
     // Room on both sides, so a long value ("1.65×") never crowds the buttons.
@@ -470,7 +471,7 @@ export const createReaderSettingsControlStyles = (colors) => StyleSheet.create({
         borderRadius: 8,
     },
     segmentActive: {
-        backgroundColor: colors.surface,
+        backgroundColor: colors.segmentChip,
         ...chipShadow,
     },
     segmentText: {
@@ -495,7 +496,7 @@ export const createReaderSettingsControlStyles = (colors) => StyleSheet.create({
         bottom: TAB_TRACK_PADDING,
         left: TAB_TRACK_PADDING,
         borderRadius: 9,
-        backgroundColor: colors.surface,
+        backgroundColor: colors.segmentChip,
         ...chipShadow,
     },
     tabsSegment: {
@@ -507,7 +508,7 @@ export const createReaderSettingsControlStyles = (colors) => StyleSheet.create({
     },
     // Before the track is measured there is no sliding chip yet.
     tabsSegmentFallback: {
-        backgroundColor: colors.surface,
+        backgroundColor: colors.segmentChip,
     },
     tabsText: {
         fontFamily: fontFamilies.sansMedium,

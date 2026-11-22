@@ -2396,7 +2396,8 @@ const createStyles = (colors) => StyleSheet.create({
         fontSize: 16,
         lineHeight: 22,
         letterSpacing: 0,
-        textAlign: 'center',
+        // Left, under the word, like the rest of the heading.
+        textAlign: 'left',
         // No flexShrink: when the definition can't share the badge's line it wraps
         // as a whole to the next row, then wraps internally within the full width.
         maxWidth: '100%',
@@ -2468,7 +2469,7 @@ const createStyles = (colors) => StyleSheet.create({
         fontSize: 17,
         lineHeight: 24,
         letterSpacing: 0.2,
-        textAlign: 'center',
+        textAlign: 'left',
         marginBottom: 8,
     },
     zhSenseList: {

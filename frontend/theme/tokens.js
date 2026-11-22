@@ -13,6 +13,9 @@ export const colorPairs = {
   surfaceSelected: pair('#f0eded', '#202631'),
   surfaceElevated: pair('#ffffff', '#1b1c1c'),
   surfaceStrong: pair('#e4e2e2', '#202631'),
+  // The raised chip of a segmented control or stepper: white on the light
+  // page, a lifted grey on the dark one, where surface would vanish.
+  segmentChip: pair('#ffffff', '#3a4250'),
   border: pair('#e4e2e2', '#353c47'),
   borderStrong: pair('#c5c6cb', '#353c47'),
   divider: pair('#eceaea', '#202631'),
@@ -132,6 +135,7 @@ const sepiaOverrides = {
   panelShadow: 'rgba(59, 47, 37, 0.16)',
   overlay: 'rgba(59, 47, 37, 0.32)',
   white: SEPIA_SURFACE,
+  segmentChip: SEPIA_SURFACE,
 
   readerPaper: SEPIA_PAPER,
   readerSurface: SEPIA_SURFACE,
