@@ -17,3 +17,4 @@ test.ipynb
 # Woof voice model and generated audio (woof_tts.py)
 woof_model/
 woof_cache/
+*.setup.lock

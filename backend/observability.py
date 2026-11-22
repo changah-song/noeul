@@ -81,6 +81,15 @@ def set_sentry_user(user_id: str | None) -> None:
     sentry_sdk.set_user({"id": str(user_id)})
 
 
+# /health key -> cache.db table. Counts only: no user ids, no amounts.
+# daily_usage holds today's counters (older days are pruned at startup).
+CACHE_DB_ACTIVITY_TABLES = {
+    "ai_lookup_rows": "lookup_cache",
+    "translation_rows": "translate_cache",
+    "usage_rows_today": "daily_usage",
+}
+
+
 def _count_rows(path: str, table: str) -> int:
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2)
     try:
@@ -106,7 +115,7 @@ def health_report(
 ) -> tuple[bool, dict]:
     """Run the health checks. Returns (healthy, body).
 
-    - cache_db: the server cache opens and answers. Its row count shows whether a
+    - cache_db: the server cache opens and answers. Its row counts show whether a
       deploy wiped it (cache.db must sit on a persistent volume).
     - bundled_dbs: required dictionaries, present and readable.
     - optional_dbs: reported (present or not) but never make the server unhealthy;
@@ -120,6 +129,15 @@ def health_report(
             "ok": True,
             "dictionary_rows": _count_rows(cache_db_path, "dictionary_cache"),
         }
+        # The tables written most often. dictionary_cache can stay empty for
+        # days (most lookups are answered by the bundled dictionaries), so
+        # these are what shows whether the file survived a deploy. A table an
+        # older cache.db does not have yet is left out.
+        for key, table in CACHE_DB_ACTIVITY_TABLES.items():
+            try:
+                checks["cache_db"][key] = _count_rows(cache_db_path, table)
+            except sqlite3.OperationalError:
+                pass
     except Exception as error:  # noqa: BLE001 - any failure means unhealthy
         healthy = False
         checks["cache_db"] = {"ok": False, "error": type(error).__name__}

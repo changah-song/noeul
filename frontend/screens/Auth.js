@@ -19,7 +19,7 @@ import * as AppleAuthentication from 'expo-apple-authentication';
 import { useTranslation } from '../hooks/useTranslation';
 import { getAuthErrorMessage } from '../i18n/userFacing';
 import { supabase } from '../services/supabase';
-import { PRIVACY_POLICY_URL, TERMS_OF_SERVICE_URL } from '../constants/links';
+import { PASSWORD_RESET_URL, PRIVACY_POLICY_URL, TERMS_OF_SERVICE_URL } from '../constants/links';
 import { fontFamilies, useTheme } from '../theme';
 
 const openLegalLink = (url, t) => {
@@ -371,6 +371,18 @@ const Auth = ({
           </Text>
         </TouchableOpacity>
 
+        {/* The reset itself happens on the website (noeul.app/reset): it emails
+            a link and sets the new password there. */}
+        {!isSignup ? (
+          <TouchableOpacity
+            style={styles.forgotButton}
+            onPress={() => openLegalLink(PASSWORD_RESET_URL, t)}
+            accessibilityRole="link"
+          >
+            <Text style={styles.switchButtonText}>{t('auth.forgotPassword')}</Text>
+          </TouchableOpacity>
+        ) : null}
+
         {showModeToggle ? (
           <TouchableOpacity
             style={styles.switchButton}
@@ -554,6 +566,12 @@ const createStyles = (colors) => StyleSheet.create({
   },
   buttonDisabled: {
     opacity: 0.6,
+  },
+  forgotButton: {
+    marginTop: 4,
+    minHeight: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   switchButton: {
     marginTop: 10,

@@ -57,7 +57,8 @@ See `frontend/services/crashReporting.js` and `backend/observability.py`.
 
 ```json
 {"status":"ok","release":"noeul-backend@<commit>","uptime_seconds":1234,
- "checks":{"cache_db":{"ok":true,"dictionary_rows":12345},"ko_dict":{"ok":true}, ...}}
+ "checks":{"cache_db":{"ok":true,"dictionary_rows":12345,"ai_lookup_rows":678,
+   "translation_rows":90,"usage_rows_today":42},"ko_dict":{"ok":true}, ...}}
 ```
 
 and 503 with `"status":"degraded"` when the cache database or a bundled
@@ -68,8 +69,29 @@ dictionary can't be read.
 - `cache.db` lives on a Railway volume mounted at `/data`, with the service
   variable `CACHE_DB_PATH=/data/cache.db`. Without that variable it falls back
   to `backend/cache.db` inside the container, which every deploy replaces.
-- Watch `dictionary_rows` across a deploy: if it drops back to near zero, `cache.db`
+- Watch the `cache_db` counts across a deploy: if they drop back to zero, `cache.db`
   is not on a persistent Railway volume, and daily quotas, AI spend and the shared
+  lookup cache reset with every deploy. `dictionary_rows` alone can sit at 0 for
+  days (the bundled dictionaries answer most lookups); `ai_lookup_rows` and
+  `translation_rows` grow with use and are the ones to compare.
+  `usage_rows_today` also empties at the first start after midnight UTC, so
+  compare it only within one UTC day.
+
+## Worker processes
+
+The backend runs 1 worker process. With one, a slow request holds up everyone
+else; the Railway service variable `WEB_CONCURRENCY` raises the number without
+a code change (the backend is ready for it: see below). Raise it if Sentry or
+the uptime monitor shows requests queueing behind slow ones.
+
+- Each worker loads its own copy of the language models: about 190 MB when
+  idle and about 700 MB once it has served Korean, English and Chinese text
+  (measured on a Mac; the Woof voice adds to it). Check the service's memory
+  graph before raising the number.
+- Quotas, AI spend and the lookup caches live in `cache.db`, which the workers
+  share. The KRDICT cooldown and the song-search cache are kept per worker.
+- `uptime_seconds` on `/health` is that of whichever worker answered.
+
   lookup cache reset with every deploy.
 
 ## Google Translate cost
