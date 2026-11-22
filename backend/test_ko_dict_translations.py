@@ -95,7 +95,7 @@ def test_preprocess_results_take_the_snapshot_gloss_and_skip_machine_translation
 
     monkeypatch.setattr(main, "_translate_batch", fake_batch)
     monkeypatch.setattr(main, "_translate_cache_get_many", lambda keys: {})
-    monkeypatch.setattr(main, "_translate_cache_put", lambda key, value: None)
+    monkeypatch.setattr(main, "_translate_cache_put_many", lambda rows: None)
 
     results = [
         {"stem": "사람", "definition": "human; person"},
