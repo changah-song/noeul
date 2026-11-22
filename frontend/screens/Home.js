@@ -837,6 +837,14 @@ const BookCover = ({ book, width, height, style, titleStyle, artOnly = false }) 
     for (let index = 0; index < tiles.length; index += COVER_PATTERN_COLUMNS) {
         rows.push(tiles.slice(index, index + COVER_PATTERN_COLUMNS));
     }
+    // A thumbnail is taller than the square pattern: repeat its rows down to
+    // the bottom edge, so no plain band shows under it.
+    if (artOnly && rows.length > 0) {
+        const needed = Math.ceil(height / tileSize);
+        for (let index = 0; rows.length < needed; index += 1) {
+            rows.push(rows[index % rows.length]);
+        }
+    }
     const titleFontSize = Math.max(8, getDefaultCoverTitleSize(title, 22 * scale));
     const authorFontSize = Math.max(6, Math.round(11 * scale));
     // On the smallest thumbnails there is only room for the title.
