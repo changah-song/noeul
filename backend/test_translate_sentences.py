@@ -27,7 +27,7 @@ def client(monkeypatch):
         "_translate_cache_get_many",
         lambda keys: {key: store[key] for key in keys if key in store},
     )
-    monkeypatch.setattr(main, "_translate_cache_put", lambda key, value: store.__setitem__(key, value))
+    monkeypatch.setattr(main, "_translate_cache_put_many", lambda rows: store.update(rows))
     monkeypatch.setattr(main, "TRANSLATION_PROVIDERS", ["fake"])
     test_client = TestClient(main.app)
     test_client.quota_calls = quota_calls

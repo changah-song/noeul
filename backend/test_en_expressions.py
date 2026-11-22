@@ -191,7 +191,7 @@ def test_dictionary_has_phrase_entries_in_every_language():
 def no_translation_cache(monkeypatch):
     store = {}
     monkeypatch.setattr(main, "_translate_cache_get_many", lambda keys: {k: store[k] for k in keys if k in store})
-    monkeypatch.setattr(main, "_translate_cache_put", lambda key, value: store.__setitem__(key, value))
+    monkeypatch.setattr(main, "_translate_cache_put_many", lambda rows: store.update(rows))
 
 
 def test_a_phrase_headword_is_never_machine_translated(monkeypatch, no_translation_cache):
@@ -225,7 +225,7 @@ def test_preprocess_gives_phrases_their_own_gloss_in_other_languages(monkeypatch
 
     monkeypatch.setattr(main, "_translate_batch", record)
     monkeypatch.setattr(main, "_translate_cache_get_many", lambda keys: {})
-    monkeypatch.setattr(main, "_translate_cache_put", lambda key, value: None)
+    monkeypatch.setattr(main, "_translate_cache_put_many", lambda rows: None)
     _nlp()
     try:
         main.get_en_nlp()

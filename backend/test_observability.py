@@ -1,4 +1,6 @@
 import sqlite3
+import sys
+import types
 
 import observability
 
@@ -72,6 +74,20 @@ def test_release_name_prefers_railway_commit(monkeypatch):
 def test_init_sentry_is_a_no_op_without_dsn(monkeypatch):
     monkeypatch.delenv("SENTRY_DSN", raising=False)
     assert observability.init_sentry() is False
+
+
+def test_report_handled_error_sends_only_when_sentry_is_configured(monkeypatch):
+    sent = []
+    monkeypatch.setitem(sys.modules, "sentry_sdk", types.SimpleNamespace(capture_exception=sent.append))
+    error = RuntimeError("cache busy")
+
+    monkeypatch.delenv("SENTRY_DSN", raising=False)
+    observability.report_handled_error(error)
+    assert sent == []
+
+    monkeypatch.setenv("SENTRY_DSN", "https://key@example.invalid/1")
+    observability.report_handled_error(error)
+    assert sent == [error]
 
 
 def test_optional_databases_are_reported_but_never_unhealthy(tmp_path):

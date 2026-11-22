@@ -70,6 +70,19 @@ def init_sentry() -> bool:
     return True
 
 
+def report_handled_error(error: BaseException) -> None:
+    """Send Sentry an error the request recovered from (a cache save that failed
+    while the reader still got an answer), so it stays visible. Does nothing
+    without a DSN."""
+    if not (os.getenv("SENTRY_DSN") or "").strip():
+        return
+    try:
+        import sentry_sdk
+    except ImportError:
+        return
+    sentry_sdk.capture_exception(error)
+
+
 def set_sentry_user(user_id: str | None) -> None:
     """Tag the current request's events with the account id (no email, no IP)."""
     if not user_id or not (os.getenv("SENTRY_DSN") or "").strip():

@@ -230,6 +230,13 @@ DAILY_LOOKUP_LIMIT = 250
 # so quotas, AI spend and the shared lookup cache survive deploys.
 CACHE_DB_PATH = (os.getenv("CACHE_DB_PATH") or "").strip() or os.path.join(os.path.dirname(__file__), "cache.db")
 os.makedirs(os.path.dirname(os.path.abspath(CACHE_DB_PATH)), exist_ok=True)
+# How long a cache.db write waits for another write to finish before it fails
+# with "database is locked". SQLite lets one writer in at a time, and each write
+# here is short, so the wait only shows under a burst (several chapters being
+# preprocessed at once, or more than one server process). Every connection gets
+# this wait from get_db_connection(); only the hit counter (_count_cache_hit)
+# uses a shorter one.
+CACHE_DB_BUSY_TIMEOUT_SECONDS = parse_positive_int_env(os.getenv("CACHE_DB_BUSY_TIMEOUT_SECONDS"), 15)
 ZH_DICT_DB_PATH = os.path.join(os.path.dirname(__file__), "zh_dict.db")
 # Bundled KRDICT (한국어기초사전) snapshot, English glosses only. When present it
 # serves Korean lookups locally and the live KRDICT API is only hit for the long
@@ -278,7 +285,7 @@ BOOK_LEVEL_SYSTEMS = {
 
 def get_db_connection():
     """Open a connection to the server-side SQLite cache database."""
-    conn = sqlite3.connect(CACHE_DB_PATH)
+    conn = sqlite3.connect(CACHE_DB_PATH, timeout=CACHE_DB_BUSY_TIMEOUT_SECONDS)
     conn.row_factory = sqlite3.Row  # Rows accessible as dicts
     return conn
 
@@ -1433,7 +1440,6 @@ def _usage_check_and_increment(user_id: str, bucket: str, limit: int, amount: in
     today = _utc_today()
     conn = get_db_connection()
     try:
-        conn.execute("PRAGMA busy_timeout=3000")
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             "SELECT count FROM daily_usage WHERE user_id=? AND day=? AND bucket=?",
@@ -1462,7 +1468,6 @@ def prune_old_usage_rows() -> None:
     today = _utc_today()
     conn = get_db_connection()
     try:
-        conn.execute("PRAGMA busy_timeout=3000")
         conn.execute("DELETE FROM daily_usage WHERE day < ?", (today,))
         conn.execute("DELETE FROM daily_spend WHERE day < ?", (today,))
         conn.commit()
@@ -1490,7 +1495,6 @@ def _add_daily_spend(cost_usd: float) -> None:
     today = _utc_today()
     conn = get_db_connection()
     try:
-        conn.execute("PRAGMA busy_timeout=3000")
         conn.execute(
             """
             INSERT INTO daily_spend (day, micro_usd) VALUES (?, ?)
@@ -1548,21 +1552,32 @@ def lookup_cache_key(word: str, sentence: str, target_language: str, interface_l
     return hashlib.sha256(parts.encode("utf-8")).hexdigest()
 
 
+def _count_cache_hit(conn: sqlite3.Connection, table: str, key_hash: str) -> None:
+    """Add one to a cached row's hit_count, as the last thing done on `conn`.
+
+    The counter is only a statistic and bumping it is a write, so a cache read
+    must not queue behind other writers for it: it waits a quarter of a second
+    at most, and when cache.db is still busy the count is skipped and the read
+    succeeds. `table` is one of our own table names, never input.
+    """
+    try:
+        conn.execute("PRAGMA busy_timeout=250")
+        conn.execute(f"UPDATE {table} SET hit_count = hit_count + 1 WHERE key_hash=?", (key_hash,))
+        conn.commit()
+    except sqlite3.OperationalError as error:
+        print(f"[main] {table} hit count skipped: {error!r}")
+
+
 def _lookup_cache_get(key_hash: str) -> dict[str, str | None] | None:
     conn = get_db_connection()
     try:
-        conn.execute("PRAGMA busy_timeout=3000")
         row = conn.execute(
             "SELECT lemma, gloss, explanation FROM lookup_cache WHERE key_hash=?",
             (key_hash,),
         ).fetchone()
         if not row:
             return None
-        conn.execute(
-            "UPDATE lookup_cache SET hit_count = hit_count + 1 WHERE key_hash=?",
-            (key_hash,),
-        )
-        conn.commit()
+        _count_cache_hit(conn, "lookup_cache", key_hash)
         return {
             "explanation": row["explanation"],
             "gloss": row["gloss"],
@@ -1578,7 +1593,6 @@ def _lookup_cache_put(key_hash: str, parsed: dict[str, str | None]) -> None:
         return
     conn = get_db_connection()
     try:
-        conn.execute("PRAGMA busy_timeout=3000")
         conn.execute(
             """
             INSERT INTO lookup_cache (key_hash, lemma, gloss, explanation, created_at, hit_count)
@@ -1608,6 +1622,16 @@ def _lookup_cache_put(key_hash: str, parsed: dict[str, str | None]) -> None:
         conn.close()
 
 
+async def cache_lookup(key_hash: str, parsed: dict[str, str | None]) -> None:
+    """Save an AI answer to lookup_cache. The reader already has the answer (and
+    it is already paid for), so a failed save is reported, never raised."""
+    try:
+        await asyncio.to_thread(_lookup_cache_put, key_hash, parsed)
+    except sqlite3.Error as error:
+        print(f"[main] lookup_cache save failed: {error!r}")
+        observability.report_handled_error(error)
+
+
 # --- Translation response cache + daily character budget --------------------
 #
 # Every character sent to Google Translate is billed, so identical requests are
@@ -1630,35 +1654,38 @@ class TranslateBudgetExceeded(Exception):
 def _translate_cache_get(key_hash: str) -> str | None:
     conn = get_db_connection()
     try:
-        conn.execute("PRAGMA busy_timeout=3000")
         row = conn.execute(
             "SELECT translated FROM translate_cache WHERE key_hash=?", (key_hash,)
         ).fetchone()
         if not row:
             return None
-        conn.execute(
-            "UPDATE translate_cache SET hit_count = hit_count + 1 WHERE key_hash=?",
-            (key_hash,),
-        )
-        conn.commit()
+        _count_cache_hit(conn, "translate_cache", key_hash)
         return row["translated"]
     finally:
         conn.close()
 
 
-def _translate_cache_put(key_hash: str, translated: str) -> None:
-    if not translated:
+def _translate_cache_put_many(rows: list[tuple[str, str]]) -> None:
+    """Save (key_hash, translated) pairs in one transaction (blocking).
+
+    A chapter's fresh glosses used to be saved one transaction each: hundreds of
+    writes in a row, all queueing for cache.db's single write lock, which is how
+    another request came to wait past the timeout ("database is locked"). One
+    connection, one commit and one size check per batch keeps the lock short.
+    """
+    created_at = datetime.now(timezone.utc).isoformat()
+    values = [(key_hash, translated, created_at) for key_hash, translated in rows if key_hash and translated]
+    if not values:
         return
     conn = get_db_connection()
     try:
-        conn.execute("PRAGMA busy_timeout=3000")
-        conn.execute(
+        conn.executemany(
             """
             INSERT INTO translate_cache (key_hash, translated, created_at, hit_count)
             VALUES (?, ?, ?, 0)
             ON CONFLICT(key_hash) DO NOTHING
             """,
-            (key_hash, translated, datetime.now(timezone.utc).isoformat()),
+            values,
         )
         count = conn.execute("SELECT COUNT(*) AS c FROM translate_cache").fetchone()["c"]
         if count > limits.TRANSLATE_CACHE_MAX_ROWS:
@@ -1673,6 +1700,22 @@ def _translate_cache_put(key_hash: str, translated: str) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+async def cache_translations(rows: list[tuple[str, str]]) -> None:
+    """Save fresh (key_hash, translated) pairs to translate_cache.
+
+    The caller already holds the translations, so a save that fails (cache.db
+    busy past the timeout, disk full) is reported and the request carries on:
+    the only cost is paying to translate those strings again next time.
+    """
+    if not rows:
+        return
+    try:
+        await asyncio.to_thread(_translate_cache_put_many, rows)
+    except sqlite3.Error as error:
+        print(f"[main] translate_cache save failed for {len(rows)} rows: {error!r}")
+        observability.report_handled_error(error)
 
 
 async def reserve_translate_chars(char_count: int) -> bool:
@@ -3044,10 +3087,12 @@ async def translate_en_missing_senses(results: list[dict], interface_language: s
         translated_by_sense = {sense: cached[key] for sense, key in keys.items() if key in cached}
         fresh = [sense for sense in pending if sense not in translated_by_sense]
         if fresh:
+            to_cache: list[tuple[str, str]] = []
             for sense, text in zip(fresh, await _translate_batch(fresh, source="en", target=target)):
                 if text and text.strip():
                     translated_by_sense[sense] = text.strip()
-                    await asyncio.to_thread(_translate_cache_put, keys[sense], text.strip())
+                    to_cache.append((keys[sense], text.strip()))
+            await cache_translations(to_cache)
 
     out = []
     for result in results:
@@ -3138,11 +3183,13 @@ async def translate_en_missing_glosses(results: list[dict], interface_language: 
     fresh_items = [item for item in pending if item not in gloss_by_item]
     if fresh_items:
         fresh = await _translate_batch([queries[item] for item in fresh_items], source="en", target=target)
+        to_cache: list[tuple[str, str]] = []
         for item, translated in zip(fresh_items, fresh):
             gloss = en_gloss_from_translation(item[0], item[1], translated)
             if gloss:
                 gloss_by_item[item] = gloss
-                await asyncio.to_thread(_translate_cache_put, keys[item], gloss)
+                to_cache.append((keys[item], gloss))
+        await cache_translations(to_cache)
 
     def item_of(result: dict):
         return (result.get("word"), result.get("pos"))
@@ -3618,7 +3665,7 @@ async def _translate_one_cached(text: str, source: str, target: str, timeout: fl
             timeout=timeout,
         )
     if translated:
-        await asyncio.to_thread(_translate_cache_put, key, translated)
+        await cache_translations([(key, translated)])
     return translated
 
 
@@ -3816,7 +3863,6 @@ def _translate_cache_get_many(key_hashes: list[str]) -> dict[str, str]:
     found: dict[str, str] = {}
     conn = get_db_connection()
     try:
-        conn.execute("PRAGMA busy_timeout=3000")
         for chunk in chunked_values(unique_keys):
             placeholders = ",".join(["?"] * len(chunk))
             for row in conn.execute(
@@ -3862,10 +3908,12 @@ async def translate_ko_preprocess_results(results: list[dict], interface_languag
     pending = [text for text in unique_texts if text not in translated_by_text]
     if pending:
         fresh = await _translate_batch(pending, source="en", target=normalized_lang)
+        to_cache: list[tuple[str, str]] = []
         for text, translated in zip(pending, fresh):
             if translated:
                 translated_by_text[text] = translated
-                await asyncio.to_thread(_translate_cache_put, keys[text], translated)
+                to_cache.append((keys[text], translated))
+        await cache_translations(to_cache)
 
     out: list[dict] = []
     for result in results:
@@ -4106,7 +4154,9 @@ async def translate_sentences(payload: dict, auth: dict[str, Any] = Depends(veri
         for text, translated in zip(missing, fresh):
             if translated:
                 fresh_by_text[text] = translated
-                await asyncio.to_thread(_translate_cache_put, translate_cache_key(text, source, target), translated)
+        await cache_translations(
+            [(translate_cache_key(text, source, target), translated) for text, translated in fresh_by_text.items()]
+        )
         results = [
             result if result is not None else (fresh_by_text.get(text) if text else None)
             for text, result in zip(cleaned, results)
@@ -4161,10 +4211,6 @@ async def translate_texts_cached(texts: list[str], source: str, target: str) -> 
     pending_texts = list(pending)
     translated = await _translate_batch(pending_texts, source=normalized_source, target=normalized_target)
 
-    def store(rows: list[tuple[str, str]]) -> None:
-        for key, value in rows:
-            _translate_cache_put(key, value)
-
     fresh: list[tuple[str, str]] = []
     for text, value in zip(pending_texts, translated):
         if not value:
@@ -4172,8 +4218,7 @@ async def translate_texts_cached(texts: list[str], source: str, target: str) -> 
         for index in pending[text]:
             results[index] = value
         fresh.append((translate_cache_key(text, normalized_source, normalized_target), value))
-    if fresh:
-        await asyncio.to_thread(store, fresh)
+    await cache_translations(fresh)
     return results
 
 
@@ -5841,7 +5886,7 @@ async def explain_in_context(payload: dict, auth: dict[str, Any] = Depends(verif
     parsed = _finalize_explain_result(req, parsed)
 
     if not req.personalized:
-        await asyncio.to_thread(_lookup_cache_put, req.cache_key, parsed)
+        await cache_lookup(req.cache_key, parsed)
 
     return parsed
 
@@ -6033,7 +6078,7 @@ async def ko_sense_in_context(payload: dict, auth: dict[str, Any] = Depends(veri
         )
         picked = parse_sense_pick(raw, len(candidates))
         index = picked if picked is not None else 0
-        await asyncio.to_thread(_lookup_cache_put, cache_key, {
+        await cache_lookup(cache_key, {
             "lemma": str(index),
             "gloss": None,
             "explanation": None,
@@ -6080,7 +6125,7 @@ async def explain_grammar(payload: dict, auth: dict[str, Any] = Depends(verify_s
     parsed = parse_grammar_reply(raw, req.target_language, req.sentence, req.word)
     if not parsed:
         raise ApiError(502, "ai_bad_response", "AI returned no grammar explanation")
-    await asyncio.to_thread(_lookup_cache_put, cache_key, {
+    await cache_lookup(cache_key, {
         "lemma": parsed["pattern_id"],
         "gloss": None,
         "explanation": json.dumps(parsed, ensure_ascii=False),
@@ -6187,7 +6232,7 @@ async def explain_in_context_stream(payload: dict, auth: dict[str, Any] = Depend
 
         parsed = _finalize_explain_result(req, parsed)
         if not req.personalized:
-            await asyncio.to_thread(_lookup_cache_put, req.cache_key, parsed)
+            await cache_lookup(req.cache_key, parsed)
         yield _ndjson({"type": "done", "result": parsed})
 
     return StreamingResponse(_events(), media_type="application/x-ndjson", headers=stream_headers)

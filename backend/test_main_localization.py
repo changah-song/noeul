@@ -32,7 +32,7 @@ def client(monkeypatch):
 def memory_translate_cache(monkeypatch):
     store = {}
     monkeypatch.setattr(main, "_translate_cache_get", lambda key: store.get(key))
-    monkeypatch.setattr(main, "_translate_cache_put", lambda key, value: store.__setitem__(key, value))
+    monkeypatch.setattr(main, "_translate_cache_put_many", lambda rows: store.update(rows))
     return store
 
 
