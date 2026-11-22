@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import pytest
 
@@ -114,3 +115,100 @@ def test_empty_translation_becomes_none():
 ])
 def test_normalize_language_code(value, expected):
     assert t.normalize_language_code(value, "ko") == expected
+
+
+# --- Claude ------------------------------------------------------------------
+
+
+class FakeClaude:
+    """Answers each request by echoing its texts tagged with the target code,
+    unless told to misbehave for chunks whose first text is listed."""
+
+    def __init__(self, fail=(), stop=None, short=()):
+        self.fail, self.stop, self.short = set(fail), stop, set(short)
+        self.requests = []
+
+    async def __call__(self, request):
+        self.requests.append(request)
+        content = request["messages"][0]["content"]
+        if request["output_format"] is None:
+            if content in self.fail:
+                raise RuntimeError("overloaded")
+            return f" <{content}> ", self.stop or "end_turn", {"texts": 1}
+        texts = json.loads(content)["texts"]
+        if texts[0] in self.fail:
+            raise RuntimeError("overloaded")
+        translations = [f"<{text}>" for text in texts]
+        if texts[0] in self.short:
+            translations = translations[:-1]
+        usage = {"texts": len(texts)}
+        return json.dumps({"translations": translations}), self.stop or "end_turn", usage
+
+
+def claude(call, texts, source="ko", target="en"):
+    return asyncio.run(t.translate_with_claude(call, list(texts), source=source, target=target))
+
+
+def test_claude_translates_in_order_and_reports_usage():
+    call = FakeClaude()
+    translations, usages = claude(call, ["하나.", "둘."])
+    assert translations == ["<하나.>", "<둘.>"]
+    assert usages == [{"texts": 2}]
+    request = call.requests[0]
+    assert "Korean into English" in request["system"]
+    assert json.loads(request["messages"][0]["content"]) == {"texts": ["하나.", "둘."]}
+    assert request["output_format"]["schema"] == t.TRANSLATIONS_SCHEMA
+
+
+def test_claude_splits_a_chapter_into_chunks():
+    texts = [f"문장 {index}." for index in range(60)]
+    call = FakeClaude()
+    translations, usages = claude(call, texts)
+    assert translations == [f"<{text}>" for text in texts]
+    assert [len(json.loads(r["messages"][0]["content"])["texts"]) for r in call.requests] == [25, 25, 10]
+    assert len(usages) == 3
+
+
+def test_claude_chunks_also_cap_characters():
+    long_text = "가" * 1500
+    chunks = t.claude_chunks([long_text, long_text, "짧다."])
+    assert chunks == [[long_text], [long_text, "짧다."]]
+
+
+def test_a_failed_chunk_leaves_only_its_texts_untranslated():
+    texts = [f"문장 {index}." for index in range(30)]
+    call = FakeClaude(fail={"문장 25."})
+    translations, usages = claude(call, texts)
+    assert translations[:25] == [f"<{text}>" for text in texts[:25]]
+    assert translations[25:] == [None] * 5
+    assert len(usages) == 1  # the failed call billed nothing
+
+
+def test_wrong_count_or_early_stop_counts_as_failure_but_is_still_billed():
+    translations, usages = claude(FakeClaude(short={"가."}), ["가.", "나."])
+    assert translations == [None, None]
+    assert len(usages) == 1
+    translations, usages = claude(FakeClaude(stop="max_tokens"), ["가."])
+    assert translations == [None]
+    assert len(usages) == 1
+
+
+def test_a_lone_text_goes_as_plain_text():
+    call = FakeClaude()
+    translations, usages = claude(call, ["안녕하세요."], target="ja")
+    assert translations == ["<안녕하세요.>"]
+    request = call.requests[0]
+    assert request["output_format"] is None
+    assert request["messages"][0]["content"] == "안녕하세요."
+    assert "Korean into Japanese" in request["system"] and "translation only" in request["system"]
+
+
+def test_claude_names_both_chinese_scripts_and_unknown_codes():
+    assert "Traditional Chinese" in t.claude_translation_request(["x"], source="ko", target="zh-TW")["system"]
+    assert "Simplified Chinese" in t.claude_translation_request(["x"], source="zh-CN", target="en")["system"]
+    assert "code 'xx'" in t.claude_translation_request(["x"], source="ko", target="xx")["system"]
+
+
+def test_max_tokens_grows_with_the_text_but_is_capped():
+    assert t.claude_translation_request(["가" * 10], source="ko", target="en")["max_tokens"] == 296
+    assert t.claude_translation_request(["가" * 5000], source="ko", target="en")["max_tokens"] == 8192

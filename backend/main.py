@@ -87,6 +87,7 @@ from translation import (
     configured_providers as configured_translation_providers,
     normalize_language_code as normalize_translate_language,
     translate_texts,
+    translate_with_claude,
 )
 from content_i18n import (
     ApiError,
@@ -1017,6 +1018,12 @@ async def health():
         {"ko_dict": KO_DICT_DB_PATH},
         {"zh_dict": ZH_DICT_DB_PATH, "proficiency_levels": PROFICIENCY_LEVELS_DB_PATH},
     )
+    # Which settings a deploy picked up (see TRANSLATE_ENGINE), never a key.
+    body["translation"] = {
+        "engine": TRANSLATE_MODEL if CLAUDE_TRANSLATION else "google",
+        "google_fallback": bool(TRANSLATION_PROVIDERS),
+        "chapters_ahead": TRANSLATE_CHAPTERS_AHEAD,
+    }
     return JSONResponse(body, status_code=200 if healthy else 503)
 
 
@@ -1059,6 +1066,18 @@ TRANSLATION_PROVIDERS = configured_translation_providers(
 # The app gives up on /translate/ after 8 s; two providers at 3.8 s each fit inside it.
 INTERACTIVE_TRANSLATE_TIMEOUT_SECONDS = 3.8
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
+# What translates the reader's sentences (/translate/ and /translate_sentences/).
+# "claude", the default when an Anthropic key is set, sends them to
+# TRANSLATE_MODEL and keeps Google Translate as the fallback for a sentence a
+# reader is waiting on. "google" goes back to Google Translate alone, as a
+# rollback switch. Both are Railway service variables. Dictionary glosses and
+# bundled content (translate_texts_cached, _translate_batch) stay on Google.
+TRANSLATE_MODEL = os.getenv("TRANSLATE_MODEL", "claude-haiku-5-5").strip() or "claude-haiku-5-5"
+TRANSLATE_ENGINE = (os.getenv("TRANSLATE_ENGINE") or "claude").strip().lower()
+CLAUDE_TRANSLATION = TRANSLATE_ENGINE == "claude" and bool(ANTHROPIC_API_KEY) and anthropic_sdk is not None
+# Claude's share of the app's 8 s for /translate/, leaving Google room after it.
+# Haiku answers one sentence in about a second.
+INTERACTIVE_CLAUDE_TIMEOUT_SECONDS = 3.0
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
 SUPABASE_JWT_AUDIENCE = os.getenv("SUPABASE_JWT_AUDIENCE", "").strip() or "authenticated"
 SUPABASE_ISSUER = f"{SUPABASE_URL}/auth/v1" if SUPABASE_URL else ""
@@ -1537,6 +1556,50 @@ async def record_ai_spend(model: str, usage) -> None:
     cost = _estimate_cost_usd(model, usage)
     if cost > 0:
         await asyncio.to_thread(_add_daily_spend, cost)
+
+
+async def _claude_translation_call(request: dict, *, timeout: float, retries: int):
+    """One translation call to TRANSLATE_MODEL -> (text, stop_reason, usage).
+    Thinking is off and effort low, as for explanations: a translation needs
+    neither, and both would add delay."""
+    params = explain_model_params(TRANSLATE_MODEL, request["max_tokens"])
+    if request.get("output_format"):
+        params["output_config"] = {**params.get("output_config", {}), "format": request["output_format"]}
+    client = get_anthropic_async_client().with_options(timeout=timeout, max_retries=retries)
+    message = await client.messages.create(
+        **params,
+        system=request["system"],
+        messages=request["messages"],
+    )
+    text = "".join(block.text for block in message.content if getattr(block, "type", None) == "text")
+    return text, message.stop_reason, message.usage
+
+
+async def claude_translations(
+    texts: list[str],
+    source: str,
+    target: str,
+    *,
+    timeout: float,
+    retries: int = ANTHROPIC_MAX_RETRIES,
+) -> list[str | None]:
+    """Translate with TRANSLATE_MODEL; aligned with `texts`, None for every text
+    it did not translate. Nothing is sent when Claude translation is off or
+    today's AI budget (shared with explanations) is spent, and every completed
+    call is added to that budget."""
+    if not texts or not CLAUDE_TRANSLATION:
+        return [None] * len(texts)
+    if await asyncio.to_thread(_get_daily_spend_usd) >= DAILY_AI_BUDGET_USD:
+        print("[main] Claude translation skipped: daily AI budget reached")
+        return [None] * len(texts)
+
+    async def call(request: dict):
+        return await _claude_translation_call(request, timeout=timeout, retries=retries)
+
+    translations, usages = await translate_with_claude(call, texts, source=source, target=target)
+    for usage in usages:
+        await record_ai_spend(TRANSLATE_MODEL, usage)
+    return translations
 
 
 # --- Contextual-lookup response cache --------------------------------------
@@ -3647,17 +3710,34 @@ async def speak_text(
     )
 
 
-async def _translate_one_cached(text: str, source: str, target: str, timeout: float) -> str | None:
+async def _translate_one_cached(
+    text: str,
+    source: str,
+    target: str,
+    timeout: float,
+    *,
+    use_claude: bool = False,
+) -> str | None:
     """Translate one string through translate_cache and the daily character budget.
 
-    `source`/`target` must already be normalized. Raises TranslateBudgetExceeded
-    when a cache miss would go over today's budget, and TranslationError when every
-    provider fails.
+    `source`/`target` must already be normalized. With `use_claude`, a cache miss
+    goes to TRANSLATE_MODEL first and to Google only if that fails. Raises
+    TranslateBudgetExceeded when a miss would go over today's Google budget, and
+    TranslationError when every provider fails.
     """
     key = translate_cache_key(text, source, target)
     cached = await asyncio.to_thread(_translate_cache_get, key)
     if cached is not None:
         return cached
+    if use_claude:
+        [translated] = await claude_translations(
+            [text], source, target, timeout=INTERACTIVE_CLAUDE_TIMEOUT_SECONDS, retries=0
+        )
+        if translated:
+            await cache_translations([(key, translated)])
+            return translated
+    if not TRANSLATION_PROVIDERS:
+        raise TranslationError("No translation provider answered")
     if not await reserve_translate_chars(len(text)):
         raise TranslateBudgetExceeded()
     async with httpx.AsyncClient() as client:
@@ -4027,7 +4107,7 @@ async def translate_text(payload: dict, auth: dict[str, Any] = Depends(verify_su
     )
     await enforce_daily_quota(auth)
 
-    if not TRANSLATION_PROVIDERS:
+    if not TRANSLATION_PROVIDERS and not CLAUDE_TRANSLATION:
         raise ApiError(500, "service_unavailable", "No translation provider configured on server")
 
     try:
@@ -4036,6 +4116,7 @@ async def translate_text(payload: dict, auth: dict[str, Any] = Depends(verify_su
             normalize_translate_language(source, "ko"),
             normalize_translate_language(target, "en"),
             INTERACTIVE_TRANSLATE_TIMEOUT_SECONDS,
+            use_claude=True,
         )
     except TranslateBudgetExceeded:
         raise ApiError(
@@ -4045,8 +4126,8 @@ async def translate_text(payload: dict, auth: dict[str, Any] = Depends(verify_su
         )
     except TranslationError as error:
         if error.timed_out:
-            raise ApiError(504, "translate_timeout", "Google Translate request timed out")
-        raise ApiError(502, "translate_failed", "Google Translate request failed")
+            raise ApiError(504, "translate_timeout", "Translation request timed out")
+        raise ApiError(502, "translate_failed", "Translation request failed")
     translated_text = translated or ""
 
     # For Chinese source text the panels show tone-marked pinyin above the
@@ -4070,15 +4151,31 @@ TRANSLATE_SENTENCES_MAX_ITEMS = 128
 TRANSLATE_SENTENCES_MAX_CHARS = 12_000
 # The app asks for a whole chapter's sentences ahead of time whenever a chapter
 # is opened (services/chapterTranslations.js), about 100 per request, though
-# the reader only ever looks at a few of them. That was nearly all of the
-# Google Translate bill. Unless TRANSLATE_CHAPTERS_AHEAD is on, a request with
-# more sentences than TRANSLATE_ON_DEMAND_MAX_ITEMS is answered from the cache
-# only: sentences nobody has paid for yet come back null and nothing is sent
-# to Google. The app then asks for a sentence by itself when the reader opens
-# its translation (or listen mode reaches it), and that small request is
-# translated as before. Both are Railway service variables.
-TRANSLATE_CHAPTERS_AHEAD = (os.getenv("TRANSLATE_CHAPTERS_AHEAD") or "").strip().lower() in {"1", "true", "yes", "on"}
+# the reader only ever looks at a few of them. On Google Translate that was
+# nearly all of the bill; on Claude a chapter costs a fraction of a cent, so
+# TRANSLATE_CHAPTERS_AHEAD defaults to on when Claude translates and off when
+# Google does. While it is off, a request with more sentences than
+# TRANSLATE_ON_DEMAND_MAX_ITEMS is answered from the cache only: sentences
+# nobody has paid for yet come back null and nothing is sent anywhere. The app
+# then asks for a sentence by itself when the reader opens its translation (or
+# listen mode reaches it), and that small request is translated. Even while it
+# is on, a chapter fetched ahead never falls back to Google when Claude fails.
+# All are Railway service variables.
+def chapters_ahead_setting(value: str | None, claude_translation: bool) -> bool:
+    """TRANSLATE_CHAPTERS_AHEAD: on/off when set, else on exactly when Claude translates."""
+    value = (value or "").strip().lower()
+    if not value:
+        return claude_translation
+    return value in {"1", "true", "yes", "on"}
+
+
+TRANSLATE_CHAPTERS_AHEAD = chapters_ahead_setting(os.getenv("TRANSLATE_CHAPTERS_AHEAD"), CLAUDE_TRANSLATION)
 TRANSLATE_ON_DEMAND_MAX_ITEMS = parse_positive_int_env(os.getenv("TRANSLATE_ON_DEMAND_MAX_ITEMS"), 8)
+# Per Claude call: a chapter fetched ahead can wait (its chunks run side by side,
+# well inside the app's 45 s); a few sentences a reader opened need Google's
+# turn soon if Claude stalls.
+AHEAD_CLAUDE_TIMEOUT_SECONDS = 30.0
+ON_DEMAND_CLAUDE_TIMEOUT_SECONDS = 6.0
 
 
 @app.post("/translate_sentences/")
@@ -4115,16 +4212,17 @@ async def translate_sentences(payload: dict, auth: dict[str, Any] = Depends(veri
         return {"translations": [text if source == target and text else None for text in cleaned]}
 
     keys = [translate_cache_key(text, source, target) if text else None for text in cleaned]
+    ahead = sum(1 for text in cleaned if text) > TRANSLATE_ON_DEMAND_MAX_ITEMS
 
     # A chapter fetched ahead: what is already cached, nothing new (see
     # TRANSLATE_CHAPTERS_AHEAD above). It costs nothing, so it is not counted
     # against the reader's daily quota either.
-    if not TRANSLATE_CHAPTERS_AHEAD and sum(1 for text in cleaned if text) > TRANSLATE_ON_DEMAND_MAX_ITEMS:
+    if not TRANSLATE_CHAPTERS_AHEAD and ahead:
         cached = await asyncio.to_thread(_translate_cache_get_many, [key for key in keys if key])
         return {"translations": [cached.get(key) if key else None for key in keys]}
 
     await enforce_daily_quota(auth)
-    if not TRANSLATION_PROVIDERS:
+    if not TRANSLATION_PROVIDERS and not CLAUDE_TRANSLATION:
         raise ApiError(500, "service_unavailable", "No translation provider configured on server")
 
     cached = await asyncio.to_thread(_translate_cache_get_many, [key for key in keys if key])
@@ -4135,30 +4233,7 @@ async def translate_sentences(payload: dict, auth: dict[str, Any] = Depends(veri
         text for text, result in zip(cleaned, results) if text and result is None
     ))
     if missing:
-        if not await reserve_translate_chars(sum(len(text) for text in missing)):
-            raise ApiError(
-                503,
-                "translate_budget_exhausted",
-                "Translation is resting for today. Please try again tomorrow.",
-            )
-        try:
-            async with httpx.AsyncClient() as client:
-                fresh = await translate_texts(
-                    client,
-                    TRANSLATION_PROVIDERS,
-                    missing,
-                    source=source,
-                    target=target,
-                    timeout=30.0,
-                )
-        except TranslationError as error:
-            if error.timed_out:
-                raise ApiError(504, "translate_timeout", "Google Translate request timed out")
-            raise ApiError(502, "translate_failed", "Google Translate request failed")
-        fresh_by_text = {}
-        for text, translated in zip(missing, fresh):
-            if translated:
-                fresh_by_text[text] = translated
+        fresh_by_text = await _translate_missing_sentences(missing, source, target, ahead=ahead)
         await cache_translations(
             [(translate_cache_key(text, source, target), translated) for text, translated in fresh_by_text.items()]
         )
@@ -4168,6 +4243,57 @@ async def translate_sentences(payload: dict, auth: dict[str, Any] = Depends(veri
         ]
 
     return {"translations": results}
+
+
+async def _translate_missing_sentences(missing: list[str], source: str, target: str, *, ahead: bool) -> dict[str, str]:
+    """Translations for the distinct uncached sentences of a /translate_sentences/
+    request: Claude first, then Google for what Claude left, except for a chapter
+    fetched ahead while Claude is the engine (what it leaves waits until a reader
+    opens it, so Google is never paid for sentences nobody looks at). Raises the
+    endpoint's coded errors only when nothing at all was translated."""
+    fresh: dict[str, str] = {}
+    claude = await claude_translations(
+        missing,
+        source,
+        target,
+        timeout=AHEAD_CLAUDE_TIMEOUT_SECONDS if ahead else ON_DEMAND_CLAUDE_TIMEOUT_SECONDS,
+        retries=ANTHROPIC_MAX_RETRIES if ahead else 0,
+    )
+    fresh.update({text: value for text, value in zip(missing, claude) if value})
+    left = [text for text in missing if text not in fresh]
+    if not left:
+        return fresh
+    if (ahead and CLAUDE_TRANSLATION) or not TRANSLATION_PROVIDERS:
+        if not fresh and not ahead:
+            raise ApiError(502, "translate_failed", "Translation request failed")
+        return fresh
+
+    if not await reserve_translate_chars(sum(len(text) for text in left)):
+        if fresh:
+            return fresh
+        raise ApiError(
+            503,
+            "translate_budget_exhausted",
+            "Translation is resting for today. Please try again tomorrow.",
+        )
+    try:
+        async with httpx.AsyncClient() as client:
+            google = await translate_texts(
+                client,
+                TRANSLATION_PROVIDERS,
+                left,
+                source=source,
+                target=target,
+                timeout=30.0,
+            )
+    except TranslationError as error:
+        if fresh:
+            return fresh
+        if error.timed_out:
+            raise ApiError(504, "translate_timeout", "Translation request timed out")
+        raise ApiError(502, "translate_failed", "Translation request failed")
+    fresh.update({text: value for text, value in zip(left, google) if value})
+    return fresh
 
 
 # ─── Content translation (bundled English content -> interface language) ─────
