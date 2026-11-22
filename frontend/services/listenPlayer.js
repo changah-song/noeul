@@ -9,12 +9,8 @@ import { listenDelay } from './listenDelay';
 // sequence to finish before stepping the focus beam to the next sentence.
 //
 // The engine is free and works offline; the voice is whatever the phone has
-// installed for the language (Samsung or Google TTS on a Galaxy).
-//
-// English can also be read by an online voice (Juno, below): the backend makes
-// the audio a sentence at a time and services/cloudVoice.js plays it. When
-// that fails (no network, server down) the sentence is read by the phone's
-// voice instead, so listening never stops for it.
+// installed for the language (Samsung or Google TTS on a Galaxy). Nothing here
+// touches the network.
 
 // BCP-47 locale the engine understands for each language code the app uses.
 const VOICE_LOCALES = {
@@ -48,35 +44,16 @@ export const voiceLocaleFor = (code) => {
   return VOICE_LOCALES[lower.split('-')[0]] || 'en-US';
 };
 
-// Online voices are saved in the listen prefs like any other voice id, told
-// apart by this prefix; the rest of the id is the backend's voice name.
-export const CLOUD_VOICE_PREFIX = 'cloud:';
-export const isCloudVoice = (voiceId) => (
-  typeof voiceId === 'string' && voiceId.startsWith(CLOUD_VOICE_PREFIX)
+// The voices saved in the listen prefs, one id per locale. Ids the app's
+// former online voice left behind ("cloud:juno") are dropped, so those
+// readers go back to the phone's default voice.
+export const savedVoices = (voices) => (
+  voices && typeof voices === 'object'
+    ? Object.fromEntries(
+      Object.entries(voices).filter(([, id]) => typeof id === 'string' && id && !id.startsWith('cloud:'))
+    )
+    : {}
 );
-// Juno is Underdog Woof, an English-only model. Its licence (section 4) asks
-// for "Voice by Underdog Woof", linked to underdog.ai, wherever the voice is
-// offered or played: the voice picker and the listen bar show it. The words
-// are the licence's own, so they are not translated.
-export const JUNO_VOICE_ID = `${CLOUD_VOICE_PREFIX}juno`;
-const CLOUD_VOICES = [
-  {
-    id: JUNO_VOICE_ID,
-    name: 'Juno',
-    language: 'en',
-    credit: 'Voice by Underdog Woof',
-    creditUrl: 'https://underdog.ai',
-  },
-];
-// The online voice `voiceId` names, when it can read `locale`.
-export const cloudVoiceFor = (voiceId, locale) => (
-  isCloudVoice(voiceId) ? cloudVoicesFor(locale).find((voice) => voice.id === voiceId) || null : null
-);
-// The online voices that can read `locale`.
-export const cloudVoicesFor = (locale) => {
-  const language = String(locale || '').replace(/_/g, '-').split('-')[0].toLowerCase();
-  return CLOUD_VOICES.filter((voice) => voice.language === language);
-};
 
 // Playback rates offered in the listen bar; 1 is the engine's normal speed.
 export const LISTEN_RATES = [0.8, 1, 1.2, 1.5];
@@ -201,17 +178,7 @@ export const isImplausiblyFast = (utterance, elapsedMs) => {
 
 // `delay(ms)` times the silent gaps and engine timeouts. The default keeps
 // time with the screen off (services/listenDelay.js); a JS setTimeout does not.
-// `cloud` plays the online voices ({ speak, prefetch, stop }); by default it
-// is made from services/cloudVoice.js the first time one is used.
-export const createListenPlayer = ({ tts = Tts, now = Date.now, delay = listenDelay, cloud = null } = {}) => {
-  let cloudSpeaker = cloud;
-  const getCloud = () => {
-    if (!cloudSpeaker) {
-      // eslint-disable-next-line global-require
-      cloudSpeaker = require('./cloudVoice').createCloudSpeaker();
-    }
-    return cloudSpeaker;
-  };
+export const createListenPlayer = ({ tts = Tts, now = Date.now, delay = listenDelay } = {}) => {
   let session = 0;
   let currentId = null;
   let resolveCurrent = null;
@@ -295,24 +262,7 @@ export const createListenPlayer = ({ tts = Tts, now = Date.now, delay = listenDe
   const speakOne = async ({ text, locale, rate, voice, pitch, onProgress: progress }, mySession) => {
     const utterance = String(text || '').trim();
     if (!utterance) return 'finish';
-    let phoneVoice = voice;
-    if (isCloudVoice(voice)) {
-      let outcome = 'error';
-      try {
-        outcome = await getCloud().speak({
-          text: utterance,
-          voiceName: voice.slice(CLOUD_VOICE_PREFIX.length),
-          rate,
-        });
-      } catch {
-        outcome = 'error';
-      }
-      if (mySession !== session) return 'cancel';
-      if (outcome !== 'error') return outcome;
-      // No audio from the server: the phone's default voice reads this one.
-      phoneVoice = null;
-    }
-    await prepare(locale, rate, phoneVoice, pitch);
+    await prepare(locale, rate, voice, pitch);
     if (mySession !== session) return 'cancel';
     lastEndedId = null;
     lastEndedWith = null;
@@ -365,11 +315,6 @@ export const createListenPlayer = ({ tts = Tts, now = Date.now, delay = listenDe
     } catch {
       // The engine may not be bound yet; nothing to stop then.
     }
-    try {
-      cloudSpeaker?.stop();
-    } catch {
-      // Nothing was playing.
-    }
     if (resolve) resolve('cancel');
   };
 
@@ -393,20 +338,6 @@ export const createListenPlayer = ({ tts = Tts, now = Date.now, delay = listenDe
         if (outcome === 'error') return 'error';
       }
       return mySession === session ? 'done' : 'stopped';
-    },
-
-    // Fetch the audio for items an online voice will read soon (the next
-    // sentence), so it starts without a gap. Phone voices need nothing.
-    prefetch(items = []) {
-      for (const item of items) {
-        const utterance = String(item?.text || '').trim();
-        if (!utterance || !isCloudVoice(item?.voice)) continue;
-        try {
-          getCloud().prefetch(utterance, item.voice.slice(CLOUD_VOICE_PREFIX.length));
-        } catch {
-          // Fetched when it is spoken instead.
-        }
-      }
     },
 
     stop() {

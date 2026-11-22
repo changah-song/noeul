@@ -9,7 +9,6 @@ import hashlib
 import unicodedata
 import ssl
 import httpx
-import threading
 import time
 import logging
 import asyncio
@@ -105,7 +104,6 @@ from writing_assessment import (
 )
 import limits
 import observability
-import woof_tts
 from limits import (
     BodySizeLimitMiddleware,
     ENTRY_BODY_HARD_MAX_CHARS,
@@ -3664,52 +3662,6 @@ async def romanize_text(text: str, auth: dict[str, Any] = Depends(verify_supabas
     return {"romanization": await asyncio.to_thread(romanize_korean_text, normalized)}
 
 
-@app.get("/speak/")
-async def speak_text(
-    text: str,
-    voice: str = woof_tts.DEFAULT_VOICE,
-    auth: dict[str, Any] = Depends(verify_supabase_token),
-):
-    """Listen mode's natural English voice (woof_tts.py): one sentence in,
-    MP3 audio out (WAV when the MP3 encoder is not installed). The same
-    sentence is synthesized once and served from the cache afterwards."""
-    cleaned = woof_tts.clean_text(text)
-    voice_name = woof_tts.normalize_voice(voice)
-    if not cleaned or not voice_name:
-        raise ApiError(400, "invalid_request", "text and a known voice are required")
-    if len(cleaned) > woof_tts.MAX_TEXT_CHARS:
-        raise ApiError(
-            413,
-            "text_too_long",
-            f"text exceeds {woof_tts.MAX_TEXT_CHARS} characters",
-            {"limit": woof_tts.MAX_TEXT_CHARS},
-        )
-
-    audio = await asyncio.to_thread(woof_tts.cached_audio, cleaned, voice_name)
-    if audio is None:
-        if not woof_tts.available():
-            raise ApiError(503, "service_unavailable", "The Woof voice model is not installed on the backend")
-        # Only text the server has to synthesize counts against the day.
-        allowed = await asyncio.to_thread(
-            _usage_check_and_increment, auth["user_id"], "speech", woof_tts.DAILY_CHARS, len(cleaned)
-        )
-        if not allowed:
-            raise ApiError(429, "daily_quota_exceeded", "Daily speech quota exceeded")
-        started = time.perf_counter()
-        audio = await asyncio.to_thread(woof_tts.synthesize, cleaned, voice_name)
-        print(
-            f"[main] /speak/ | voice={voice_name} | chars={len(cleaned)} | "
-            f"bytes={len(audio[0]):,} | {time.perf_counter() - started:.2f}s"
-        )
-
-    data, media_type = audio
-    return Response(
-        content=data,
-        media_type=media_type,
-        headers={"Cache-Control": "private, max-age=31536000, immutable"},
-    )
-
-
 async def _translate_one_cached(
     text: str,
     source: str,
@@ -6391,7 +6343,3 @@ def run_startup_db_setup():
 
 
 run_startup_db_setup()
-# The listen voice loads in the background, so the first reader after a
-# deploy does not wait for it; the server answers as usual meanwhile. Each
-# worker process has its own model and warms its own.
-threading.Thread(target=woof_tts.warm_up, name="woof-warm-up", daemon=True).start()

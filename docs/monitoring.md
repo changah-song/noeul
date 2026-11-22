@@ -86,7 +86,7 @@ the uptime monitor shows requests queueing behind slow ones.
 
 - Each worker loads its own copy of the language models: about 190 MB when
   idle and about 700 MB once it has served Korean, English and Chinese text
-  (measured on a Mac; the Woof voice adds to it). Check the service's memory
+  (measured on a Mac). Check the service's memory
   graph before raising the number.
 - Quotas, AI spend and the lookup caches live in `cache.db`, which the workers
   share. The KRDICT cooldown and the song-search cache are kept per worker.
