@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Text, TouchableOpacity, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
-import { fontFamilies, useTheme } from '../../theme';
+import { fontFamilies, radii, useTheme } from '../../theme';
 import { useTranslation } from '../../hooks/useTranslation';
 import { formatNumber } from '../../services/interfaceLanguage';
 import { fetchCloudLevelHistory } from '../../services/abilityLogCloudSync';
@@ -173,31 +173,38 @@ const LevelCard = ({ ownerId, profileId, language, userId, onAdjust }) => {
                 </View>
             ) : null}
 
-            <Text style={styles.levelName}>{placeName(place)}</Text>
-            <Text style={styles.estimate}>
-                {described.beginner?.estimate
-                    ? t('level.beginnerWords', { words: formatNumber(beginnerWords(language)) })
-                    : t('level.words', {
-                        words: formatNumber(described.kind === 'words' ? described.estimate : Math.round(words)),
-                    })}
-            </Text>
-            {rangeLine ? <Text style={styles.range}>{rangeLine}</Text> : null}
-            <Text style={styles.note}>
+            {/* About how many words, with the level as a quiet label on the right. */}
+            <View style={styles.headRow}>
+                <Text style={styles.estimate}>
+                    {described.beginner?.estimate
+                        ? t('level.beginnerWords', { words: formatNumber(beginnerWords(language)) })
+                        : t('level.words', {
+                            words: formatNumber(described.kind === 'words' ? described.estimate : Math.round(words)),
+                        })}
+                </Text>
+                <Text style={styles.levelName} numberOfLines={1}>{placeName(place)}</Text>
+            </View>
+            {rangeLine ? <Text style={styles.meta}>{rangeLine}</Text> : null}
+            <Text style={styles.meta}>
                 {events < EARLY_EVENTS ? t('level.early') : t('level.basedOn', { count: formatNumber(events) })}
             </Text>
 
             {startDescribed ? (
-                <Text style={styles.started}>{t('level.started', { level: wordsText(startDescribed) })}</Text>
+                <Text style={styles.meta}>{t('level.started', { level: wordsText(startDescribed) })}</Text>
             ) : null}
             {onAdjust ? (
-                <TouchableOpacity
-                    onPress={onAdjust}
-                    style={styles.adjust}
-                    hitSlop={{ top: 8, bottom: 8 }}
-                    accessibilityRole="button"
-                >
-                    <Text style={styles.adjustText}>{t('level.adjust')}</Text>
-                </TouchableOpacity>
+                <>
+                    <View style={styles.hairline} />
+                    <TouchableOpacity
+                        onPress={onAdjust}
+                        style={styles.adjust}
+                        activeOpacity={0.7}
+                        accessibilityRole="button"
+                    >
+                        <Text style={styles.adjustText} numberOfLines={1}>{t('level.adjust')}</Text>
+                        <Feather name="chevron-right" size={17} color={colors.textTertiary} />
+                    </TouchableOpacity>
+                </>
             ) : null}
         </View>
     );
@@ -205,20 +212,20 @@ const LevelCard = ({ ownerId, profileId, language, userId, onAdjust }) => {
 
 const createStyles = (colors) => ({
     card: {
-        marginHorizontal: 16,
-        borderRadius: 18,
+        marginHorizontal: 24,
+        borderRadius: radii.control,
         borderWidth: 1,
-        borderColor: colors.border,
+        borderColor: colors.divider,
         backgroundColor: colors.surface,
-        paddingHorizontal: 18,
+        paddingHorizontal: 16,
         paddingTop: 16,
-        paddingBottom: 14,
+        paddingBottom: 4,
     },
     celebration: {
         marginBottom: 14,
         paddingVertical: 12,
         paddingHorizontal: 14,
-        borderRadius: 14,
+        borderRadius: radii.control,
         backgroundColor: colors.text,
         flexDirection: 'row',
         alignItems: 'center',
@@ -231,48 +238,52 @@ const createStyles = (colors) => ({
         lineHeight: 20,
         color: colors.surface,
     },
-    levelName: {
-        fontFamily: fontFamilies.sansMedium,
-        fontSize: 13.5,
-        lineHeight: 18,
-        color: colors.textSecondary,
+    headRow: {
+        flexDirection: 'row',
+        alignItems: 'baseline',
+        justifyContent: 'space-between',
+        gap: 12,
     },
     estimate: {
-        marginTop: 2,
+        flexShrink: 1,
         fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 22,
-        lineHeight: 28,
+        fontSize: 20,
+        lineHeight: 26,
         color: colors.text,
     },
-    range: {
-        marginTop: 2,
+    levelName: {
+        flexShrink: 0,
+        maxWidth: '50%',
         fontFamily: fontFamilies.sansRegular,
-        fontSize: 14,
-        lineHeight: 19,
-        color: colors.textSecondary,
-    },
-    note: {
-        marginTop: 2,
-        fontFamily: fontFamilies.sansRegular,
-        fontSize: 12.5,
-        lineHeight: 17,
+        fontSize: 13,
+        lineHeight: 18,
         color: colors.textTertiary,
     },
-    started: {
-        marginTop: 12,
+    meta: {
+        marginTop: 4,
         fontFamily: fontFamilies.sansRegular,
-        fontSize: 13.5,
-        color: colors.textSecondary,
+        fontSize: 13,
+        lineHeight: 18,
+        color: colors.textTertiary,
+    },
+    hairline: {
+        height: 1,
+        marginTop: 14,
+        backgroundColor: colors.divider,
     },
     adjust: {
-        marginTop: 10,
-        alignSelf: 'flex-start',
+        minHeight: 44,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 8,
     },
     adjustText: {
-        fontFamily: fontFamilies.sansMedium,
-        fontSize: 13.5,
-        color: colors.textSecondary,
-        textDecorationLine: 'underline',
+        flex: 1,
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 14,
+        lineHeight: 20,
+        color: colors.text,
     },
 });
 

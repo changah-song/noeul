@@ -299,15 +299,6 @@ const formatLocalizedDate = (date, language, month) => (
   formatDate(date, { month, day: 'numeric' }, language)
 );
 
-const formatShortDate = (value, fallback = '', language = undefined) => {
-  const timestamp = new Date(value).getTime();
-  if (!Number.isFinite(timestamp)) {
-    return fallback;
-  }
-
-  return formatLocalizedDate(new Date(timestamp), language, 'short') || fallback;
-};
-
 const formatLongDate = (value, fallback = '', language = undefined) => {
   const timestamp = new Date(value).getTime();
   if (!Number.isFinite(timestamp)) {
@@ -728,16 +719,18 @@ const VocabularyRow = ({
   selectionMode = false,
   selected = false,
   dueLabel = '',
+  // The Learning and Long-term tabs: a smaller word, the meaning a shade
+  // quieter, no source line.
+  queue = false,
   // Swipe rows: the meaning stays hidden (this opacity) until the row is
   // touched, and the swipe row supplies the press handlers.
   definitionOpacity = null,
   pressableProps = null,
 }) => {
-  const { t, language } = useTranslation();
+  const { t } = useTranslation();
   const { colors, styles } = useLearnTheme();
   const seenCount = getSeenCount(word);
   const source = getSourceLabel(word, t);
-  const lastSaw = formatShortDate(getLastSawDate(word), t('learn.notSeenDate'), language);
   const seenLabel = seenCount === 1
     ? t('learn.rowSeenOnce')
     : t('learn.rowSeenTimes', { count: seenCount });
@@ -750,6 +743,7 @@ const VocabularyRow = ({
       {...pressableProps}
       style={({ pressed }) => [
         styles.wordRow,
+        queue && styles.wordRowQueue,
         pressableProps ? styles.wordRowSwipe : (pressed && styles.wordRowPressed),
         selected && styles.wordRowSelected,
       ]}
@@ -761,8 +755,10 @@ const VocabularyRow = ({
       ) : null}
       <View style={styles.wordCopy}>
         <View style={styles.wordTitleLine}>
-          <Text numberOfLines={1} style={styles.wordText}>{word.word}</Text>
-          {word.hanja ? <Text numberOfLines={1} style={styles.wordHanja}>{word.hanja}</Text> : null}
+          <Text numberOfLines={1} style={[styles.wordText, queue && styles.wordTextQueue]}>{word.word}</Text>
+          {word.hanja ? (
+            <Text numberOfLines={1} style={[styles.wordHanja, queue && styles.wordHanjaQueue]}>{word.hanja}</Text>
+          ) : null}
           {word.is_favorite ? <MaterialIcons name="star" size={15} color={colors.inkSlate} /> : null}
         </View>
         {definitionOpacity ? (
@@ -792,11 +788,15 @@ const VocabularyRow = ({
             </Animated.Text>
           </View>
         ) : (
-          <Text numberOfLines={1} style={styles.wordDefinition}>{word.def || t('learn.noDefinition')}</Text>
+          <Text numberOfLines={1} style={[styles.wordDefinition, queue && styles.wordDefinitionQueue]}>
+            {word.def || t('learn.noDefinition')}
+          </Text>
         )}
-        <Text numberOfLines={1} style={styles.wordMetaText}>
-          {[source, seenLabel, lastSaw].filter(Boolean).join(' · ')}
-        </Text>
+        {queue ? null : (
+          <Text numberOfLines={1} style={styles.wordMetaText}>
+            {[source, seenLabel].filter(Boolean).join(' · ')}
+          </Text>
+        )}
       </View>
 
       <View style={styles.encounterSummary}>
@@ -885,6 +885,7 @@ const SegmentedTabs = ({ tabs, value, onChange, pulse = null }) => {
               ]}
             >
               {tab.label}
+              {tab.count ? <Text style={styles.mainTabCount}>{` ${tab.count}`}</Text> : null}
             </Animated.Text>
           </TouchableOpacity>
         );
@@ -1230,7 +1231,7 @@ const DetailHanjaPanel = ({
                     : t('hanja.markKnown', { word: relatedWord.korean })}
                   accessibilityState={{ selected: known }}
                   onPress={() => handleKnownPress(relatedWord)}
-                  hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                  hitSlop={{ top: 7, bottom: 7, left: 6, right: 6 }}
                   style={[styles.knownPill, known && styles.knownPillActive]}
                 >
                   {known ? <Feather name="check" size={13} color={colors.textSecondary} /> : null}
@@ -1315,7 +1316,7 @@ const WordDetailModal = ({
           onPress={onClose}
           style={styles.headerIconButton}
         >
-          <Feather name="chevron-left" size={24} color={colors.inkSlate} />
+          <Feather name="chevron-left" size={22} color={colors.inkSlate} />
         </TouchableOpacity>
         <View style={styles.detailHeaderActions}>
           {onDelete ? (
@@ -1325,7 +1326,7 @@ const WordDetailModal = ({
               onPress={onDelete}
               style={styles.headerIconButton}
             >
-              <Feather name="trash-2" size={21} color={colors.inkSlate} />
+              <Feather name="trash-2" size={22} color={colors.inkSlate} />
             </TouchableOpacity>
           ) : null}
           <TouchableOpacity
@@ -1337,7 +1338,7 @@ const WordDetailModal = ({
           >
             <MaterialIcons
               name={word.is_favorite ? 'star' : 'star-outline'}
-              size={24}
+              size={22}
               color={colors.inkSlate}
             />
           </TouchableOpacity>
@@ -1374,8 +1375,8 @@ const WordDetailModal = ({
                 })}
               </View>
             ) : null}
-            {pronunciation ? <Text selectable style={styles.detailPronunciation}>{pronunciation}</Text> : null}
           </View>
+          {pronunciation ? <Text selectable style={styles.detailPronunciation}>{pronunciation}</Text> : null}
           <View style={styles.definitionBlock}>
             {partOfSpeech ? (
               <View style={styles.posBadge}>
@@ -1386,14 +1387,15 @@ const WordDetailModal = ({
           </View>
         </View>
 
-        <View style={styles.detailStatsGrid}>
-          <View style={styles.detailStatCard}>
+        <View style={styles.detailStatsCard}>
+          <View style={styles.detailStat}>
             <Text style={styles.detailStatLabel}>{t('learn.seenLabel')}</Text>
-            <Text style={styles.detailStatValue}>{seenValue}</Text>
+            <Text numberOfLines={1} style={styles.detailStatValue}>{seenValue}</Text>
           </View>
-          <View style={styles.detailStatCard}>
+          <View style={styles.detailStatDivider} />
+          <View style={styles.detailStat}>
             <Text style={styles.detailStatLabel}>{t('learn.nextReview')}</Text>
-            <Text style={styles.detailStatValue}>{nextReviewValue}</Text>
+            <Text numberOfLines={1} style={styles.detailStatValue}>{nextReviewValue}</Text>
           </View>
         </View>
 
@@ -2133,14 +2135,15 @@ const Learn = ({ navigation, user }) => {
   }
 
   const reviewCount = reviewDeck.length;
-  const tabLabel = (label, count) => (count > 0 ? `${label} ${formatNumber(count)}` : label);
+  // The count follows the label in the same weight, in the muted colour.
+  const tabLabel = (label, count) => ({ label, count: count > 0 ? formatNumber(count) : null });
   const todayLabel = capitalizeFirst(t('learn.when.today'));
   const tomorrowLabel = capitalizeFirst(t('learn.when.tomorrow'));
   const mainTabs = [
     // A word's path, left to right.
-    { key: 'saved', label: tabLabel(todayLabel, reviewCount) },
-    { key: 'learning', label: tabLabel(t('learn.stageLearningTab'), learningQueue.length) },
-    { key: 'longterm', label: tabLabel(t('learn.stageLongTermTab'), longTermQueue.length) },
+    { key: 'saved', ...tabLabel(todayLabel, reviewCount) },
+    { key: 'learning', ...tabLabel(t('learn.stageLearningTab'), learningQueue.length) },
+    { key: 'longterm', ...tabLabel(t('learn.stageLongTermTab'), longTermQueue.length) },
   ];
   const stageLabelKeys = { learning: 'learn.stageLearningTab', longterm: 'learn.stageLongTermTab' };
   // Today: words back for another look first, then ones never reviewed.
@@ -2201,7 +2204,7 @@ const Learn = ({ navigation, user }) => {
       {isSelectionMode ? (
         <View style={styles.selectionBar}>
           <TouchableOpacity onPress={clearWordSelection} style={styles.selectionBarButton}>
-            <Feather name="x" size={17} color={colors.textMuted} />
+            <Feather name="x" size={18} color={colors.textSecondary} />
             <Text style={styles.selectionBarButtonText}>{t('common.cancel')}</Text>
           </TouchableOpacity>
 
@@ -2210,7 +2213,7 @@ const Learn = ({ navigation, user }) => {
           </Text>
 
           <TouchableOpacity onPress={handleBulkDelete} style={[styles.selectionBarButton, styles.selectionDeleteButton]}>
-            <Feather name="trash-2" size={17} color={colors.white} />
+            <Feather name="trash-2" size={17} color={colors.text} />
             <Text style={styles.selectionDeleteText}>{t('common.delete')}</Text>
           </TouchableOpacity>
         </View>
@@ -2298,6 +2301,7 @@ const Learn = ({ navigation, user }) => {
                   key={getWordKey(word)}
                   word={word}
                   dueLabel={whenLabel}
+                  queue
                   selectionMode
                   selected={selectedWordKeys.has(getWordKey(word))}
                   onPress={() => toggleWordSelection(word)}
@@ -2367,8 +2371,11 @@ const createStyles = (colors) => StyleSheet.create({
   swipeLegend: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingTop: 10,
+    alignItems: 'center',
+    height: 44,
+    marginHorizontal: 20,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.divider,
   },
   swipeLegendSide: {
     flexDirection: 'row',
@@ -2376,40 +2383,44 @@ const createStyles = (colors) => StyleSheet.create({
     gap: 6,
   },
   swipeLegendText: {
-    fontFamily: fontFamilies.sansMedium,
+    fontFamily: fontFamilies.sansRegular,
     fontSize: 13,
     lineHeight: 18,
-    color: colors.textMuted,
+    color: colors.textTertiary,
   },
   sectionHeader: {
     flexDirection: 'row',
     alignItems: 'baseline',
+    justifyContent: 'space-between',
     gap: 8,
     paddingHorizontal: 20,
-    paddingTop: 22,
+    paddingTop: 16,
     paddingBottom: 2,
   },
   sectionTitle: {
+    flexShrink: 1,
     fontFamily: fontFamilies.sansSemiBold,
     fontSize: 13,
     lineHeight: 18,
-    color: colors.text,
+    color: colors.textTertiary,
   },
   sectionCount: {
     fontFamily: fontFamilies.sansRegular,
     fontSize: 13,
     lineHeight: 18,
-    color: colors.textMuted,
+    color: colors.textTertiary,
     fontVariant: ['tabular-nums'],
   },
   stageCaption: {
-    paddingHorizontal: 20,
-    paddingTop: 12,
-    paddingBottom: 12,
+    marginHorizontal: 20,
+    paddingTop: 14,
+    paddingBottom: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.divider,
     fontFamily: fontFamilies.sansRegular,
-    fontSize: 14,
-    lineHeight: 20,
-    color: colors.textMuted,
+    fontSize: 13,
+    lineHeight: 18,
+    color: colors.textTertiary,
   },
   emptyAction: {
     marginTop: 14,
@@ -2571,21 +2582,21 @@ const createStyles = (colors) => StyleSheet.create({
     top: SEGMENT_TRACK_PADDING,
     bottom: SEGMENT_TRACK_PADDING,
     left: SEGMENT_TRACK_PADDING,
-    borderRadius: 10,
-    backgroundColor: colors.surface,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
+    borderRadius: 9,
+    backgroundColor: colors.segmentChip,
     shadowColor: '#1b1c1c',
-    shadowOpacity: 0.12,
-    shadowRadius: 3,
+    shadowOpacity: 0.08,
+    shadowRadius: 2,
     shadowOffset: { width: 0, height: 1 },
+    elevation: 1,
   },
   mainTab: {
     flex: 1,
-    height: 36,
+    height: 34,
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 10,
+    borderRadius: 9,
+    paddingHorizontal: 6,
   },
   mainTabText: {
     fontFamily: fontFamilies.sansMedium,
@@ -2595,6 +2606,9 @@ const createStyles = (colors) => StyleSheet.create({
   mainTabTextActive: {
     fontFamily: fontFamilies.sansSemiBold,
     color: colors.text,
+  },
+  mainTabCount: {
+    color: colors.textTertiary,
   },
   filters: {
     marginHorizontal: LEARN_SIDE_PADDING,
@@ -2634,46 +2648,52 @@ const createStyles = (colors) => StyleSheet.create({
   selectionBar: {
     marginHorizontal: LEARN_SIDE_PADDING,
     marginTop: 10,
-    minHeight: 44,
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: colors.border,
+    borderColor: colors.divider,
     backgroundColor: colors.surface,
-    paddingHorizontal: spacing.sm,
+    paddingVertical: 6,
+    paddingLeft: 6,
+    paddingRight: 6,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: spacing.sm,
   },
   selectionBarButton: {
-    minHeight: 32,
+    minHeight: 44,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: spacing.xs,
-    paddingHorizontal: 12,
-    borderRadius: radii.pill,
-    backgroundColor: colors.surfaceMuted,
+    gap: 6,
+    paddingHorizontal: 10,
   },
   selectionBarButtonText: {
-    fontFamily: fontFamilies.sansSemiBold,
-    fontSize: 13,
-    color: colors.textMuted,
+    fontFamily: fontFamilies.sansMedium,
+    fontSize: 15,
+    color: colors.textSecondary,
   },
   selectionCount: {
     flex: 1,
     textAlign: 'center',
     fontFamily: fontFamilies.sansSemiBold,
-    fontSize: 13,
+    fontSize: 15,
     color: colors.text,
+    fontVariant: ['tabular-nums'],
   },
+  // A compact secondary button.
   selectionDeleteButton: {
-    backgroundColor: colors.inkSlate,
+    height: 46,
+    paddingHorizontal: 16,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
   },
   selectionDeleteText: {
     fontFamily: fontFamilies.sansSemiBold,
-    fontSize: 13,
-    color: colors.white,
+    fontSize: 15,
+    color: colors.text,
   },
   list: {
     marginTop: 6,
@@ -2682,10 +2702,14 @@ const createStyles = (colors) => StyleSheet.create({
   wordRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 14,
-    borderBottomWidth: 1,
+    minHeight: 84,
+    paddingVertical: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.divider,
     gap: 12,
+  },
+  wordRowQueue: {
+    minHeight: 76,
   },
   // Swipe rows run edge to edge so the colour behind them does too.
   wordRowSwipe: {
@@ -2714,26 +2738,32 @@ const createStyles = (colors) => StyleSheet.create({
   wordCopy: {
     flex: 1,
     minWidth: 0,
-    gap: 3,
   },
   wordTitleLine: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'baseline',
     gap: 8,
     minWidth: 0,
     flexWrap: 'wrap',
   },
   wordText: {
-    fontFamily: fontFamilies.krSerifSemiBold,
-    fontSize: 20,
+    fontFamily: fontFamilies.krSerifMedium,
+    fontSize: 21,
     lineHeight: 28,
     color: colors.text,
+  },
+  wordTextQueue: {
+    fontSize: 19,
+    lineHeight: 26,
   },
   wordHanja: {
     fontFamily: fontFamilies.krSerifRegular,
     fontSize: 14,
     lineHeight: 20,
     color: colors.textTertiary,
+  },
+  wordHanjaQueue: {
+    fontSize: 13,
   },
   badge: {
     borderRadius: 5,
@@ -2750,14 +2780,17 @@ const createStyles = (colors) => StyleSheet.create({
   wordDefinition: {
     fontFamily: fontFamilies.sansRegular,
     fontSize: 15,
-    lineHeight: 21,
+    lineHeight: 22,
+    color: colors.text,
+  },
+  wordDefinitionQueue: {
     color: colors.textSecondary,
   },
   wordDueText: {
-    fontFamily: fontFamilies.sansSemiBold,
-    fontSize: 12,
-    lineHeight: 16,
-    color: colors.textMuted,
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 13,
+    lineHeight: 18,
+    color: colors.textTertiary,
   },
   wordDefinitionSlot: {
     justifyContent: 'center',
@@ -2765,16 +2798,16 @@ const createStyles = (colors) => StyleSheet.create({
   wordDefinitionCover: {
     position: 'absolute',
     left: 0,
-    width: 112,
-    height: 9,
-    borderRadius: 5,
-    backgroundColor: colors.surfaceMuted,
+    width: 64,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: colors.divider,
   },
   wordMetaText: {
     fontFamily: fontFamilies.sansRegular,
-    fontSize: 12,
-    lineHeight: 16,
-    color: colors.textSubtle,
+    fontSize: 13,
+    lineHeight: 18,
+    color: colors.textTertiary,
   },
   encounterSummary: {
     alignItems: 'flex-end',
@@ -2784,18 +2817,18 @@ const createStyles = (colors) => StyleSheet.create({
   dotRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 3,
+    gap: 4,
   },
   encounterDot: {
     borderWidth: 1,
   },
   encounterDotFilled: {
-    backgroundColor: colors.inkSlate,
-    borderColor: colors.inkSlate,
+    backgroundColor: colors.text,
+    borderColor: colors.text,
   },
   encounterDotEmpty: {
     backgroundColor: colors.transparent,
-    borderColor: colors.borderStrong,
+    borderColor: colors.textSubtle,
   },
   emptyState: {
     marginTop: 40,
@@ -2917,22 +2950,23 @@ const createStyles = (colors) => StyleSheet.create({
     paddingHorizontal: 24,
     gap: 6,
   },
+  // The word and its hanja share one baseline.
   detailWordLine: {
     flexDirection: 'row',
-    alignItems: 'flex-end',
+    alignItems: 'baseline',
     columnGap: 12,
     flexWrap: 'wrap',
   },
   detailWord: {
-    fontFamily: fontFamilies.krSerifSemiBold,
-    fontSize: 42,
-    lineHeight: 56,
+    fontFamily: fontFamilies.krSerifMedium,
+    fontSize: 38,
+    lineHeight: 48,
     color: colors.text,
   },
   detailHanjaChars: {
     flexDirection: 'row',
+    alignItems: 'baseline',
     gap: 3,
-    marginBottom: 9,
   },
   detailHanjaCharButton: {
     alignItems: 'center',
@@ -2940,9 +2974,9 @@ const createStyles = (colors) => StyleSheet.create({
   },
   detailHanja: {
     fontFamily: fontFamilies.krSerifRegular,
-    fontSize: 22,
-    lineHeight: 28,
-    color: colors.textMuted,
+    fontSize: 20,
+    lineHeight: 26,
+    color: colors.textSecondary,
   },
   detailHanjaActive: {
     color: colors.text,
@@ -2959,66 +2993,74 @@ const createStyles = (colors) => StyleSheet.create({
     borderRadius: 1,
   },
   detailPronunciation: {
-    marginBottom: 12,
+    marginTop: -6,
     fontFamily: fontFamilies.sansRegular,
     fontStyle: 'italic',
     fontSize: 15,
-    lineHeight: 20,
+    lineHeight: 22,
     color: colors.textTertiary,
   },
   definitionBlock: {
+    marginTop: 6,
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: 10,
   },
   posBadge: {
-    marginTop: 4,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 6,
-    paddingHorizontal: 7,
-    paddingVertical: 2,
+    marginTop: 2,
+    height: 22,
+    justifyContent: 'center',
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    backgroundColor: colors.surfaceMuted,
   },
   posBadgeText: {
     fontFamily: fontFamilies.sansSemiBold,
     fontSize: 12,
     lineHeight: 16,
-    color: colors.textMuted,
+    color: colors.textSecondary,
   },
   detailDefinition: {
     flex: 1,
     minWidth: 0,
     fontFamily: fontFamilies.sansMedium,
-    fontSize: 20,
-    lineHeight: 28,
+    fontSize: 19,
+    lineHeight: 26,
     color: colors.text,
   },
-  detailStatsGrid: {
-    marginTop: 20,
+  // Seen and Next review in one card, split by a hairline.
+  detailStatsCard: {
+    marginTop: 22,
     marginHorizontal: 24,
+    minHeight: 72,
     flexDirection: 'row',
-    gap: 8,
-  },
-  detailStatCard: {
-    flex: 1,
+    alignItems: 'center',
     borderRadius: 14,
     borderWidth: 1,
     borderColor: colors.divider,
     backgroundColor: colors.surface,
+  },
+  detailStat: {
+    flex: 1,
+    minWidth: 0,
+    paddingHorizontal: 16,
     paddingVertical: 12,
-    paddingHorizontal: 14,
-    gap: 2,
+  },
+  detailStatDivider: {
+    width: 1,
+    height: 40,
+    backgroundColor: colors.divider,
   },
   detailStatLabel: {
     fontFamily: fontFamilies.sansRegular,
-    fontSize: 12,
-    lineHeight: 16,
+    fontSize: 13,
+    lineHeight: 18,
     color: colors.textTertiary,
   },
   detailStatValue: {
     fontFamily: fontFamilies.sansSemiBold,
-    fontSize: 20,
-    lineHeight: 27,
+    fontSize: 18,
+    lineHeight: 24,
     color: colors.text,
   },
   detailSectionTitle: {
@@ -3028,7 +3070,7 @@ const createStyles = (colors) => StyleSheet.create({
     color: colors.textTertiary,
   },
   contextSection: {
-    marginTop: 22,
+    marginTop: 24,
     paddingHorizontal: 24,
     gap: 8,
   },
@@ -3044,19 +3086,19 @@ const createStyles = (colors) => StyleSheet.create({
   contextSentenceMatch: {
     fontFamily: fontFamilies.krSerifSemiBold,
     textDecorationLine: 'underline',
-    textDecorationColor: colors.readerLevelUnderlineMid,
+    textDecorationColor: colors.text,
   },
   contextTranslation: {
     fontFamily: fontFamilies.sansRegular,
     fontSize: 14,
-    lineHeight: 20,
-    color: colors.textMuted,
+    lineHeight: 21,
+    color: colors.textSecondary,
   },
   contextAttribution: {
     fontFamily: fontFamilies.sansRegular,
-    fontSize: 12,
-    lineHeight: 16,
-    color: colors.textSubtle,
+    fontSize: 13,
+    lineHeight: 18,
+    color: colors.textTertiary,
   },
   emptyContext: {
     fontFamily: fontFamilies.sansRegular,
@@ -3065,13 +3107,15 @@ const createStyles = (colors) => StyleSheet.create({
     color: colors.textMuted,
   },
   detailHanjaPanel: {
-    marginHorizontal: LEARN_SIDE_PADDING,
-    marginTop: 22,
-    borderRadius: 18,
+    marginHorizontal: 24,
+    marginTop: 24,
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: colors.divider,
     backgroundColor: colors.surface,
-    padding: 16,
+    paddingTop: 14,
+    paddingHorizontal: 16,
+    paddingBottom: 6,
   },
   detailHanjaPanelHeader: {
     flexDirection: 'row',
@@ -3079,17 +3123,17 @@ const createStyles = (colors) => StyleSheet.create({
     gap: 12,
   },
   detailHanjaCharBox: {
-    width: 52,
-    height: 52,
-    borderRadius: 12,
+    width: 44,
+    height: 44,
+    borderRadius: 8,
     backgroundColor: colors.surfaceMuted,
     alignItems: 'center',
     justifyContent: 'center',
   },
   detailHanjaPanelCharacter: {
     fontFamily: fontFamilies.krSerifRegular,
-    fontSize: 30,
-    lineHeight: 38,
+    fontSize: 24,
+    lineHeight: 32,
     color: colors.text,
   },
   detailHanjaPanelCopy: {
@@ -3098,7 +3142,7 @@ const createStyles = (colors) => StyleSheet.create({
     gap: 1,
   },
   detailHanjaReading: {
-    fontFamily: fontFamilies.krSerifSemiBold,
+    fontFamily: fontFamilies.krSerifMedium,
     fontSize: 16,
     lineHeight: 22,
     color: colors.text,
@@ -3107,7 +3151,7 @@ const createStyles = (colors) => StyleSheet.create({
     fontFamily: fontFamilies.sansRegular,
     fontSize: 13,
     lineHeight: 18,
-    color: colors.textMuted,
+    color: colors.textTertiary,
   },
   detailHanjaPanelNav: {
     flexDirection: 'row',
@@ -3116,9 +3160,9 @@ const createStyles = (colors) => StyleSheet.create({
   },
   detailHanjaPanelCount: {
     fontFamily: fontFamilies.sansRegular,
-    fontSize: 12,
-    lineHeight: 16,
-    color: colors.textSubtle,
+    fontSize: 13,
+    lineHeight: 18,
+    color: colors.textTertiary,
     textAlign: 'center',
   },
   hanjaPanelArrow: {
@@ -3131,9 +3175,9 @@ const createStyles = (colors) => StyleSheet.create({
     opacity: 0.3,
   },
   detailHanjaDivider: {
-    height: 1,
+    height: StyleSheet.hairlineWidth,
     backgroundColor: colors.divider,
-    marginTop: 12,
+    marginTop: 14,
     marginBottom: 4,
   },
   hanjaPanelEmpty: {
@@ -3162,25 +3206,25 @@ const createStyles = (colors) => StyleSheet.create({
   },
   detailHanjaRelatedWord: {
     fontFamily: fontFamilies.krSerifRegular,
-    fontSize: 16,
-    lineHeight: 22,
+    fontSize: 15,
+    lineHeight: 21,
     color: colors.text,
   },
   detailHanjaRelatedHanja: {
     fontFamily: fontFamilies.krSerifRegular,
     fontSize: 14,
-    color: colors.textTertiary,
+    color: colors.textSecondary,
   },
   detailHanjaRelatedMeaning: {
     fontFamily: fontFamilies.sansRegular,
     fontSize: 13,
     lineHeight: 18,
-    color: colors.textMuted,
+    color: colors.textTertiary,
   },
   knownPill: {
-    height: 32,
+    height: 30,
     paddingHorizontal: 12,
-    borderRadius: 16,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: colors.surface,
@@ -3195,8 +3239,8 @@ const createStyles = (colors) => StyleSheet.create({
   },
   knownPillText: {
     fontFamily: fontFamilies.sansSemiBold,
-    fontSize: 12,
-    color: colors.textSecondary,
+    fontSize: 13,
+    color: colors.text,
   },
   detailHanjaSeeMoreButton: {
     minHeight: 40,

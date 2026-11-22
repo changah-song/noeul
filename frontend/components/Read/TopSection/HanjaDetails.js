@@ -554,7 +554,7 @@ const createStyles = (colors) => StyleSheet.create({
     },
     card: {
         borderWidth: 1,
-        borderRadius: 16,
+        borderRadius: 14,
         paddingHorizontal: 14,
         paddingVertical: 12,
     },
@@ -564,17 +564,17 @@ const createStyles = (colors) => StyleSheet.create({
         gap: 12,
     },
     hanjaTile: {
-        width: 48,
-        height: 48,
+        width: 44,
+        height: 44,
         flexShrink: 0,
-        borderRadius: 12,
+        borderRadius: 8,
         alignItems: 'center',
         justifyContent: 'center',
     },
     hanjaChar: {
         fontFamily: fontFamilies.krSerifMedium,
-        fontSize: 28,
-        lineHeight: 36,
+        fontSize: 24,
+        lineHeight: 32,
     },
     cardCopy: {
         flex: 1,

@@ -153,10 +153,11 @@ const timerText = {
 
 /**
  * StreakDots — three of the last six days (oldest first; today is the last
- * of the right-hand group): solid for a goal day, faint for a missed one,
- * a ring for today until it's done. Pressing opens the calendar.
+ * of the right-hand group), all the same size: solid ink for a goal day,
+ * the inactive grey for a missed (or not yet logged) one, a ring for today
+ * until it's done. Pressing opens the calendar.
  */
-export const StreakDots = ({ slots, onPress, open, accessibilityLabel }) => {
+export const StreakDots = ({ slots, onPress, open, accessibilityLabel, align = 'center' }) => {
   const { colors } = useTheme();
   const styles = useMemo(() => createDotStyles(colors), [colors]);
   return (
@@ -166,7 +167,7 @@ export const StreakDots = ({ slots, onPress, open, accessibilityLabel }) => {
       accessibilityRole="button"
       accessibilityState={{ expanded: Boolean(open) }}
       accessibilityLabel={accessibilityLabel}
-      style={styles.group}
+      style={[styles.group, { justifyContent: align === 'end' ? 'flex-end' : align === 'start' ? 'flex-start' : 'center' }]}
     >
       {slots.map((state, index) => (
         // eslint-disable-next-line react/no-array-index-key
@@ -176,39 +177,35 @@ export const StreakDots = ({ slots, onPress, open, accessibilityLabel }) => {
   );
 };
 
+// Every dot is the same size and the gaps are even; the two groups sit
+// against the title (align 'end' on the left, 'start' on the right).
+const DOT = 7;
+const dot = { width: DOT, height: DOT, borderRadius: DOT / 2 };
+
 const createDotStyles = (colors) => ({
   group: {
     flex: 1,
     height: 44,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-evenly',
+    gap: 16,
   },
   met: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
+    ...dot,
     backgroundColor: colors.text,
   },
   today: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
+    ...dot,
     borderWidth: 1.5,
     borderColor: colors.text,
-    opacity: 0.55,
   },
   missed: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: colors.borderStrong,
+    ...dot,
+    backgroundColor: colors.dotInactive,
   },
   empty: {
-    width: 5,
-    height: 5,
-    borderRadius: 2.5,
-    backgroundColor: colors.surfaceMuted,
+    ...dot,
+    backgroundColor: colors.dotInactive,
   },
 });
 
@@ -227,12 +224,29 @@ export const HomeGoalCluster = memo(({ ownerId, focusKey, calendarOpen, onToggle
   const label = t('goal.dotsLabel', { count: slots.filter((state) => state === 'met').length });
   return (
     <>
-      <StreakDots slots={slots.slice(0, 3)} open={calendarOpen} onPress={onToggleCalendar} accessibilityLabel={label} />
+      <StreakDots slots={slots.slice(0, 3)} align="end" open={calendarOpen} onPress={onToggleCalendar} accessibilityLabel={label} />
       <GoalTitle snapshot={snapshot} focusKey={focusKey} textStyle={textStyle} />
-      <StreakDots slots={slots.slice(3)} open={calendarOpen} onPress={onToggleCalendar} accessibilityLabel={label} />
+      <StreakDots slots={slots.slice(3)} align="start" open={calendarOpen} onPress={onToggleCalendar} accessibilityLabel={label} />
     </>
   );
 });
+
+// Whether the calendar is down, for things drawn over the screen outside the
+// top bar (Home's fade under the Read/Learn pill steps aside for its scrim).
+let calendarOpenNow = false;
+const calendarOpenListeners = new Set();
+
+export const useGoalCalendarOpen = () => {
+  const [open, setOpen] = useState(calendarOpenNow);
+  useEffect(() => {
+    calendarOpenListeners.add(setOpen);
+    setOpen(calendarOpenNow);
+    return () => {
+      calendarOpenListeners.delete(setOpen);
+    };
+  }, []);
+  return open;
+};
 
 /**
  * HomeGoalCalendar — the month calendar that drops from the dots, with its
@@ -240,6 +254,10 @@ export const HomeGoalCluster = memo(({ ownerId, focusKey, calendarOpen, onToggle
  */
 export const HomeGoalCalendar = memo(({ ownerId, focusKey, open, onClose }) => {
   const { snapshot, days } = useReadingGoal(ownerId, focusKey);
+  useEffect(() => {
+    calendarOpenNow = Boolean(open);
+    calendarOpenListeners.forEach((listener) => listener(calendarOpenNow));
+  }, [open]);
   return (
     <CalendarDrop
       open={open}

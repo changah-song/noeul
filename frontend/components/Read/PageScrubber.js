@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { Modal, PanResponder, Pressable, Text, TouchableOpacity, View } from 'react-native';
-import { MaterialIcons } from '@expo/vector-icons';
+import { Feather, MaterialIcons } from '@expo/vector-icons';
 import { fontFamilies, useTheme } from '../../theme';
 import { useTranslation } from '../../hooks/useTranslation';
 import { tapSelect } from '../../services/haptics';
@@ -8,6 +8,21 @@ import { tapSelect } from '../../services/haptics';
 export const PAGE_SCRUBBER_HEIGHT = 56;
 const SIDE = 24;
 const PERCENT_WIDTH = 52;
+// With the play button: the percent is right-aligned before it, and the row
+// ends 16 from the edge.
+const PERCENT_WIDTH_WITH_PLAY = 40;
+const PLAY_SIZE = 44;
+const PLAY_GAP = 12;
+const PLAY_RIGHT = 16;
+// The line runs at y 30 in the 56-high row: the button's centre sits on it.
+const PLAY_TOP = 9;
+// Where the play button sits (above the bottom inset), so the listen bar can
+// grow out of it.
+export const PAGE_SCRUBBER_PLAY_BUTTON = {
+    size: PLAY_SIZE,
+    right: PLAY_RIGHT,
+    bottom: PAGE_SCRUBBER_HEIGHT - PLAY_TOP - PLAY_SIZE,
+};
 const THUMB = 12;
 const THUMB_DRAGGING = 18;
 const PREVIEW_WIDTH = 210;
@@ -35,6 +50,9 @@ const clamp01 = (value) => Math.min(Math.max(Number(value) || 0, 0), 1);
  * they haven't confirmed), that spot is the black dot and where they are is a
  * hollow ring. A drag near the black dot snaps onto it, and letting go there
  * (or tapping it) goes back: onReturnToSaved.
+ *
+ * `onListen`: the play button at the row's right end (track, percent, play).
+ * `listenHidden` fades it out but keeps its room, so the line doesn't jump.
  */
 const PageScrubber = ({
     progress = 0,
@@ -47,6 +65,9 @@ const PageScrubber = ({
     savedAt = null,
     onReturnToSaved,
     bottomInset = 0,
+    onListen,
+    listenHidden = false,
+    listenLabel,
 }) => {
     const { colors } = useTheme();
     const { t } = useTranslation();
@@ -161,11 +182,13 @@ const PageScrubber = ({
     const thumbX = shown * width;
     const savedShown = Number.isFinite(savedAt) && width > 0;
     const savedX = savedShown ? clamp01(savedAt) * width : 0;
-    const previewLeft = Math.max(-SIDE + 12, Math.min(width - PREVIEW_WIDTH + PERCENT_WIDTH - 12, thumbX - PREVIEW_WIDTH / 2));
+    const hasPlay = typeof onListen === 'function';
+    const trailingWidth = hasPlay ? PERCENT_WIDTH_WITH_PLAY + PLAY_GAP + PLAY_SIZE + PLAY_RIGHT : PERCENT_WIDTH;
+    const previewLeft = Math.max(-SIDE + 12, Math.min(width - PREVIEW_WIDTH + trailingWidth - 12, thumbX - PREVIEW_WIDTH / 2));
 
     return (
         <View style={[styles.bar, { paddingBottom: bottomInset, height: PAGE_SCRUBBER_HEIGHT + bottomInset }]}>
-            <View style={styles.row}>
+            <View style={[styles.row, hasPlay && styles.rowWithPlay]}>
                 <View
                     style={styles.trackArea}
                     onLayout={(event) => setWidth(event.nativeEvent.layout.width)}
@@ -216,9 +239,29 @@ const PageScrubber = ({
                 </View>
                 {/* Only a readout: the contents open from the progress in the
                     header, so a thumb landing past the line's end does nothing. */}
-                <View style={styles.percentButton} importantForAccessibility="no-hide-descendants">
+                <View
+                    style={[styles.percentButton, hasPlay && styles.percentButtonWithPlay]}
+                    importantForAccessibility="no-hide-descendants"
+                >
                     <Text style={styles.percent}>{t('common.percent', { value: percent })}</Text>
                 </View>
+                {hasPlay ? (
+                    <View
+                        style={[styles.playSlot, listenHidden && styles.playSlotHidden]}
+                        pointerEvents={listenHidden ? 'none' : 'auto'}
+                        importantForAccessibility={listenHidden ? 'no-hide-descendants' : 'auto'}
+                    >
+                        <TouchableOpacity
+                            style={styles.playButton}
+                            onPress={onListen}
+                            disabled={listenHidden}
+                            accessibilityRole="button"
+                            accessibilityLabel={listenLabel}
+                        >
+                            <Feather name="play" size={18} color={colors.white} style={styles.playIcon} />
+                        </TouchableOpacity>
+                    </View>
+                ) : null}
             </View>
 
             {bookmarkGroups.map((group) => (
@@ -286,7 +329,7 @@ const createStyles = (colors) => ({
     bar: {
         backgroundColor: colors.readerPaper,
         borderTopWidth: 1,
-        borderTopColor: colors.readerHairline,
+        borderTopColor: colors.divider,
     },
     row: {
         flex: 1,
@@ -360,11 +403,39 @@ const createStyles = (colors) => ({
         justifyContent: 'flex-start',
         paddingTop: TRACK_Y - 9,
     },
+    percentButtonWithPlay: {
+        width: PERCENT_WIDTH_WITH_PLAY,
+        alignItems: 'flex-end',
+    },
     percent: {
-        fontFamily: fontFamilies.sansMedium,
+        fontFamily: fontFamilies.sansRegular,
         fontSize: 13,
-        color: colors.readerMutedInk,
+        lineHeight: 18,
+        color: colors.textTertiary,
         fontVariant: ['tabular-nums'],
+    },
+    rowWithPlay: {
+        paddingRight: PLAY_RIGHT,
+    },
+    // Centred on the line.
+    playSlot: {
+        marginLeft: PLAY_GAP,
+        paddingTop: PLAY_TOP,
+    },
+    playSlotHidden: {
+        opacity: 0,
+    },
+    playButton: {
+        width: PLAY_SIZE,
+        height: PLAY_SIZE,
+        borderRadius: PLAY_SIZE / 2,
+        backgroundColor: colors.inkSlate,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    // The triangle's weight sits left of its box: nudge it to look centred.
+    playIcon: {
+        marginLeft: 2,
     },
     bookmark: {
         position: 'absolute',

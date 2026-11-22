@@ -112,11 +112,12 @@ const styles = StyleSheet.create({
         padding: 4,
         borderRadius: 26,
         borderWidth: StyleSheet.hairlineWidth,
-        elevation: 6,
+        // Floats over content: the one shadow on this screen.
+        elevation: 8,
         shadowColor: '#000',
-        shadowOpacity: 0.1,
-        shadowRadius: 12,
-        shadowOffset: { width: 0, height: 6 },
+        shadowOpacity: 0.12,
+        shadowRadius: 14,
+        shadowOffset: { width: 0, height: 10 },
     },
     pillTab: {
         height: 44,

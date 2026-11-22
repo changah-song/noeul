@@ -151,7 +151,6 @@ import {
 import { normalizeBookLanguage } from '../constants/languages';
 import { formatDate, formatNumber, getRuntimeInterfaceLanguage, tRuntime } from '../services/interfaceLanguage';
 import {
-    getLocalizedLanguageName,
     getUserFacingErrorMessage,
     localizeBookLevelLabel,
     localizeStoredPlaceholder,
@@ -160,6 +159,8 @@ import {
 import { getPublicDomainBookCopy, localizePublicDomainBook } from '../assets/data/public-domain/catalogI18n';
 import { localizedLevelLabel } from '../i18n/contentStrings';
 import { getProficiencyLevelOptions } from '../constants/proficiencyLevels';
+import { createReaderSettingsControlStyles } from '../components/Read/ReaderSettingsControls';
+import { useGoalCalendarOpen } from '../components/Goal/HomeGoalBar';
 
 const BOOK_GRID_COLUMNS = 4;
 const BOOK_GRID_GAP = Spacing.lg;
@@ -172,6 +173,11 @@ const HERO_ITEM_GAP = Spacing.xl4;
 const FAB_EDGE_OFFSET = Spacing.xl5;
 const FAB_MENU_GAP = Spacing.xl;
 const FAB_WINDOW_BOTTOM_OFFSET = Layout.tabBarHeight + FAB_EDGE_OFFSET;
+// The grid/list chips are 36x32; this brings each touch target to 44.
+// List-row thumbnails: cover art only.
+const ROW_COVER_WIDTH = 44;
+const ROW_COVER_HEIGHT = 60;
+const VIEW_TOGGLE_HIT_SLOP = { top: 6, bottom: 6, left: 4, right: 4 };
 // Room under the shelf for the floating Read/Learn pill.
 const HOME_PILL_CLEARANCE = Layout.tabBarHeight + Spacing.xl5;
 const WORDS_PER_PAGE = 250;
@@ -683,10 +689,6 @@ const formatBookCount = (t, base, count) => (
     t(count === 1 ? `${base}One` : `${base}Other`, { count: formatNumber(count) })
 );
 
-const formatBookLanguage = (language, t = tRuntime) => {
-    return getLocalizedLanguageName(language, t);
-};
-
 const getReadableCoverColor = ({
     background,
     preferred,
@@ -779,7 +781,10 @@ const coverPatternTileRadii = (shape, size) => {
     }
 };
 
-const BookCover = ({ book, width, height, style, titleStyle }) => {
+// `artOnly` (list thumbnails): a book with no cover image shows its pattern
+// over the whole cover, without the title label, which is too small to read
+// at that size; the row beside it carries the title.
+const BookCover = ({ book, width, height, style, titleStyle, artOnly = false }) => {
     const { t } = useTranslation();
     const { homeColors, styles } = useHomeTheme();
     const coverUri = typeof book?.cover === 'string' ? book.cover.trim() : '';
@@ -823,12 +828,22 @@ const BookCover = ({ book, width, height, style, titleStyle }) => {
     const title = getBookTitle(book, t);
     const author = getBookAuthor(book, t);
     const tileSize = width / COVER_PATTERN_COLUMNS;
-    const patternHeight = Math.min(tileSize * COVER_PATTERN_COLUMNS, Math.round(height * 0.68));
+    const patternHeight = artOnly
+        ? height
+        : Math.min(tileSize * COVER_PATTERN_COLUMNS, Math.round(height * 0.68));
     const labelHeight = height - patternHeight;
     const tiles = getCoverPatternTiles(book);
     const rows = [];
     for (let index = 0; index < tiles.length; index += COVER_PATTERN_COLUMNS) {
         rows.push(tiles.slice(index, index + COVER_PATTERN_COLUMNS));
+    }
+    // A thumbnail is taller than the square pattern: repeat its rows down to
+    // the bottom edge, so no plain band shows under it.
+    if (artOnly && rows.length > 0) {
+        const needed = Math.ceil(height / tileSize);
+        for (let index = 0; rows.length < needed; index += 1) {
+            rows.push(rows[index % rows.length]);
+        }
     }
     const titleFontSize = Math.max(8, getDefaultCoverTitleSize(title, 22 * scale));
     const authorFontSize = Math.max(6, Math.round(11 * scale));
@@ -857,6 +872,7 @@ const BookCover = ({ book, width, height, style, titleStyle }) => {
                     </View>
                 ))}
             </View>
+            {artOnly ? null : (
             <View
                 style={[
                     styles.defaultCoverLabel,
@@ -901,6 +917,7 @@ const BookCover = ({ book, width, height, style, titleStyle }) => {
                     </Text>
                 ) : null}
             </View>
+            )}
         </View>
     );
 };
@@ -1137,12 +1154,14 @@ const PreviewBookCover = ({ book }) => {
     );
 };
 
-const PreviewMetadataItem = ({ label, value }) => {
+// One row of the facts card: the label on the left, the value on the right,
+// a hairline above every row but the first.
+const PreviewMetadataItem = ({ label, value, first = false }) => {
     const { styles } = useHomeTheme();
 
     return (
-        <View style={styles.previewMetaItem}>
-            <Text style={styles.previewMetaLabel}>{label}</Text>
+        <View style={[styles.previewMetaItem, !first && styles.previewMetaItemRule]}>
+            <Text style={styles.previewMetaLabel} numberOfLines={1}>{label}</Text>
             <Text numberOfLines={2} style={styles.previewMetaValue}>{value}</Text>
         </View>
     );
@@ -1211,6 +1230,7 @@ const PreviewReadingEase = ({ readingEase }) => {
     return (
         <View style={styles.previewEaseBlock}>
             <Text style={styles.previewSectionLabel}>{t('home.readingEase')}</Text>
+            <View style={styles.previewEaseCard}>
             {hasEstimate ? (
                 <>
                     <View style={styles.previewEaseHeader}>
@@ -1240,6 +1260,7 @@ const PreviewReadingEase = ({ readingEase }) => {
                     <Text style={styles.previewEaseEmptyText}>{t('home.readingEaseUnavailable')}</Text>
                 </View>
             )}
+            </View>
         </View>
     );
 };
@@ -1454,7 +1475,7 @@ const BookPreview = ({
                 <PreviewReadingEase readingEase={readingEase} />
 
                 <View style={styles.previewMetaGrid}>
-                    <PreviewMetadataItem label={t('home.length')} value={formatWordCount(wordCount, t)} />
+                    <PreviewMetadataItem first label={t('home.length')} value={formatWordCount(wordCount, t)} />
                     <PreviewMetadataItem label={t('home.level')} value={levelValue} />
                     <PreviewMetadataItem label={t('home.genre')} value={genreValue} />
                     <PreviewMetadataItem label={t('home.lastOpened')} value={formatPreviewDateTime(book?.lastOpenedAt, t, language)} />
@@ -1669,25 +1690,9 @@ const FeaturedBookCarousel = ({ books, screenWidth, onResumeBook, onPressBook, o
                 ))}
             </Animated.ScrollView>
 
+            {/* The cover already carries the title and author, so they are
+                not repeated under it. */}
             <View style={styles.heroMeta}>
-                <Text
-                    numberOfLines={1}
-                    style={[
-                        styles.heroTitle,
-                        getSerifFontForText(getBookTitle(activeBook, t)),
-                    ]}
-                >
-                    {getBookTitle(activeBook, t)}
-                </Text>
-                <Text
-                    numberOfLines={1}
-                    style={[
-                        styles.heroAuthor,
-                        hasKoreanText(getBookAuthor(activeBook, t)) && styles.koreanInlineText,
-                    ]}
-                >
-                    {getBookAuthor(activeBook, t)}
-                </Text>
                 <View style={styles.heroProgressGroup}>
                     <View style={styles.heroProgressLabels}>
                         <Text style={styles.heroPercent}>
@@ -1724,6 +1729,40 @@ const FeaturedBookCarousel = ({ books, screenWidth, onResumeBook, onPressBook, o
             </View>
         </View>
     );
+};
+
+// The shelf fades out under the floating Read/Learn pill. There is no
+// gradient library in the app, so the fade is a stack of thin page-coloured
+// bands of rising opacity, then solid page colour behind the pill. It steps
+// aside while the goal calendar's scrim is over the screen.
+const SHELF_FADE_STEPS = 22;
+const SHELF_FADE_STEP_HEIGHT = 4;
+const SHELF_FADE_SOLID = 44;
+const SHELF_FADE_HEIGHT = SHELF_FADE_STEPS * SHELF_FADE_STEP_HEIGHT + SHELF_FADE_SOLID;
+const SHELF_FADE_BANDS = Array.from({ length: SHELF_FADE_STEPS }, (_, index) => (index + 1) / SHELF_FADE_STEPS);
+
+const ShelfFade = ({ bottomInset = 0 }) => {
+    const { homeColors } = useHomeTheme();
+    const calendarOpen = useGoalCalendarOpen();
+    if (calendarOpen) return null;
+    return (
+        <View pointerEvents="none" style={[shelfFadeStyle, { height: SHELF_FADE_HEIGHT + bottomInset }]}>
+            {SHELF_FADE_BANDS.map((opacity) => (
+                <View
+                    key={opacity}
+                    style={{ height: SHELF_FADE_STEP_HEIGHT, opacity, backgroundColor: homeColors.bg }}
+                />
+            ))}
+            <View style={{ flex: 1, backgroundColor: homeColors.bg }} />
+        </View>
+    );
+};
+
+const shelfFadeStyle = {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
 };
 
 // Shelf tabs (My books / Public domain / Songs) with an underline that slides
@@ -1811,6 +1850,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     const HOME_COLORS = useMemo(() => createHomeColors(colors), [colors]);
     const styles = useMemo(() => createStyles(HOME_COLORS, colors), [HOME_COLORS, colors]);
     const themedTabBarStyle = useMemo(() => createTabBarBaseStyle(colors), [colors]);
+    const segmentStyles = useMemo(() => createReaderSettingsControlStyles(colors), [colors]);
     const homeThemeValue = useMemo(() => ({
         homeColors: HOME_COLORS,
         styles,
@@ -4153,16 +4193,22 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         setSongs(nextSongs);
     }, [selectedSong, songs, t]);
 
-    const getCollectionBookMeta = useCallback((book, sourceLabel) => {
-        const parts = [
-            formatBookLanguage(book?.language || targetLanguage, t),
-            localizedLevelLabel(book?.language || targetLanguage, book?.difficulty, interfaceLanguage),
-            formatWordCount(getBookWordCount(book), t),
-            sourceLabel,
-        ];
-
-        return parts.filter(Boolean).join(' · ');
-    }, [interfaceLanguage, targetLanguage, t]);
+    // A row's one meta line: the author, then how far in (once a book has
+    // been started) or its length. The section above already names the level.
+    const getCollectionBookMeta = useCallback((book) => {
+        const progress = typeof book?.progress === 'number' ? getBookProgress(book) : 0;
+        const percent = Math.round(progress * 100);
+        let detail = null;
+        if (percent >= 100) {
+            detail = t('finished.badge');
+        } else if (percent > 0) {
+            detail = t('home.percentComplete', { percent });
+        } else {
+            const wordCount = getBookWordCount(book);
+            detail = wordCount ? formatWordCount(wordCount, t) : null;
+        }
+        return [getBookAuthor(book, t), detail].filter(Boolean).join(' · ');
+    }, [t]);
 
     const renderCollectionEmptyState = ({
         icon,
@@ -4467,16 +4513,16 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                     >
                         <View>
                             <Book3D
-                                width={52}
-                                height={76}
+                                width={ROW_COVER_WIDTH}
+                                height={ROW_COVER_HEIGHT}
                                 radius={2}
                             >
                                 <BookCover
                                     book={book}
-                                    width={52}
-                                    height={76}
+                                    width={ROW_COVER_WIDTH}
+                                    height={ROW_COVER_HEIGHT}
                                     style={styles.bookRowCover}
-                                    titleStyle={styles.bookRowCoverText}
+                                    artOnly
                                 />
                             </Book3D>
                             {isBookFinished(book) ? (
@@ -4493,7 +4539,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                 <Text
                                     style={[
                                         styles.bookRowTitle,
-                                        getSerifFontForText(getBookTitle(book, t)),
+                                        getSerifFontForText(getBookTitle(book, t), 'medium'),
                                     ]}
                                     numberOfLines={1}
                                 >
@@ -4505,20 +4551,14 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                     </View>
                                 ) : null}
                             </View>
-                            <Text
-                                style={[
-                                    styles.bookRowAuthor,
-                                    hasKoreanText(getBookAuthor(book, t)) && styles.koreanInlineText,
-                                ]}
-                                numberOfLines={1}
-                            >
-                                {getBookAuthor(book, t)}
-                            </Text>
+                            {/* One meta line: author, then progress or length. */}
                             <Text style={styles.bookRowMeta} numberOfLines={1}>
-                                {isDownloadingBook ? t('home.downloading') : getCollectionBookMeta(book, sourceLabel)}
+                                {isDownloadingBook
+                                    ? t('home.downloading')
+                                    : getCollectionBookMeta(book, sourceLabel)}
                             </Text>
                         </View>
-                        <Feather name="chevron-right" size={16} color={HOME_COLORS.faint} />
+                        <Feather name="chevron-right" size={18} color={HOME_COLORS.tertiary} />
                     </Pressable>
                 );
             })}
@@ -4581,21 +4621,21 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                 >
                     <FolderStack
                         books={folderBooks}
-                        width={52}
-                        height={76}
+                        width={ROW_COVER_WIDTH}
+                        height={ROW_COVER_HEIGHT}
                         renderCover={renderFolderCover}
                         edgeColor={HOME_COLORS.bg}
                         emptyColor={HOME_COLORS.faint}
                     />
                     <View style={styles.bookRowCopy}>
-                        <Text style={[styles.bookRowTitle, getSerifFontForText(folder.name)]} numberOfLines={1}>
+                        <Text style={[styles.bookRowTitle, getSerifFontForText(folder.name, 'medium')]} numberOfLines={1}>
                             {folder.name}
                         </Text>
                         <Text style={styles.bookRowMeta} numberOfLines={1}>
                             {formatBookCount(t, 'home.bookCount', folderBooks.length)}
                         </Text>
                     </View>
-                    <Feather name="chevron-right" size={16} color={HOME_COLORS.faint} />
+                    <Feather name="chevron-right" size={18} color={HOME_COLORS.tertiary} />
                 </Pressable>
             ))}
         </View>
@@ -4629,8 +4669,8 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                         <Text style={[styles.easeSectionTitle, styles.folderOpenName]} numberOfLines={1} accessibilityRole="header">
                             {folder.name}
                         </Text>
-                        <Text style={styles.easeSectionCount}>{formatNumber(folderBooks.length)}</Text>
                         <View style={styles.shelfSectionSpacer} />
+                        <Text style={styles.easeSectionCount}>{formatNumber(folderBooks.length)}</Text>
                         <Pressable
                             accessibilityRole="button"
                             accessibilityLabel={t('home.folderRename')}
@@ -4661,8 +4701,8 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             <View key={section.key} style={styles.easeSection}>
                 <View style={styles.shelfSectionHeader}>
                     <Text style={styles.easeSectionTitle} accessibilityRole="header">{section.title}</Text>
-                    <Text style={styles.easeSectionCount}>{formatNumber(section.books.length)}</Text>
                     <View style={styles.shelfSectionSpacer} />
+                    <Text style={styles.easeSectionCount}>{formatNumber(section.books.length)}</Text>
                     <Pressable
                         accessibilityRole="button"
                         accessibilityLabel={t('home.folderNew')}
@@ -4736,8 +4776,9 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                 contentContainerStyle={[
                     styles.screenContent,
                     // The pill rises above the navigation buttons; the
-                    // shelf's end clears it by the same amount.
-                    { paddingBottom: HOME_PILL_CLEARANCE + navigationButtonsInset },
+                    // shelf's end clears it (and the fade behind it, less
+                    // the lists' own bottom padding) by the same amount.
+                    { paddingBottom: Math.max(HOME_PILL_CLEARANCE, SHELF_FADE_HEIGHT - Spacing.xl8) + navigationButtonsInset },
                 ]}
                 showsVerticalScrollIndicator={false}
             >
@@ -4797,19 +4838,26 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                         <Text style={styles.libraryTitle} accessibilityRole="header">{t('home.yourShelf')}</Text>
                         <View style={styles.collectionViewIcons}>
                             {activeLibraryTab === 'Books' ? (
-                                <>
+                                // One small segmented pair (the shared control
+                                // kit's track and raised chip), icons only.
+                                <View style={[segmentStyles.segmentTrack, styles.viewToggleTrack]}>
                                     <TouchableOpacity
                                         accessibilityRole="button"
                                         accessibilityLabel={t('home.gridView')}
                                         accessibilityState={{ selected: effectiveCollectionViewMode === 'grid' }}
                                         activeOpacity={Motion.pressedOpacity}
                                         onPress={() => setCollectionViewMode('grid')}
-                                        style={styles.collectionViewButton}
+                                        hitSlop={VIEW_TOGGLE_HIT_SLOP}
+                                        style={[
+                                            segmentStyles.segment,
+                                            styles.viewToggleChip,
+                                            effectiveCollectionViewMode === 'grid' && segmentStyles.segmentActive,
+                                        ]}
                                     >
                                         <Feather
                                             name="grid"
-                                            size={18}
-                                            color={effectiveCollectionViewMode === 'grid' ? HOME_COLORS.accent : HOME_COLORS.faint}
+                                            size={17}
+                                            color={effectiveCollectionViewMode === 'grid' ? HOME_COLORS.text : HOME_COLORS.tertiary}
                                         />
                                     </TouchableOpacity>
                                     <TouchableOpacity
@@ -4818,15 +4866,20 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                         accessibilityState={{ selected: effectiveCollectionViewMode === 'list' }}
                                         activeOpacity={Motion.pressedOpacity}
                                         onPress={() => setCollectionViewMode('list')}
-                                        style={styles.collectionViewButton}
+                                        hitSlop={VIEW_TOGGLE_HIT_SLOP}
+                                        style={[
+                                            segmentStyles.segment,
+                                            styles.viewToggleChip,
+                                            effectiveCollectionViewMode === 'list' && segmentStyles.segmentActive,
+                                        ]}
                                     >
                                         <Feather
                                             name="list"
-                                            size={18}
-                                            color={effectiveCollectionViewMode === 'list' ? HOME_COLORS.accent : HOME_COLORS.faint}
+                                            size={17}
+                                            color={effectiveCollectionViewMode === 'list' ? HOME_COLORS.text : HOME_COLORS.tertiary}
                                         />
                                     </TouchableOpacity>
-                                </>
+                                </View>
                             ) : null}
                             <TouchableOpacity
                                 accessibilityRole="button"
@@ -4843,8 +4896,8 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                             >
                                 <Feather
                                     name="plus"
-                                    size={20}
-                                    color={HOME_COLORS.accent}
+                                    size={22}
+                                    color={HOME_COLORS.text}
                                 />
                             </TouchableOpacity>
                         </View>
@@ -5090,6 +5143,8 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             )}
             </Pressable>
             </ScrollView>
+
+            <ShelfFade bottomInset={navigationButtonsInset} />
 
             <FolderSheet
                 request={folderSheet}
@@ -5451,7 +5506,7 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
     },
     heroScrollContent: {
         paddingTop: Spacing.xl2,
-        paddingBottom: Spacing.xl8,
+        paddingBottom: Spacing.xl6,
         alignItems: 'center',
     },
     heroItem: {
@@ -5463,34 +5518,15 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
     },
     heroMeta: {
         paddingHorizontal: HOME_CONTENT_HORIZONTAL_PADDING,
-        alignItems: 'center',
-    },
-    heroTitle: {
-        maxWidth: 300,
-        fontSize: 24,
-        lineHeight: 32,
-        color: HOME_COLORS.text,
-        textAlign: 'center',
-    },
-    heroAuthor: {
-        fontFamily: fontFamilies.sansRegular,
-        fontSize: 14,
-        lineHeight: 20,
-        color: HOME_COLORS.sub,
-        textAlign: 'center',
-        marginTop: 2,
     },
     heroProgressGroup: {
-        width: '100%',
-        maxWidth: 300,
-        alignSelf: 'center',
+        alignSelf: 'stretch',
     },
     heroProgressLabels: {
         alignSelf: 'stretch',
         flexDirection: 'row',
         alignItems: 'baseline',
         justifyContent: 'space-between',
-        marginTop: Spacing.xl2,
     },
     heroPercent: {
         fontFamily: fontFamilies.sansSemiBold,
@@ -5523,8 +5559,8 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
         alignItems: 'center',
         justifyContent: 'center',
         gap: Spacing.md,
-        height: 50,
-        marginTop: Spacing.xl2,
+        height: 52,
+        marginTop: Spacing.xl3,
         borderRadius: 14,
         backgroundColor: HOME_COLORS.accent,
     },
@@ -5649,10 +5685,10 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
     },
     previewTagWrap: {
         alignSelf: 'flex-start',
-        marginTop: Spacing.sm,
-        borderRadius: 6,
+        marginTop: Spacing.xl,
+        borderRadius: radii.chip,
         paddingHorizontal: Spacing.md,
-        paddingVertical: Spacing.xs,
+        paddingVertical: 3,
         backgroundColor: HOME_COLORS.surface2,
     },
     previewTagText: {
@@ -5684,34 +5720,41 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
         borderRadius: 2,
         backgroundColor: HOME_COLORS.accent,
     },
+    // Reading ease: the section label, then a card with the number, the
+    // band as meta beside it, a 6px bar and the note.
     previewEaseBlock: {
-        marginTop: Spacing.xl5,
-        marginHorizontal: Spacing.xl3,
-        paddingVertical: Spacing.xl3,
-        paddingHorizontal: Spacing.xl4,
-        gap: Spacing.lg,
+        marginTop: Spacing.xl6,
+        marginHorizontal: Spacing.screenHorizontal,
+        gap: Spacing.md,
+    },
+    previewEaseCard: {
+        padding: Spacing.xl3,
+        gap: Spacing.xl,
         borderWidth: 1,
         borderColor: HOME_COLORS.divider,
-        borderRadius: 18,
+        borderRadius: radii.control,
         backgroundColor: HOME_COLORS.surface,
     },
     previewEaseHeader: {
         flexDirection: 'row',
         alignItems: 'baseline',
+        justifyContent: 'space-between',
         gap: Spacing.lg,
     },
     previewEasePercent: {
         fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 30,
-        lineHeight: 36,
+        fontSize: 20,
+        lineHeight: 26,
         color: colors.text,
-        letterSpacing: -0.5,
+        fontVariant: ['tabular-nums'],
     },
     previewEaseBand: {
-        fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 14,
-        lineHeight: 19,
-        color: HOME_COLORS.secondary,
+        flexShrink: 1,
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 13,
+        lineHeight: 18,
+        color: HOME_COLORS.tertiary,
+        textAlign: 'right',
     },
     previewEaseBandEasy: {
         color: colors.readerLevelUnderlineEasy,
@@ -5732,9 +5775,9 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
     },
     previewEaseNote: {
         fontFamily: fontFamilies.sansRegular,
-        fontSize: 14,
-        lineHeight: 20,
-        color: HOME_COLORS.secondary,
+        fontSize: 13,
+        lineHeight: 18,
+        color: HOME_COLORS.tertiary,
     },
     previewEaseEmpty: {
         flexDirection: 'row',
@@ -5744,33 +5787,45 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
     previewEaseEmptyText: {
         flex: 1,
         fontFamily: fontFamilies.sansRegular,
-        fontSize: 14,
-        lineHeight: 20,
+        fontSize: 13,
+        lineHeight: 18,
         color: HOME_COLORS.tertiary,
     },
+    // The facts (length, level, genre, last opened) as a list card.
     previewMetaGrid: {
-        marginTop: Spacing.xl,
+        marginTop: Spacing.xl6,
         marginHorizontal: Spacing.screenHorizontal,
-        flexDirection: 'row',
-        flexWrap: 'wrap',
-        rowGap: Spacing.xl2,
+        paddingHorizontal: Spacing.xl3,
+        borderWidth: 1,
+        borderColor: HOME_COLORS.divider,
+        borderRadius: radii.control,
+        backgroundColor: HOME_COLORS.surface,
     },
     previewMetaItem: {
-        width: '50%',
-        gap: 2,
-        paddingRight: Spacing.xl3,
+        minHeight: 48,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: Spacing.xl3,
+        paddingVertical: Spacing.lg,
+    },
+    previewMetaItemRule: {
+        borderTopWidth: 1,
+        borderTopColor: HOME_COLORS.divider,
     },
     previewMetaLabel: {
         fontFamily: fontFamilies.sansRegular,
-        fontSize: 12,
-        lineHeight: 16,
-        color: HOME_COLORS.tertiary,
+        fontSize: 15,
+        lineHeight: 20,
+        color: HOME_COLORS.secondary,
     },
     previewMetaValue: {
+        flexShrink: 1,
         fontFamily: fontFamilies.sansSemiBold,
         fontSize: 15,
         lineHeight: 20,
         color: colors.text,
+        textAlign: 'right',
     },
     previewAboutSection: {
         marginTop: Spacing.xl5,
@@ -5801,16 +5856,16 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
     },
     previewNoteBlock: {
         marginTop: Spacing.xl5,
-        marginHorizontal: Spacing.xl3,
+        marginHorizontal: Spacing.screenHorizontal,
     },
     previewNoteCard: {
         marginTop: Spacing.md,
         backgroundColor: HOME_COLORS.surface,
         borderWidth: 1,
         borderColor: HOME_COLORS.divider,
-        borderRadius: 18,
+        borderRadius: radii.control,
         paddingVertical: Spacing.xl3,
-        paddingHorizontal: Spacing.xl4,
+        paddingHorizontal: Spacing.xl3,
     },
     previewNoteText: {
         fontFamily: fontFamilies.sansRegular,
@@ -5843,7 +5898,7 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
         flexDirection: 'row',
         gap: Spacing.lg,
         paddingTop: Spacing.xl2,
-        paddingHorizontal: Spacing.screenHorizontalDense,
+        paddingHorizontal: Spacing.screenHorizontal,
         backgroundColor: HOME_COLORS.bg,
         borderTopWidth: 1,
         borderTopColor: HOME_COLORS.divider,
@@ -5866,8 +5921,8 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
     },
     previewSecondaryButtonText: {
         fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 15,
-        lineHeight: 20,
+        fontSize: 16,
+        lineHeight: 21,
         color: HOME_COLORS.text,
     },
     previewPrimaryButton: {
@@ -5907,10 +5962,19 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
     },
     libraryTitle: {
         flex: 1,
-        fontFamily: fontFamilies.displayMedium,
-        fontSize: 21,
-        lineHeight: 27,
+        fontFamily: fontFamilies.displaySemiBold,
+        fontSize: 23,
+        lineHeight: 28,
         color: HOME_COLORS.text,
+    },
+    viewToggleTrack: {
+        padding: 2,
+        marginRight: Spacing.xs,
+    },
+    viewToggleChip: {
+        width: 36,
+        height: 32,
+        paddingHorizontal: 0,
     },
     collectionEyebrow: {
         fontFamily: fontFamilies.sansSemiBold,
@@ -5932,10 +5996,12 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
     collectionViewButtonDisabled: {
         opacity: Motion.disabledOpacity,
     },
-    // Two tabs, half the width each.
+    // Left-aligned text tabs; the underline sits under the active label
+    // only, over a hairline that runs the width of the row.
     libraryTabs: {
         flexDirection: 'row',
         alignItems: 'flex-end',
+        gap: Spacing.xl6,
         marginHorizontal: Spacing.screenHorizontalDense,
         marginTop: Spacing.xs,
         borderBottomWidth: 1,
@@ -5943,16 +6009,13 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
         position: 'relative',
     },
     libraryTab: {
-        flex: 1,
-        minHeight: 44,
-        alignItems: 'center',
+        height: 44,
         justifyContent: 'center',
-        paddingVertical: Spacing.lg,
     },
     libraryTabText: {
         fontFamily: fontFamilies.sansMedium,
-        fontSize: 14,
-        lineHeight: 19,
+        fontSize: 15,
+        lineHeight: 20,
         color: HOME_COLORS.tertiary,
     },
     libraryTabTextActive: {
@@ -5961,7 +6024,7 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
     },
     libraryTabUnderline: {
         position: 'absolute',
-        bottom: 0,
+        bottom: -1,
         height: 2,
         borderRadius: 1,
         backgroundColor: HOME_COLORS.accent,
@@ -6373,40 +6436,37 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
     easeSection: {
         paddingTop: Spacing.xl,
     },
+    // Section label on the left, its count as meta on the right; no rule
+    // under it (the rows carry the hairlines).
     easeSectionHeader: {
         flexDirection: 'row',
         alignItems: 'baseline',
+        justifyContent: 'space-between',
         gap: Spacing.sm,
-        paddingHorizontal: HOME_CONTENT_HORIZONTAL_PADDING,
-        paddingBottom: Spacing.xs,
-        borderBottomWidth: 1,
-        borderBottomColor: HOME_COLORS.divider,
         marginHorizontal: HOME_CONTENT_HORIZONTAL_PADDING,
-        paddingLeft: 0,
-        paddingRight: 0,
+        paddingTop: Spacing.sm,
     },
     easeSectionTitle: {
-        fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 15,
-        lineHeight: 20,
-        color: HOME_COLORS.text,
-    },
-    easeSectionCount: {
+        flexShrink: 1,
         fontFamily: fontFamilies.sansSemiBold,
         fontSize: 13,
         lineHeight: 18,
         color: HOME_COLORS.tertiary,
     },
-    // "Your books" header: the title and count, then folder actions at the end.
+    easeSectionCount: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 13,
+        lineHeight: 18,
+        color: HOME_COLORS.tertiary,
+    },
+    // "Your books" header: the label, then its count and the folder actions
+    // at the end.
     shelfSectionHeader: {
         minHeight: 30,
         flexDirection: 'row',
         alignItems: 'center',
         gap: Spacing.sm,
         marginHorizontal: HOME_CONTENT_HORIZONTAL_PADDING,
-        paddingBottom: Spacing.xs,
-        borderBottomWidth: 1,
-        borderBottomColor: HOME_COLORS.divider,
     },
     shelfSectionSpacer: {
         flex: 1,
@@ -6511,11 +6571,11 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
     },
     bookRows: {
         paddingHorizontal: HOME_CONTENT_HORIZONTAL_PADDING,
-        paddingTop: Spacing.sm,
+        paddingTop: 0,
         paddingBottom: Spacing.xl8,
     },
     bookRow: {
-        minHeight: 100,
+        minHeight: 84,
         flexDirection: 'row',
         alignItems: 'center',
         gap: Spacing.xl2,
@@ -6545,9 +6605,9 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
     },
     bookRowTitle: {
         flexShrink: 1,
-        fontFamily: fontFamilies.krSerifSemiBold,
+        fontFamily: fontFamilies.krSerifMedium,
         fontSize: 17,
-        lineHeight: 23,
+        lineHeight: 24,
         color: HOME_COLORS.text,
     },
     bookRowAuthor: {
@@ -6558,8 +6618,8 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
     },
     bookRowMeta: {
         fontFamily: fontFamilies.sansRegular,
-        fontSize: 12,
-        lineHeight: 16,
+        fontSize: 13,
+        lineHeight: 18,
         color: HOME_COLORS.tertiary,
     },
     inlineBadge: {

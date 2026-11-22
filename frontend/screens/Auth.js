@@ -20,7 +20,7 @@ import { useTranslation } from '../hooks/useTranslation';
 import { getAuthErrorMessage } from '../i18n/userFacing';
 import { supabase } from '../services/supabase';
 import { PASSWORD_RESET_URL, PRIVACY_POLICY_URL, TERMS_OF_SERVICE_URL } from '../constants/links';
-import { fontFamilies, useTheme } from '../theme';
+import { fontFamilies, radii, useTheme } from '../theme';
 
 const openLegalLink = (url, t) => {
   Linking.openURL(url).catch(() => {
@@ -45,6 +45,21 @@ const getCurrentSession = async () => {
   }
 
   return session;
+};
+
+// "New here? Create an account": the question quiet, the action as a link.
+// A label without a question (or a language that writes it as one phrase)
+// is all link.
+const SWITCH_SPLIT = /^(.*?[?？؟])\s*(\S.*)$/;
+const renderSwitchLabel = (label, styles) => {
+  const match = SWITCH_SPLIT.exec(String(label ?? ''));
+  if (!match) return <Text style={styles.switchLinkText}>{label}</Text>;
+  return (
+    <Text style={styles.switchButtonText}>
+      {match[1]}{' '}
+      <Text style={styles.switchLinkText}>{match[2]}</Text>
+    </Text>
+  );
 };
 
 /**
@@ -73,7 +88,7 @@ const Auth = ({
   onClose,
 }) => {
   const { t, language } = useTranslation();
-  const { colors } = useTheme();
+  const { colors, isDarkMode } = useTheme();
   const safeInsets = useContext(SafeAreaInsetsContext);
   const insetTop = safeInsets?.top ?? 0;
   const insetBottom = safeInsets?.bottom ?? 0;
@@ -281,16 +296,38 @@ const Auth = ({
               accessibilityRole="button"
               accessibilityLabel={t('profile.closeSignIn')}
             >
-              <Feather name="x" size={22} color={colors.inkSlate} />
+              <Feather name="x" size={22} color={colors.text} />
             </TouchableOpacity>
           </View>
         ) : null}
 
         {showHeader ? (
           <>
-            <Text style={styles.title} accessibilityRole="header">{heading}</Text>
+            <Text
+              style={styles.title}
+              accessibilityRole="header"
+              textBreakStrategy="balanced"
+              lineBreakStrategyIOS="standard"
+            >
+              {heading}
+            </Text>
             <Text style={styles.subtitle}>{subheading}</Text>
           </>
+        ) : null}
+
+        {/* Apple keeps Apple's own button (it draws its own localized
+            label, which the guidelines ask for); its outline style is the
+            closest match to the Google button below it. */}
+        {showApple && Platform.OS === 'ios' ? (
+          <AppleAuthentication.AppleAuthenticationButton
+            buttonType={AppleAuthentication.AppleAuthenticationButtonType.CONTINUE}
+            buttonStyle={isDarkMode
+              ? AppleAuthentication.AppleAuthenticationButtonStyle.BLACK
+              : AppleAuthentication.AppleAuthenticationButtonStyle.WHITE_OUTLINE}
+            cornerRadius={radii.control}
+            style={styles.appleButton}
+            onPress={handleAppleAuth}
+          />
         ) : null}
 
         <TouchableOpacity
@@ -303,16 +340,6 @@ const Auth = ({
           <MaterialCommunityIcons name="google" size={18} color={colors.text} />
           <Text style={styles.googleButtonText}>{t('auth.continueGoogle')}</Text>
         </TouchableOpacity>
-
-        {showApple && Platform.OS === 'ios' ? (
-          <AppleAuthentication.AppleAuthenticationButton
-            buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN}
-            buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.BLACK}
-            cornerRadius={14}
-            style={styles.appleButton}
-            onPress={handleAppleAuth}
-          />
-        ) : null}
 
         <View style={styles.dividerRow}>
           <View style={styles.dividerLine} />
@@ -389,9 +416,7 @@ const Auth = ({
             onPress={() => setMode(isSignup ? 'signin' : 'signup')}
             accessibilityRole="button"
           >
-            <Text style={styles.switchButtonText}>
-              {isSignup ? t('auth.haveAccount') : t('auth.newHere')}
-            </Text>
+            {renderSwitchLabel(isSignup ? t('auth.haveAccount') : t('auth.newHere'), styles)}
           </TouchableOpacity>
         ) : null}
 
@@ -474,24 +499,26 @@ const createStyles = (colors) => StyleSheet.create({
     justifyContent: 'center',
   },
   title: {
-    marginTop: 18,
-    marginBottom: 8,
-    fontFamily: fontFamilies.displayMedium,
-    fontSize: 32,
-    lineHeight: 38,
+    marginTop: 16,
+    fontFamily: fontFamilies.displaySemiBold,
+    fontSize: 30,
+    lineHeight: 36,
     letterSpacing: -0.4,
     color: colors.text,
   },
   subtitle: {
-    marginBottom: 26,
+    marginTop: 10,
     fontFamily: fontFamilies.sansRegular,
     fontSize: 15,
     lineHeight: 22,
-    color: colors.textMuted,
+    color: colors.textSecondary,
+    marginBottom: 18,
   },
+  // Apple and Google share one secondary look: surface, 1px edge, 52 tall.
   googleButton: {
+    marginTop: 10,
     minHeight: 52,
-    borderRadius: 14,
+    borderRadius: radii.control,
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: colors.surface,
@@ -502,7 +529,7 @@ const createStyles = (colors) => StyleSheet.create({
   },
   googleButtonText: {
     fontFamily: fontFamilies.sansSemiBold,
-    fontSize: 15,
+    fontSize: 16,
     color: colors.text,
   },
   appleButton: {
@@ -511,7 +538,8 @@ const createStyles = (colors) => StyleSheet.create({
     height: 52,
   },
   dividerRow: {
-    marginVertical: 20,
+    marginTop: 22,
+    marginBottom: 18,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
@@ -519,15 +547,16 @@ const createStyles = (colors) => StyleSheet.create({
   dividerLine: {
     flex: 1,
     height: 1,
-    backgroundColor: colors.border,
+    backgroundColor: colors.divider,
   },
   dividerText: {
     fontFamily: fontFamilies.sansRegular,
     fontSize: 13,
+    lineHeight: 18,
     color: colors.textTertiary,
   },
   fields: {
-    gap: 12,
+    gap: 16,
   },
   field: {
     gap: 6,
@@ -535,26 +564,27 @@ const createStyles = (colors) => StyleSheet.create({
   fieldLabel: {
     fontFamily: fontFamilies.sansSemiBold,
     fontSize: 13,
-    color: colors.textSecondary,
+    lineHeight: 18,
+    color: colors.textTertiary,
   },
   input: {
-    height: 50,
-    borderRadius: 14,
+    height: 52,
+    borderRadius: radii.control,
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: colors.surface,
-    paddingHorizontal: 14,
+    paddingHorizontal: 16,
     fontFamily: fontFamilies.sansRegular,
-    fontSize: 15,
+    fontSize: 16,
     color: colors.text,
   },
   inputFocused: {
     borderColor: colors.borderStrong,
   },
   primaryButton: {
-    marginTop: 18,
+    marginTop: 22,
     minHeight: 52,
-    borderRadius: 14,
+    borderRadius: radii.control,
     backgroundColor: colors.inkSlate,
     alignItems: 'center',
     justifyContent: 'center',
@@ -574,15 +604,23 @@ const createStyles = (colors) => StyleSheet.create({
     justifyContent: 'center',
   },
   switchButton: {
-    marginTop: 10,
-    minHeight: 44,
+    minHeight: 48,
     alignItems: 'center',
     justifyContent: 'center',
   },
   switchButtonText: {
-    fontFamily: fontFamilies.sansMedium,
-    fontSize: 14,
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 15,
+    lineHeight: 22,
+    textAlign: 'center',
     color: colors.textSecondary,
+  },
+  switchLinkText: {
+    fontFamily: fontFamilies.sansSemiBold,
+    fontSize: 15,
+    lineHeight: 22,
+    textAlign: 'center',
+    color: colors.text,
   },
   spacer: {
     flexGrow: 1,
@@ -590,7 +628,7 @@ const createStyles = (colors) => StyleSheet.create({
   },
   legalText: {
     fontFamily: fontFamilies.sansRegular,
-    fontSize: 12,
+    fontSize: 13,
     lineHeight: 18,
     textAlign: 'center',
     color: colors.textTertiary,

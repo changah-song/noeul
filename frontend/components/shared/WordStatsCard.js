@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { Modal, Pressable, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
-import { fontFamilies, useTheme } from '../../theme';
+import { fontFamilies, radii, useTheme } from '../../theme';
 import { useTranslation } from '../../hooks/useTranslation';
 import { formatNumber } from '../../services/interfaceLanguage';
 import { getLearnedWords, getWordStats } from '../../services/Database';
@@ -66,32 +66,36 @@ const WordStatsCard = ({ ownerId, profileId, language, navigation }) => {
                             <Text style={styles.value}>{formatNumber(cell.value)}</Text>
                             <View style={styles.labelRow}>
                                 <Text style={styles.label} numberOfLines={2}>{cell.label}</Text>
-                                {cell.onPress ? <Feather name="chevron-right" size={14} color={colors.textSubtle} /> : null}
+                                {cell.onPress ? <Feather name="chevron-right" size={14} color={colors.textTertiary} /> : null}
                             </View>
                         </>
                     );
-                    const cellStyle = [styles.cell, index > 0 && styles.cellDivider];
-                    return cell.onPress ? (
-                        <TouchableOpacity
-                            key={cell.key}
-                            style={cellStyle}
-                            activeOpacity={0.7}
-                            onPress={cell.onPress}
-                            accessibilityRole="button"
-                            accessibilityLabel={`${cell.label}, ${formatNumber(cell.value)}`}
-                            accessibilityHint={t('wordStats.learnedOpenHint')}
-                        >
-                            {body}
-                        </TouchableOpacity>
-                    ) : (
-                        <View
-                            key={cell.key}
-                            style={cellStyle}
-                            accessible
-                            accessibilityLabel={`${cell.label}, ${formatNumber(cell.value)}`}
-                        >
-                            {body}
-                        </View>
+                    const cellStyle = styles.cell;
+                    return (
+                        <Fragment key={cell.key}>
+                            {/* A short vertical hairline between the cells. */}
+                            {index > 0 ? <View style={styles.cellDivider} /> : null}
+                            {cell.onPress ? (
+                                <TouchableOpacity
+                                    style={cellStyle}
+                                    activeOpacity={0.7}
+                                    onPress={cell.onPress}
+                                    accessibilityRole="button"
+                                    accessibilityLabel={`${cell.label}, ${formatNumber(cell.value)}`}
+                                    accessibilityHint={t('wordStats.learnedOpenHint')}
+                                >
+                                    {body}
+                                </TouchableOpacity>
+                            ) : (
+                                <View
+                                    style={cellStyle}
+                                    accessible
+                                    accessibilityLabel={`${cell.label}, ${formatNumber(cell.value)}`}
+                                >
+                                    {body}
+                                </View>
+                            )}
+                        </Fragment>
                     );
                 })}
             </View>
@@ -139,30 +143,35 @@ const WordStatsCard = ({ ownerId, profileId, language, navigation }) => {
 
 const createStyles = (colors) => ({
     card: {
-        marginHorizontal: 16,
-        borderRadius: 18,
+        marginHorizontal: 24,
+        borderRadius: radii.control,
         borderWidth: 1,
         borderColor: colors.divider,
         backgroundColor: colors.surface,
         flexDirection: 'row',
+        // Cells stretch to the tallest one and keep their numbers on one top
+        // line, so a label that wraps to two lines can't push its number up.
+        alignItems: 'stretch',
         overflow: 'hidden',
     },
     cell: {
         flex: 1,
         minWidth: 0,
-        minHeight: 76,
-        paddingVertical: 14,
-        paddingHorizontal: 14,
-        gap: 2,
+        minHeight: 72,
+        justifyContent: 'flex-start',
+        paddingVertical: 12,
+        paddingHorizontal: 16,
     },
     cellDivider: {
-        borderLeftWidth: 1,
-        borderLeftColor: colors.divider,
+        alignSelf: 'center',
+        width: 1,
+        height: 40,
+        backgroundColor: colors.divider,
     },
     value: {
-        fontFamily: fontFamilies.displaySemiBold,
-        fontSize: 22,
-        lineHeight: 28,
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 20,
+        lineHeight: 26,
         color: colors.text,
     },
     labelRow: {
@@ -175,7 +184,7 @@ const createStyles = (colors) => ({
         fontFamily: fontFamilies.sansRegular,
         fontSize: 13,
         lineHeight: 18,
-        color: colors.textMuted,
+        color: colors.textTertiary,
     },
     backdrop: {
         flex: 1,
@@ -186,7 +195,7 @@ const createStyles = (colors) => ({
     },
     sheet: {
         maxHeight: '100%',
-        borderRadius: 20,
+        borderRadius: radii.sheet,
         padding: 20,
         backgroundColor: colors.surfaceElevated,
     },

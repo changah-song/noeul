@@ -71,7 +71,7 @@ const SyncStatusRow = ({ styles, profileColors, showDivider, dividerBelow }) => 
         accessibilityHint={canSync ? t('sync.now') : undefined}
         accessibilityState={{ busy: kind === 'syncing', disabled: !canSync }}
       >
-        <Feather name="refresh-cw" size={18} color={profileColors.body} />
+        <Feather name="refresh-cw" size={19} color={profileColors.ink} />
         <Text style={[styles.rowLabel, styles.rowLabelFlex]} numberOfLines={1}>{t('sync.title')}</Text>
         <Text
           style={[styles.rowValue, { maxWidth: '62%' }, attention && { color: profileColors.ink }]}
@@ -80,9 +80,9 @@ const SyncStatusRow = ({ styles, profileColors, showDivider, dividerBelow }) => 
           {value}
         </Text>
         {kind === 'syncing' ? (
-          <ActivityIndicator size="small" color={profileColors.faint} />
+          <ActivityIndicator size="small" color={profileColors.sub} />
         ) : (
-          <Feather name={ICONS[kind]} size={16} color={attention ? profileColors.ink : profileColors.faint} />
+          <Feather name={ICONS[kind]} size={17} color={attention ? profileColors.ink : profileColors.sub} />
         )}
       </TouchableOpacity>
       {dividerBelow ? <View style={styles.rowDivider} /> : null}

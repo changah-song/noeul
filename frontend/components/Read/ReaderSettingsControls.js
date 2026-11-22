@@ -119,16 +119,17 @@ export const Stepper = ({
  * SegmentedControl — `options` is [{ value, label, icon?, iconOnly? }] where
  * `icon` is a MaterialIcons name; `iconOnly` draws just a larger icon (the
  * label stays as its accessibility label). A muted track; the selected
- * segment is a raised white chip with semibold text.
+ * segment is a raised white chip with semibold text. `stretch` shares a
+ * full-width track equally between the segments.
  */
-export const SegmentedControl = ({ styles, colors, options, value, onChange, accessibilityLabel }) => (
+export const SegmentedControl = ({ styles, colors, options, value, onChange, accessibilityLabel, stretch = false }) => (
     <View style={styles.segmentTrack} accessibilityRole="radiogroup" accessibilityLabel={accessibilityLabel}>
         {options.map((option) => {
             const selected = option.value === value;
             return (
                 <TouchableOpacity
                     key={String(option.value)}
-                    style={[styles.segment, selected && styles.segmentActive]}
+                    style={[styles.segment, stretch && { flex: 1 }, selected && styles.segmentActive]}
                     onPress={() => onChange(option.value)}
                     activeOpacity={0.7}
                     accessibilityRole="button"
@@ -282,8 +283,8 @@ export const Checkbox = ({ styles, colors, value, onChange, accessibilityLabel }
 );
 
 /**
- * ResetLink — the small reset-to-default icon button that closes each tab
- * (`label` is its accessibility label).
+ * ResetLink — the reset-to-default button that closes each tab: the icon and
+ * `label` side by side, centred under the rows.
  */
 export const ResetLink = ({ styles, colors, label, onPress }) => (
     <TouchableOpacity
@@ -294,7 +295,8 @@ export const ResetLink = ({ styles, colors, label, onPress }) => (
         accessibilityRole="button"
         accessibilityLabel={label}
     >
-        <Feather name="rotate-ccw" size={19} color={colors?.textTertiary} />
+        <Feather name="rotate-ccw" size={15} color={colors?.textSecondary} />
+        <Text style={styles.resetLinkText} numberOfLines={1}>{label}</Text>
     </TouchableOpacity>
 );
 
@@ -421,24 +423,27 @@ export const createReaderSettingsControlStyles = (colors) => StyleSheet.create({
         alignItems: 'flex-end',
         justifyContent: 'center',
     },
+    // The same muted track as the segmented controls, with two raised keys.
     stepper: {
         flexDirection: 'row',
         alignItems: 'center',
+        padding: 3,
+        borderRadius: 12,
+        backgroundColor: colors.surfaceMuted,
     },
     stepperButton: {
-        width: 36,
-        height: 36,
-        borderRadius: 18,
+        width: 34,
+        height: 34,
+        borderRadius: 9,
         alignItems: 'center',
         justifyContent: 'center',
-        backgroundColor: colors.surface,
-        borderWidth: 1,
-        borderColor: colors.border,
+        backgroundColor: colors.segmentChip,
+        ...chipShadow,
     },
     // Room on both sides, so a long value ("1.65×") never crowds the buttons.
     stepperValue: {
         minWidth: 56,
-        marginHorizontal: 8,
+        marginHorizontal: 4,
         textAlign: 'center',
         fontFamily: fontFamilies.sansSemiBold,
         fontSize: 15,
@@ -466,7 +471,7 @@ export const createReaderSettingsControlStyles = (colors) => StyleSheet.create({
         borderRadius: 8,
     },
     segmentActive: {
-        backgroundColor: colors.surface,
+        backgroundColor: colors.segmentChip,
         ...chipShadow,
     },
     segmentText: {
@@ -491,7 +496,7 @@ export const createReaderSettingsControlStyles = (colors) => StyleSheet.create({
         bottom: TAB_TRACK_PADDING,
         left: TAB_TRACK_PADDING,
         borderRadius: 9,
-        backgroundColor: colors.surface,
+        backgroundColor: colors.segmentChip,
         ...chipShadow,
     },
     tabsSegment: {
@@ -503,7 +508,7 @@ export const createReaderSettingsControlStyles = (colors) => StyleSheet.create({
     },
     // Before the track is measured there is no sliding chip yet.
     tabsSegmentFallback: {
-        backgroundColor: colors.surface,
+        backgroundColor: colors.segmentChip,
     },
     tabsText: {
         fontFamily: fontFamilies.sansMedium,
@@ -542,11 +547,19 @@ export const createReaderSettingsControlStyles = (colors) => StyleSheet.create({
         elevation: 2,
     },
     resetLink: {
-        alignSelf: 'flex-end',
-        marginTop: 10,
-        width: 36,
-        height: 36,
+        alignSelf: 'center',
+        marginTop: 6,
+        minHeight: 44,
+        paddingHorizontal: 12,
+        flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'center',
+        gap: 7,
+    },
+    resetLinkText: {
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 14,
+        lineHeight: 19,
+        color: colors.textSecondary,
     },
 });

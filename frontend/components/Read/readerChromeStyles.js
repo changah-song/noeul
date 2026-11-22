@@ -20,7 +20,7 @@ export const createReaderChromeStyles = (themeColors) => StyleSheet.create({
         paddingBottom: 8,
         backgroundColor: themeColors.readerPaper,
         borderBottomWidth: 1,
-        borderBottomColor: themeColors.readerHairline,
+        borderBottomColor: themeColors.divider,
     },
     headerLeft: {
         flexDirection: 'row',
@@ -28,13 +28,13 @@ export const createReaderChromeStyles = (themeColors) => StyleSheet.create({
         gap: 4,
     },
     headerBackButton: {
-        width: 42,
+        width: 44,
         height: READER_HEADER_BUTTON_HEIGHT,
         alignItems: 'center',
         justifyContent: 'center',
     },
     headerIconButton: {
-        width: 40,
+        width: 44,
         height: READER_HEADER_BUTTON_HEIGHT,
         borderRadius: 12,
         alignItems: 'center',
@@ -47,7 +47,7 @@ export const createReaderChromeStyles = (themeColors) => StyleSheet.create({
         marginLeft: READER_HEADER_GROUP_GAP,
     },
     savedButton: {
-        width: 40,
+        width: 44,
         height: READER_HEADER_BUTTON_HEIGHT,
         alignItems: 'center',
         justifyContent: 'center',
@@ -140,9 +140,9 @@ export const createReaderChromeStyles = (themeColors) => StyleSheet.create({
         flexShrink: 1,
         minWidth: 0,
         fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 15,
-        lineHeight: 21,
-        color: themeColors.inkSlate,
+        fontSize: 16,
+        lineHeight: 22,
+        color: themeColors.text,
         includeFontPadding: false,
     },
     titleChevron: {
@@ -150,7 +150,7 @@ export const createReaderChromeStyles = (themeColors) => StyleSheet.create({
         marginTop: 1,
     },
     settingsButton: {
-        width: 42,
+        width: 44,
         height: READER_HEADER_BUTTON_HEIGHT,
         borderRadius: 12,
         alignItems: 'center',
@@ -250,8 +250,8 @@ export const createReaderChromeStyles = (themeColors) => StyleSheet.create({
     // ── Listen bar (consumed by ListenBar) ───────────────────────────────────
     listenBarWrap: {
         position: 'absolute',
-        left: 14,
-        right: 14,
+        left: 16,
+        right: 16,
         zIndex: 12,
     },
     listenBar: {
@@ -273,11 +273,11 @@ export const createReaderChromeStyles = (themeColors) => StyleSheet.create({
     // of room (a narrow phone, a wider speed label), so the close button stays
     // inside the bar.
     listenButton: {
-        width: 40,
+        width: 44,
         minWidth: 28,
         flexShrink: 1,
         height: 44,
-        borderRadius: 20,
+        borderRadius: 22,
         alignItems: 'center',
         justifyContent: 'center',
     },
@@ -291,49 +291,45 @@ export const createReaderChromeStyles = (themeColors) => StyleSheet.create({
     },
     listenDivider: {
         width: 1,
-        height: 26,
+        height: 24,
         marginHorizontal: 6,
-        backgroundColor: themeColors.readerHairline,
+        backgroundColor: themeColors.divider,
     },
+    // Speed, voice and the two study toggles are plain 44 icon buttons: only
+    // play/pause is filled.
     listenSpeedChip: {
-        height: 36,
+        height: 44,
+        minWidth: 44,
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 5,
-        paddingHorizontal: 10,
-        marginRight: 4,
-        borderRadius: 18,
-        borderWidth: 1,
-        borderColor: themeColors.readerBorder,
-        backgroundColor: themeColors.readerSurface,
+        justifyContent: 'center',
+        gap: 4,
+        paddingHorizontal: 6,
+        borderRadius: 22,
     },
     listenSpeedLabel: {
         fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 13,
-        lineHeight: 17,
-        color: themeColors.readerBodyInk,
+        fontSize: 15,
+        lineHeight: 20,
+        color: themeColors.text,
         fontVariant: ['tabular-nums'],
     },
     listenToggle: {
-        width: 36,
-        height: 36,
-        marginHorizontal: 2,
-        borderRadius: 18,
-        borderWidth: 1,
-        borderColor: themeColors.readerBorder,
-        backgroundColor: themeColors.readerSurface,
+        width: 44,
+        height: 44,
+        borderRadius: 22,
         alignItems: 'center',
         justifyContent: 'center',
     },
+    // A toggle that's on: a quiet well behind its icon, not a fill.
     listenToggleActive: {
-        backgroundColor: themeColors.inkSlate,
-        borderColor: themeColors.inkSlate,
+        backgroundColor: themeColors.surfaceMuted,
     },
     listenSpacer: {
         flex: 1,
     },
     listenCloseButton: {
-        width: 40,
+        width: 44,
         minWidth: 28,
         flexShrink: 1,
         height: 44,

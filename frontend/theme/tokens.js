@@ -13,6 +13,9 @@ export const colorPairs = {
   surfaceSelected: pair('#f0eded', '#202631'),
   surfaceElevated: pair('#ffffff', '#1b1c1c'),
   surfaceStrong: pair('#e4e2e2', '#202631'),
+  // The raised chip of a segmented control or stepper: white on the light
+  // page, a lifted grey on the dark one, where surface would vanish.
+  segmentChip: pair('#ffffff', '#3a4250'),
   border: pair('#e4e2e2', '#353c47'),
   borderStrong: pair('#c5c6cb', '#353c47'),
   divider: pair('#eceaea', '#202631'),
@@ -21,7 +24,7 @@ export const colorPairs = {
   text: pair('#1b1c1c', '#f0eded'),
   textSecondary: pair('#44474b', '#c5c6cb'),
   textMuted: pair('#5c5e63', '#9a9c9f'),
-  textTertiary: pair('#75777b', '#75777b'),
+  textTertiary: pair('#6f7175', '#9a9c9f'),
   textSubtle: pair('#9a9c9f', '#5c5e63'),
   inkSlate: pair('#202631', '#f0eded'),
   inkPressed: pair('#0e1014', '#f0eded'),
@@ -132,6 +135,7 @@ const sepiaOverrides = {
   panelShadow: 'rgba(59, 47, 37, 0.16)',
   overlay: 'rgba(59, 47, 37, 0.32)',
   white: SEPIA_SURFACE,
+  segmentChip: SEPIA_SURFACE,
 
   readerPaper: SEPIA_PAPER,
   readerSurface: SEPIA_SURFACE,
@@ -235,6 +239,11 @@ export const radii = {
   lg: 10,
   xl: 16,
   pill: 999,
+  // The polish pass uses only these three, plus pill for floating bars:
+  // small parts (chips, wells, tags), controls and cards, sheets and pop-ups.
+  chip: 8,
+  control: 14,
+  sheet: 24,
 };
 
 export const elevation = {

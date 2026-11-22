@@ -32,7 +32,7 @@ import {
   setPendingInvite,
   subscribePendingInvite,
 } from '../../services/friends';
-import { fontFamilies } from '../../theme';
+import { fontFamilies, radii } from '../../theme';
 
 const ERROR_KEYS = {
   notFound: 'friends.inviteNotFound',
@@ -66,14 +66,14 @@ const FriendRow = ({ friend, name, onPress, showDivider, styles, own, t }) => {
           .filter(Boolean)
           .join(', ')}
       >
-        <ProfileAvatar user={{ id: friend.id, user_metadata: { name } }} size={34} />
+        <ProfileAvatar user={{ id: friend.id, user_metadata: { name } }} size={36} />
         <View style={own.friendText}>
           <Text style={styles.rowLabel} numberOfLines={1}>{name}</Text>
           {title ? (
             <Text style={own.friendBook} numberOfLines={1}>{t('friends.reading', { title })}</Text>
           ) : null}
         </View>
-        {streak ? <Text style={styles.rowValue} numberOfLines={1}>{streakLabel(streak, t)}</Text> : null}
+        {streak ? <Text style={own.friendStreak} numberOfLines={1}>{streakLabel(streak, t)}</Text> : null}
       </TouchableOpacity>
     </>
   );
@@ -247,9 +247,9 @@ const FriendsSection = ({ user, isGuest, ownerId, books, currentBook, navigation
         accessibilityRole="button"
         accessibilityLabel={label}
       >
-        <Feather name={icon} size={18} color={profileColors.body} />
+        <Feather name={icon} size={19} color={profileColors.ink} />
         <Text style={[styles.rowLabel, styles.rowLabelFlex]} numberOfLines={1}>{label}</Text>
-        <Feather name="chevron-right" size={16} color={profileColors.faint} />
+        <Feather name="chevron-right" size={17} color={profileColors.sub} />
       </TouchableOpacity>
     </>
   );
@@ -284,7 +284,7 @@ const FriendsSection = ({ user, isGuest, ownerId, books, currentBook, navigation
             ))}
             {loadFailed && friends.length === 0 ? (
               <TouchableOpacity activeOpacity={0.7} onPress={reload} style={styles.row} accessibilityRole="button">
-                <Feather name="alert-circle" size={18} color={profileColors.body} />
+                <Feather name="alert-circle" size={19} color={profileColors.ink} />
                 <Text style={[styles.rowLabel, styles.rowLabelFlex]} numberOfLines={1}>{t('friends.loadFailed')}</Text>
                 <Text style={styles.rowValue}>{t('common.tryAgain')}</Text>
               </TouchableOpacity>
@@ -317,7 +317,7 @@ const FriendsSection = ({ user, isGuest, ownerId, books, currentBook, navigation
                   <ProfileAvatar user={open ? { id: open.id, user_metadata: { name: nameOf(open) } } : null} size={44} />
                   <Text style={[styles.modalTitle, own.detailName]} numberOfLines={1}>{nameOf(open)}</Text>
                 </View>
-                <View>
+                <View style={own.statCard}>
                   {stats.map(([label, value], index) => (
                     <View key={label} style={[own.statRow, index > 0 && own.statRowDivider]}>
                       <Text style={own.statLabel}>{label}</Text>
@@ -342,10 +342,10 @@ const FriendsSection = ({ user, isGuest, ownerId, books, currentBook, navigation
                   ) : null}
                 </View>
                 <View style={styles.modalActions}>
-                  <Pressable onPress={() => open && confirmRemove(open)} style={styles.modalButton}>
+                  <Pressable onPress={() => open && confirmRemove(open)} style={[styles.modalButton, own.detailButton]}>
                     <Text style={[styles.modalButtonText, { color: profileColors.danger }]}>{t('friends.remove')}</Text>
                   </Pressable>
-                  <Pressable onPress={() => setOpenFriend(null)} style={[styles.modalButton, styles.modalPrimaryButton]}>
+                  <Pressable onPress={() => setOpenFriend(null)} style={[styles.modalButton, styles.modalPrimaryButton, own.detailButton]}>
                     <Text style={[styles.modalButtonText, styles.modalPrimaryButtonText]}>{t('common.close')}</Text>
                   </Pressable>
                 </View>
@@ -393,7 +393,7 @@ const FriendsSection = ({ user, isGuest, ownerId, books, currentBook, navigation
 
 const createStyles = (profileColors) => StyleSheet.create({
   friendRow: {
-    minHeight: 60,
+    minHeight: 64,
     gap: 12,
   },
   friendText: {
@@ -404,15 +404,34 @@ const createStyles = (profileColors) => StyleSheet.create({
     fontFamily: fontFamilies.sansRegular,
     fontSize: 13,
     lineHeight: 18,
-    color: profileColors.body,
+    color: profileColors.sub,
+  },
+  friendStreak: {
+    flexShrink: 0,
+    maxWidth: '40%',
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 13,
+    lineHeight: 18,
+    color: profileColors.sub,
   },
   note: {
     marginTop: 8,
-    marginHorizontal: 20,
+    marginHorizontal: 24,
     fontFamily: fontFamilies.sansRegular,
-    fontSize: 12,
-    lineHeight: 17,
+    fontSize: 13,
+    lineHeight: 18,
     color: profileColors.sub,
+  },
+  // The friend's numbers as a small list card inside the pop-up.
+  statCard: {
+    paddingHorizontal: 16,
+    borderRadius: radii.control,
+    borderWidth: 1,
+    borderColor: profileColors.border,
+    backgroundColor: profileColors.surface,
+  },
+  detailButton: {
+    flex: 1,
   },
   detailHeader: {
     flexDirection: 'row',
@@ -424,8 +443,8 @@ const createStyles = (profileColors) => StyleSheet.create({
     minWidth: 0,
   },
   statRow: {
-    minHeight: 44,
-    paddingVertical: 10,
+    minHeight: 48,
+    paddingVertical: 12,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -437,9 +456,9 @@ const createStyles = (profileColors) => StyleSheet.create({
   },
   statLabel: {
     fontFamily: fontFamilies.sansRegular,
-    fontSize: 14,
+    fontSize: 15,
     lineHeight: 20,
-    color: profileColors.body,
+    color: profileColors.secondary,
   },
   statValue: {
     fontFamily: fontFamilies.sansSemiBold,
@@ -460,7 +479,7 @@ const createStyles = (profileColors) => StyleSheet.create({
     fontFamily: fontFamilies.sansRegular,
     fontSize: 13,
     lineHeight: 18,
-    color: profileColors.body,
+    color: profileColors.sub,
     textAlign: 'right',
   },
 });
