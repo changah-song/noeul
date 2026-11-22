@@ -94,17 +94,28 @@ the uptime monitor shows requests queueing behind slow ones.
 
   lookup cache reset with every deploy.
 
-## Google Translate cost
+## Translation cost
 
-Google bills every character sent to Translate. Three things bound it:
+The reader's sentences (`/translate/`, `/translate_sentences/`) are translated
+by Claude Haiku 5.5, about $0.55-0.80 per million source characters, with
+Google Translate ($20 per million) as the fallback. `/health` shows what a
+deploy picked up under `translation`.
 
+- `TRANSLATE_ENGINE` (Railway variable): `claude` (the default when
+  `ANTHROPIC_API_KEY` is set) or `google`, the rollback switch.
+  `TRANSLATE_MODEL` (default `claude-haiku-5-5`) picks the Claude model; keep it
+  in `MODEL_PRICING_PER_MTOK` so its spend is counted.
+- Claude's spend counts against `DAILY_AI_BUDGET_USD` (default $25), shared with
+  the word explanations. Past it, translation goes to Google instead.
 - `translate_cache` in `cache.db`: a sentence anyone has had translated is free
-  from then on. It only lasts if `cache.db` is on the volume.
-- Sentences are translated when a reader opens one (or listen mode reaches
-  it), not a chapter at a time. The app still asks for whole chapters ahead;
-  the server answers those from the cache only. `TRANSLATE_CHAPTERS_AHEAD=1`
-  (Railway variable) turns whole-chapter translation back on, and
-  `TRANSLATE_ON_DEMAND_MAX_ITEMS` (default 8) is the largest request still
-  translated in full.
+  from then on (at most 50,000 rows, oldest dropped first). It only lasts if
+  `cache.db` is on the volume.
+- Whole chapters are translated ahead when a chapter opens while Claude is the
+  engine; `TRANSLATE_CHAPTERS_AHEAD=0` stops that, and it is off by default
+  under Google. A chapter fetched ahead never falls back to Google: a sentence
+  Claude could not do waits until a reader opens it. Requests of up to
+  `TRANSLATE_ON_DEMAND_MAX_ITEMS` (default 8) sentences count as a reader
+  waiting, and those do fall back to Google.
 - `DAILY_TRANSLATE_CHAR_BUDGET` (default 2,000,000 characters): the hard stop
-  for one UTC day. Past it, translation answers 503 until midnight.
+  on characters sent to Google in one UTC day. Past it, a sentence Claude
+  could not translate answers 503 until midnight.
