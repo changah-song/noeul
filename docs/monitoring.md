@@ -96,26 +96,48 @@ the uptime monitor shows requests queueing behind slow ones.
 
 ## Translation cost
 
-The reader's sentences (`/translate/`, `/translate_sentences/`) are translated
-by Claude Haiku 5.5, about $0.55-0.80 per million source characters, with
-Google Translate ($20 per million) as the fallback. `/health` shows what a
-deploy picked up under `translation`.
+Two kinds of text are translated, both by Claude Haiku 5.5 (about $0.55-0.80 per
+million source characters) with Google Translate ($20 per million) as the
+fallback. `/health` shows what a deploy picked up under `translation`.
 
-- `TRANSLATE_ENGINE` (Railway variable): `claude` (the default when
-  `ANTHROPIC_API_KEY` is set) or `google`, the rollback switch.
-  `TRANSLATE_MODEL` (default `claude-haiku-5-5`) picks the Claude model; keep it
-  in `MODEL_PRICING_PER_MTOK` so its spend is counted.
+- The reader's sentences: `/translate/` and `/translate_sentences/`.
+- The dictionary's text: definitions and headwords put into the learner's
+  language when a chapter is prepared (`/preprocess_chapter*/`) or a word is
+  searched, and the bundled content of `/translate_content/`. This is the
+  larger of the two: a chapter nobody has opened before is 80,000-250,000
+  characters of definitions for a Korean reader of an English book, which on
+  Google is about 2,500-7,300 won a chapter.
+
+Settings (Railway variables):
+
+- `TRANSLATE_ENGINE`: `claude` (the default when `ANTHROPIC_API_KEY` is set) or
+  `google`, the rollback switch for both kinds. `TRANSLATE_MODEL` (default
+  `claude-haiku-5-5`) picks the Claude model; keep it in
+  `MODEL_PRICING_PER_MTOK` so its spend is counted.
 - Claude's spend counts against `DAILY_AI_BUDGET_USD` (default $25), shared with
   the word explanations. Past it, translation goes to Google instead.
-- `translate_cache` in `cache.db`: a sentence anyone has had translated is free
-  from then on (at most 50,000 rows, oldest dropped first). It only lasts if
-  `cache.db` is on the volume.
-- Whole chapters are translated ahead when a chapter opens while Claude is the
-  engine; `TRANSLATE_CHAPTERS_AHEAD=0` stops that, and it is off by default
-  under Google. A chapter fetched ahead never falls back to Google: a sentence
-  Claude could not do waits until a reader opens it. Requests of up to
-  `TRANSLATE_ON_DEMAND_MAX_ITEMS` (default 8) sentences count as a reader
+- `translate_cache` in `cache.db`: a sentence or definition anyone has had
+  translated is free from then on (at most 50,000 rows, oldest dropped first).
+  It only lasts if `cache.db` is on the volume.
+- Whole chapters of sentences are translated ahead when a chapter opens while
+  Claude is the engine; `TRANSLATE_CHAPTERS_AHEAD=0` stops that, and it is off
+  by default under Google. A chapter fetched ahead never falls back to Google:
+  a sentence Claude could not do waits until a reader opens it. Requests of up
+  to `TRANSLATE_ON_DEMAND_MAX_ITEMS` (default 8) sentences count as a reader
   waiting, and those do fall back to Google.
+- Dictionary text goes to Claude in chunks of 25, `DICTIONARY_CLAUDE_CONCURRENCY`
+  (default 12) at a time. The app waits 45 s for a prepared chapter, so a chunk
+  still waiting its turn after `DICTIONARY_CLAUDE_START_WITHIN_SECONDS`
+  (default 12) goes to Google with whatever else Claude left. If first-time
+  chapters keep sending text to Google, raise the concurrency.
 - `DAILY_TRANSLATE_CHAR_BUDGET` (default 2,000,000 characters): the hard stop
-  on characters sent to Google in one UTC day. Past it, a sentence Claude
-  could not translate answers 503 until midnight.
+  on characters sent to Google in one UTC day. Past it, text Claude could not
+  translate stays untranslated (a sentence answers 503) until midnight.
+
+If Google still bills for translation, the backend log says where it went:
+
+- `[main] dictionary translation en->ko: 1400 texts, claude 1400, google 0,
+  untranslated 0` is written for every batch of dictionary text. A `google`
+  count above zero is text Google was paid for.
+- `[translation] claude failed: <error>` and `claude stopped early` are Claude
+  calls whose texts went to the fallback.

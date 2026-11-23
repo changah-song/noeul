@@ -212,3 +212,74 @@ def test_claude_names_both_chinese_scripts_and_unknown_codes():
 def test_max_tokens_grows_with_the_text_but_is_capped():
     assert t.claude_translation_request(["가" * 10], source="ko", target="en")["max_tokens"] == 296
     assert t.claude_translation_request(["가" * 5000], source="ko", target="en")["max_tokens"] == 8192
+
+
+# --- Claude, dictionary text ----------------------------------------------------
+
+
+def test_dictionary_text_gets_its_own_instructions():
+    call = FakeClaude()
+    translations, _ = claude(call, ["A large body of water.", "underneath (adverb)"], source="en", target="ko")
+    assert translations == ["<A large body of water.>", "<underneath (adverb)>"]
+    sentences = call.requests[0]["system"]
+    assert "reading a book" in sentences and "dictionary" not in sentences
+
+    call = FakeClaude()
+    asyncio.run(t.translate_with_claude(
+        call, ["A large body of water.", "underneath (adverb)"], source="en", target="ko", kind=t.DICTIONARY,
+    ))
+    request = call.requests[0]
+    assert "dictionary text from English into Korean" in request["system"]
+    assert "part of speech in parentheses" in request["system"]
+    assert "reading a book" not in request["system"]
+    assert json.loads(request["messages"][0]["content"]) == {
+        "texts": ["A large body of water.", "underneath (adverb)"],
+    }
+    assert request["output_format"]["schema"] == t.TRANSLATIONS_SCHEMA
+
+
+def test_a_lone_dictionary_text_goes_as_plain_text():
+    request = t.claude_translation_request(["学习"], source="zh-CN", target="es", kind=t.DICTIONARY)
+    assert request["output_format"] is None
+    assert request["messages"][0]["content"] == "学习"
+    assert "Simplified Chinese into Spanish" in request["system"] and "translation only" in request["system"]
+
+
+def test_chunks_run_as_many_at_a_time_as_asked():
+    running, most = 0, 0
+
+    async def call(request):
+        nonlocal running, most
+        running += 1
+        most = max(most, running)
+        await asyncio.sleep(0)
+        running -= 1
+        texts = json.loads(request["messages"][0]["content"])["texts"]
+        return json.dumps({"translations": texts}), "end_turn", {}
+
+    texts = [f"sense {index}" for index in range(25 * 8)]
+    translations, usages = asyncio.run(t.translate_with_claude(
+        call, texts, source="en", target="ko", kind=t.DICTIONARY, max_concurrent=3,
+    ))
+    assert translations == texts and len(usages) == 8
+    assert most == 3
+
+
+def test_chunks_not_started_in_time_are_left_for_the_fallback():
+    sent = []
+
+    async def slow_call(request):
+        texts = json.loads(request["messages"][0]["content"])["texts"]
+        sent.append(texts[0])
+        await asyncio.sleep(0.05)
+        return json.dumps({"translations": [f"<{text}>" for text in texts]}), "end_turn", {}
+
+    texts = [f"sense {index}" for index in range(25 * 4)]
+    translations, usages = asyncio.run(t.translate_with_claude(
+        slow_call, texts, source="en", target="ko", kind=t.DICTIONARY, max_concurrent=1, start_within=0.02,
+    ))
+    # One at a time, 50 ms each, 20 ms to get started: only the first chunk goes.
+    assert sent == ["sense 0"]
+    assert translations[:25] == [f"<{text}>" for text in texts[:25]]
+    assert translations[25:] == [None] * 75
+    assert len(usages) == 1

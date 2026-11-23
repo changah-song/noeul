@@ -8,8 +8,9 @@ definitions in the learner's language without a translation call.
 Scope (the defaults): the FIRST sense of each word's two most common entries,
 for words with a wordfreq Zipf frequency of at least 3.0 (about 19k words,
 1.7M characters for Korean, roughly $34 on Google Cloud Translation). Other
-senses and rarer words are translated at preprocess time and cached on the
-server (main.translate_en_missing_senses).
+senses and rarer words are translated at preprocess time, by Claude with
+Google as the fallback, and cached on the server
+(main.translate_en_missing_senses).
 
 Rows are keyed by the English sense text, so a dictionary rebuild keeps them
 (build_en_learner_dict.py carries the table over) and a rerun only sends what

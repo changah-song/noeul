@@ -1,10 +1,11 @@
 """Text translation: a Claude model first, Google Translate as the fallback.
 
-Claude (translate_with_claude): the reader's sentences go to a Claude model,
-by default Haiku 5.5. On the 52-sentence test drawn from the bundled books it
-made fewer mistakes than every other option tried, and it costs about
-$0.55-0.80 per million source characters against Google's $20. The model call
-is injected, so this module needs neither the Anthropic SDK nor FastAPI.
+Claude (translate_with_claude): the reader's sentences and the dictionary's
+definitions and headwords go to a Claude model, by default Haiku 5.5. On the
+52-sentence test drawn from the bundled books it made fewer mistakes than
+every other option tried, and it costs about $0.55-0.80 per million source
+characters against Google's $20. The model call is injected, so this module
+needs neither the Anthropic SDK nor FastAPI.
 
 Google providers, in order (translate_texts):
 1. The official Google Cloud Translation API (Basic / v2), when
@@ -152,6 +153,10 @@ CLAUDE_CHUNK_MAX_ITEMS = 25
 CLAUDE_CHUNK_MAX_CHARS = 2_000
 CLAUDE_MAX_CONCURRENT_CHUNKS = 6
 
+# What the texts are, which picks the instructions the model gets.
+SENTENCES = "sentences"  # what a reader is reading: a book's sentences, in order
+DICTIONARY = "dictionary"  # a dictionary's own text: definitions and headwords
+
 # One model call: request -> (response text, stop reason, usage). The request
 # holds "system", "messages", "max_tokens" and "output_format" (a JSON schema,
 # or None for plain text); the caller adds the model and its own settings.
@@ -208,32 +213,50 @@ def claude_chunks(texts: list[str]) -> list[list[str]]:
     return chunks
 
 
-def claude_translation_request(texts: list[str], *, source: str, target: str) -> dict:
-    """The request for one chunk. `source`/`target` are normalized codes.
+def _claude_instructions(kind: str, from_name: str, to_name: str) -> tuple[str, str, str, str]:
+    """(who the model is, what one text is, what a list of texts is, how to
+    translate) for `kind`."""
+    if kind == DICTIONARY:
+        return (
+            f"You translate dictionary text from {from_name} into {to_name} for a language learner.",
+            "You get one text: a definition of a word, or a word on its own.",
+            "You get a JSON list of texts that have nothing to do with each other: "
+            "each is a definition of a word, or a word on its own.",
+            f"Translate a definition as a short, natural dictionary definition in {to_name} that keeps every "
+            f"meaning it lists and adds none. For a word on its own, give its most common {to_name} equivalent; "
+            'a part of speech in parentheses after it, as in "underneath (adverb)", only says which reading '
+            "is meant, so leave it out of the answer.",
+        )
+    return (
+        f"You translate {from_name} into {to_name} for someone reading a book in {from_name} to learn the language.",
+        "You get one text, usually a sentence from the book.",
+        "You get a JSON list of texts, usually sentences from the book, in reading order.",
+        "Translate faithfully: keep every detail, add nothing, keep people's names as names, "
+        f"and keep the tone, including dialect and old-fashioned wording, as far as {to_name} allows.",
+    )
+
+
+def claude_translation_request(texts: list[str], *, source: str, target: str, kind: str = SENTENCES) -> dict:
+    """The request for one chunk. `source`/`target` are normalized codes; `kind`
+    is SENTENCES or DICTIONARY.
 
     A lone text (a sentence a reader just opened) goes as plain text and comes
     back as plain text: measured on the test sentences, that is about twice as
     cheap and a third quicker than the JSON form a batch needs to stay aligned.
     "output_format" is None for it."""
-    from_name, to_name = language_name(source), language_name(target)
-    faithful = (
-        "Translate faithfully: keep every detail, add nothing, keep people's names as names, "
-        f"and keep the tone, including dialect and old-fashioned wording, as far as {to_name} allows."
-    )
-    intro = f"You translate {from_name} into {to_name} for someone reading a book in {from_name} to learn the language."
+    intro, one_text, many_texts, how = _claude_instructions(kind, language_name(source), language_name(target))
     chars = sum(len(text) for text in texts)
     # Generous: Korean or Thai output can take several tokens per source character.
     max_tokens = min(8_192, 256 + 4 * chars)
     if len(texts) == 1:
         return {
-            "system": f"{intro} You get one text, usually a sentence from the book. {faithful} "
-            "Reply with the translation only, without notes.",
+            "system": f"{intro} {one_text} {how} Reply with the translation only, without notes.",
             "messages": [{"role": "user", "content": texts[0]}],
             "max_tokens": max_tokens,
             "output_format": None,
         }
     return {
-        "system": f"{intro} You get a JSON list of texts, usually sentences from the book, in reading order. {faithful} "
+        "system": f"{intro} {many_texts} {how} "
         "Return exactly one translation per text, in the same order. Never merge, split or skip a text, "
         "and never add notes.",
         "messages": [{"role": "user", "content": json.dumps({"texts": texts}, ensure_ascii=False)}],
@@ -258,18 +281,32 @@ async def translate_with_claude(
     *,
     source: str,
     target: str,
+    kind: str = SENTENCES,
+    max_concurrent: int = CLAUDE_MAX_CONCURRENT_CHUNKS,
+    start_within: float | None = None,
 ) -> tuple[list[str | None], list[Any]]:
     """Translate `texts` with a Claude model. Returns the translations aligned
     with `texts` (None where a chunk failed) and the usage of every call that
-    completed, failed ones included, so all spend can be recorded."""
+    completed, failed ones included, so all spend can be recorded.
+
+    `start_within` (seconds) bounds how long a big batch can take: a chunk still
+    waiting its turn after that long is not sent, and its texts stay None for
+    the caller's fallback. With the per-call timeout the caller sets, the whole
+    batch then ends within about `start_within` plus one timeout."""
     chunks = claude_chunks(texts)
-    semaphore = asyncio.Semaphore(CLAUDE_MAX_CONCURRENT_CHUNKS)
+    semaphore = asyncio.Semaphore(max(1, max_concurrent))
     usages: list[Any] = []
+    loop = asyncio.get_running_loop()
+    give_up_at = None if start_within is None else loop.time() + start_within
 
     async def translate_chunk(chunk: list[str]) -> list[str | None]:
         async with semaphore:
+            if give_up_at is not None and loop.time() > give_up_at:
+                return [None] * len(chunk)
             try:
-                answer, stop_reason, usage = await call(claude_translation_request(chunk, source=source, target=target))
+                answer, stop_reason, usage = await call(
+                    claude_translation_request(chunk, source=source, target=target, kind=kind)
+                )
             except Exception as error:  # the caller falls back
                 print(f"[translation] claude failed: {type(error).__name__}")
                 return [None] * len(chunk)

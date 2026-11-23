@@ -98,6 +98,8 @@ from translation import (
     TranslationError,
     configured_providers as configured_translation_providers,
     normalize_language_code as normalize_translate_language,
+    DICTIONARY as DICTIONARY_TEXT,
+    SENTENCES as SENTENCE_TEXT,
     translate_texts,
     translate_with_claude,
 )
@@ -1077,18 +1079,31 @@ TRANSLATION_PROVIDERS = configured_translation_providers(
 # The app gives up on /translate/ after 8 s; two providers at 3.8 s each fit inside it.
 INTERACTIVE_TRANSLATE_TIMEOUT_SECONDS = 3.8
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
-# What translates the reader's sentences (/translate/ and /translate_sentences/).
-# "claude", the default when an Anthropic key is set, sends them to
-# TRANSLATE_MODEL and keeps Google Translate as the fallback for a sentence a
-# reader is waiting on. "google" goes back to Google Translate alone, as a
-# rollback switch. Both are Railway service variables. Dictionary glosses and
-# bundled content (translate_texts_cached, _translate_batch) stay on Google.
+# What translates the reader's sentences (/translate/ and /translate_sentences/)
+# and the dictionary's text (definitions and headwords put into the learner's
+# language when a chapter is prepared or a word is searched, and the bundled
+# content of /translate_content/). "claude", the default when an Anthropic key
+# is set, sends them to TRANSLATE_MODEL and keeps Google Translate as the
+# fallback for what Claude did not translate. "google" goes back to Google
+# Translate alone, as a rollback switch. Both are Railway service variables.
 TRANSLATE_MODEL = os.getenv("TRANSLATE_MODEL", "claude-haiku-5-5").strip() or "claude-haiku-5-5"
 TRANSLATE_ENGINE = (os.getenv("TRANSLATE_ENGINE") or "claude").strip().lower()
 CLAUDE_TRANSLATION = TRANSLATE_ENGINE == "claude" and bool(ANTHROPIC_API_KEY) and anthropic_sdk is not None
 # Claude's share of the app's 8 s for /translate/, leaving Google room after it.
 # Haiku answers one sentence in about a second.
 INTERACTIVE_CLAUDE_TIMEOUT_SECONDS = 3.0
+# Dictionary text for a chapter being prepared: up to a few thousand short
+# definitions at once, and the app waits 45 s for the whole answer. Claude gets
+# them in chunks, DICTIONARY_CLAUDE_CONCURRENCY at a time, each call given
+# DICTIONARY_CLAUDE_TIMEOUT_SECONDS and never retried. A chunk still waiting
+# its turn after DICTIONARY_CLAUDE_START_WITHIN_SECONDS is not sent to Claude,
+# and Google takes it with whatever else Claude left, so a chapter nobody has
+# opened before is slower than on Google alone but stays inside the 45 s.
+DICTIONARY_CLAUDE_CONCURRENCY = parse_positive_int_env(os.getenv("DICTIONARY_CLAUDE_CONCURRENCY"), 12)
+DICTIONARY_CLAUDE_TIMEOUT_SECONDS = 20.0
+DICTIONARY_CLAUDE_START_WITHIN_SECONDS = float(
+    parse_positive_int_env(os.getenv("DICTIONARY_CLAUDE_START_WITHIN_SECONDS"), 12)
+)
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
 SUPABASE_JWT_AUDIENCE = os.getenv("SUPABASE_JWT_AUDIENCE", "").strip() or "authenticated"
 SUPABASE_ISSUER = f"{SUPABASE_URL}/auth/v1" if SUPABASE_URL else ""
@@ -1602,11 +1617,15 @@ async def claude_translations(
     *,
     timeout: float,
     retries: int = ANTHROPIC_MAX_RETRIES,
+    kind: str = SENTENCE_TEXT,
+    max_concurrent: int | None = None,
+    start_within: float | None = None,
 ) -> list[str | None]:
     """Translate with TRANSLATE_MODEL; aligned with `texts`, None for every text
     it did not translate. Nothing is sent when Claude translation is off or
     today's AI budget (shared with explanations) is spent, and every completed
-    call is added to that budget."""
+    call is added to that budget. `kind`, `max_concurrent` and `start_within`
+    are translate_with_claude's."""
     if not texts or not CLAUDE_TRANSLATION:
         return [None] * len(texts)
     if await asyncio.to_thread(_get_daily_spend_usd) >= DAILY_AI_BUDGET_USD:
@@ -1616,7 +1635,10 @@ async def claude_translations(
     async def call(request: dict):
         return await _claude_translation_call(request, timeout=timeout, retries=retries)
 
-    translations, usages = await translate_with_claude(call, texts, source=source, target=target)
+    options = {} if max_concurrent is None else {"max_concurrent": max_concurrent}
+    translations, usages = await translate_with_claude(
+        call, texts, source=source, target=target, kind=kind, start_within=start_within, **options
+    )
     for usage in usages:
         await record_ai_spend(TRANSLATE_MODEL, usage)
     return translations
@@ -3691,11 +3713,14 @@ async def _translate_one_cached(
     timeout: float,
     *,
     use_claude: bool = False,
+    kind: str = SENTENCE_TEXT,
+    claude_timeout: float = INTERACTIVE_CLAUDE_TIMEOUT_SECONDS,
 ) -> str | None:
     """Translate one string through translate_cache and the daily character budget.
 
     `source`/`target` must already be normalized. With `use_claude`, a cache miss
-    goes to TRANSLATE_MODEL first and to Google only if that fails. Raises
+    goes to TRANSLATE_MODEL first (as `kind`, given `claude_timeout`) and to
+    Google only if that fails. Raises
     TranslateBudgetExceeded when a miss would go over today's Google budget, and
     TranslationError when every provider fails.
     """
@@ -3705,7 +3730,7 @@ async def _translate_one_cached(
         return cached
     if use_claude:
         [translated] = await claude_translations(
-            [text], source, target, timeout=INTERACTIVE_CLAUDE_TIMEOUT_SECONDS, retries=0
+            [text], source, target, timeout=claude_timeout, retries=0, kind=kind
         )
         if translated:
             await cache_translations([(key, translated)])
@@ -3733,11 +3758,25 @@ async def _translate_text(text: str, source: str = "en", target: str = "en") -> 
     normalized_source = normalize_translate_language(source, "en")
     normalized_target = normalize_translate_language(target, "en")
 
-    if not cleaned_text or normalized_source == normalized_target or not TRANSLATION_PROVIDERS:
+    if (
+        not cleaned_text
+        or normalized_source == normalized_target
+        or not (TRANSLATION_PROVIDERS or CLAUDE_TRANSLATION)
+    ):
         return None
 
     try:
-        return await _translate_one_cached(cleaned_text, normalized_source, normalized_target, 8.0)
+        # Dictionary text (a searched word's definition or gloss): Claude
+        # first, like a chapter's (_translate_batch).
+        return await _translate_one_cached(
+            cleaned_text,
+            normalized_source,
+            normalized_target,
+            8.0,
+            use_claude=True,
+            kind=DICTIONARY_TEXT,
+            claude_timeout=ON_DEMAND_CLAUDE_TIMEOUT_SECONDS,
+        )
     except TranslateBudgetExceeded:
         print("[main] Internal translation skipped: daily translation budget reached")
         return None
@@ -3752,15 +3791,70 @@ async def _translate_batch(
     target: str = "en",
     batch_size: int = 100,
 ) -> list[str | None]:
-    """Translate many strings in a few requests (the API takes `q` as an array and
-    returns translations in order). Returns a list aligned to `texts`; entries that
-    fail translate as None. Used to translate a whole chapter's zh definitions at once
-    instead of one HTTP call per word."""
+    """Translate many dictionary strings (a chapter's definitions and headwords)
+    in a few requests. Returns a list aligned to `texts`; entries that fail
+    translate as None.
+
+    Claude (TRANSLATE_MODEL) gets them first: a chapter nobody has opened
+    before is 80,000-250,000 characters of definitions, which on Google Translate
+    was most of the translation bill. Google gets only what Claude left (a
+    failed chunk, one not started in time, the AI budget spent), and all of
+    them when TRANSLATE_ENGINE is "google"."""
     normalized_source = normalize_translate_language(source, "en")
     normalized_target = normalize_translate_language(target, "en")
-    if not texts or normalized_source == normalized_target or not TRANSLATION_PROVIDERS:
-        return [None] * len(texts)
+    translated: list[str | None] = [None] * len(texts)
+    if (
+        not texts
+        or normalized_source == normalized_target
+        or not (TRANSLATION_PROVIDERS or CLAUDE_TRANSLATION)
+    ):
+        return translated
 
+    wanted = [index for index, text in enumerate(texts) if isinstance(text, str) and text.strip()]
+    if CLAUDE_TRANSLATION and wanted:
+        from_claude = await claude_translations(
+            [texts[index] for index in wanted],
+            normalized_source,
+            normalized_target,
+            timeout=DICTIONARY_CLAUDE_TIMEOUT_SECONDS,
+            retries=0,
+            kind=DICTIONARY_TEXT,
+            max_concurrent=DICTIONARY_CLAUDE_CONCURRENCY,
+            start_within=DICTIONARY_CLAUDE_START_WITHIN_SECONDS,
+        )
+        for index, value in zip(wanted, from_claude):
+            translated[index] = value
+    left = [index for index in wanted if not translated[index]]
+    claude_count = len(wanted) - len(left)
+
+    if left and TRANSLATION_PROVIDERS:
+        from_google = await _google_translate_batch(
+            [texts[index] for index in left], normalized_source, normalized_target, batch_size
+        )
+        for index, value in zip(left, from_google):
+            translated[index] = value
+    google_count = len(left) - sum(1 for index in left if not translated[index])
+
+    # In the logs: how much of the dictionary text Google is still paid for.
+    if wanted:
+        print(
+            f"[main] dictionary translation {normalized_source}->{normalized_target}: "
+            f"{len(wanted)} texts, claude {claude_count}, google {google_count}, "
+            f"untranslated {len(left) - google_count}"
+        )
+    return translated
+
+
+async def _google_translate_batch(
+    texts: list[str],
+    source: str,
+    target: str,
+    batch_size: int = 100,
+) -> list[str | None]:
+    """`texts` through Google Translate, a few requests side by side (the API
+    takes `q` as an array and returns translations in order). `source`/`target`
+    are normalized. Aligned to `texts`; a chunk that fails or would go over
+    today's character budget is None."""
     batch_size = min(batch_size, TRANSLATE_MAX_STRINGS)
     chunks = [texts[start:start + batch_size] for start in range(0, len(texts), batch_size)]
     # Cap concurrent requests so a big chapter translates in a few seconds (staying
@@ -3779,8 +3873,8 @@ async def _translate_batch(
                     client,
                     TRANSLATION_PROVIDERS,
                     chunk,
-                    source=normalized_source,
-                    target=normalized_target,
+                    source=source,
+                    target=target,
                     timeout=30.0,
                 )
             except Exception as error:
@@ -4229,8 +4323,8 @@ TRANSLATE_SENTENCES_MAX_ITEMS = 128
 TRANSLATE_SENTENCES_MAX_CHARS = 12_000
 # The app asks for a whole chapter's sentences ahead of time whenever a chapter
 # is opened (services/chapterTranslations.js), about 100 per request, though
-# the reader only ever looks at a few of them. On Google Translate that was
-# nearly all of the bill; on Claude a chapter costs a fraction of a cent, so
+# the reader only ever looks at a few of them. On Google Translate every one
+# of them was billed; on Claude a chapter costs a fraction of a cent, so
 # TRANSLATE_CHAPTERS_AHEAD defaults to on when Claude translates and off when
 # Google does. While it is off, a request with more sentences than
 # TRANSLATE_ON_DEMAND_MAX_ITEMS is answered from the cache only: sentences
@@ -4414,7 +4508,7 @@ async def translate_texts_cached(texts: list[str], source: str, target: str) -> 
     for index, text in enumerate(texts):
         if text and results[index] is None:
             pending.setdefault(text, []).append(index)
-    if not pending or not TRANSLATION_PROVIDERS:
+    if not pending or not (TRANSLATION_PROVIDERS or CLAUDE_TRANSLATION):
         return results
 
     pending_texts = list(pending)
@@ -4460,7 +4554,7 @@ async def translate_content(payload: dict, auth: dict[str, Any] = Depends(verify
         }
 
     await enforce_daily_quota(auth)
-    if not TRANSLATION_PROVIDERS:
+    if not TRANSLATION_PROVIDERS and not CLAUDE_TRANSLATION:
         raise ApiError(500, "service_unavailable", "No translation provider configured on server")
 
     translations = await translate_texts_cached(texts, "en", interface_language)
