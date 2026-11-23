@@ -138,6 +138,21 @@ describe('SongReader', () => {
     expect(panel().props.highlightedWord).toBe('');
   });
 
+  it('saves the open word on a second tap, as the book reader does', async () => {
+    await act(async () => reader().props.onWordSelected({ text: '그리움', sentence: '그리움' }));
+    const toggle = jest.fn();
+    panel().props.saveToggleRef.current = toggle;
+
+    await act(async () => reader().props.onWordSelected({ text: '그리움', sentence: '그리움' }));
+    expect(toggle).toHaveBeenCalledTimes(1);
+    // The panel stays open on the word.
+    expect(panel().props.highlightedWord).toBe('그리움');
+
+    // Native's own "again" flag does the same.
+    await act(async () => reader().props.onWordSelected({ text: '그리움', again: true }));
+    expect(toggle).toHaveBeenCalledTimes(2);
+  });
+
   it('explains a long-pressed selection with the AI, not the translation card', async () => {
     await act(async () => reader().props.onTextSelected({ text: '그리움' }));
     expect(panel().props.highlightedWord).toBe('');

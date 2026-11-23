@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { activeLineIndex } from '../../services/lrc';
 
 // The lyrics while the song plays: the line being sung is lit and kept a
@@ -44,6 +44,8 @@ const SingAlongLyrics = ({
     // (text) → [{ text, color? }]: the word in pieces, its level colour on
     // the part the level term covers.
     tintWord,
+    // A tap on the page that isn't on a word (closes the lookup panel).
+    onBackgroundPress,
     // Bumped when the reader jumps to a line (the back / next buttons): the
     // view follows again at once, even right after a scroll by hand.
     followToken = 0,
@@ -95,6 +97,9 @@ const SingAlongLyrics = ({
             onMomentumScrollEnd={() => { userScrolledAtRef.current = Date.now(); }}
             scrollEventThrottle={32}
         >
+            {/* A tap that lands on no word closes the panel, as on a book
+                page; word taps are caught by the words first. */}
+            <Pressable onPress={onBackgroundPress} android_disableSound accessible={false}>
             {lines.map((line, index) => {
                 const isActive = index === active;
                 const translation = line.isBlank ? '' : translations?.get(line.text.trim());
@@ -128,6 +133,10 @@ const SingAlongLyrics = ({
                                         onPress={() => onWordPress(word)}
                                         onLongPress={onWordLongPress ? () => onWordLongPress(word) : undefined}
                                         style={[
+                                            // Explicit plain colours first: on Android a
+                                            // nested Text keeps an old background when
+                                            // its style just drops the property.
+                                            lyricStyles.lyricWord,
                                             saved && lyricStyles.savedLyricWord,
                                             tapped && lyricStyles.activeLyricWord,
                                         ]}
@@ -157,6 +166,7 @@ const SingAlongLyrics = ({
                     </View>
                 );
             })}
+            </Pressable>
         </ScrollView>
     );
 };

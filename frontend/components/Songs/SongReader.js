@@ -866,6 +866,22 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
 
     const focusPanelOpen = focusMode && (!!highlightedWord || !!textSelection);
 
+    // A word tap, as in the book reader: a second tap on the word whose panel
+    // is open saves it (or takes the save back) through the panel's own save
+    // button; any other tap goes to the shared lookup handler (which closes an
+    // open panel or opens a new lookup).
+    const saveToggleRef = useRef(null);
+    const handleWordTap = useCallback((event = {}) => {
+        const open = !isNativeSelection && highlightedWord;
+        const sameWord = open
+            && normalizeForMatch(event?.text) === normalizeForMatch(highlightedWord);
+        if (event?.again || sameWord) {
+            saveToggleRef.current?.();
+            return;
+        }
+        handleNativeWordSelected(event);
+    }, [handleNativeWordSelected, highlightedWord, isNativeSelection]);
+
     // A long press on a word in the JS lyric views explains it in its line,
     // as a long press does in the book reader.
     const explainWord = useCallback(({ text, sentence } = {}) => {
@@ -1273,7 +1289,8 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                         activeWord={(text) => !isNativeSelection
                             && !!highlightedWord
                             && normalizeForMatch(highlightedWord) === normalizeForMatch(text)}
-                        onWordPress={handleNativeWordSelected}
+                        onWordPress={handleWordTap}
+                        onBackgroundPress={dismissLookup}
                         onWordLongPress={explainWord}
                         tintWord={tintWord}
                         followToken={followToken}
@@ -1307,7 +1324,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                         focusSwipeEnabled
                         focusNavToken={focusNavToken}
                         focusPanelHeight={focusMode ? focusPanelTotalHeight : 0}
-                        onWordSelected={handleNativeWordSelected}
+                        onWordSelected={handleWordTap}
                         onTextSelected={handleNativeTextSelected}
                         onSelectionCleared={handleNativeSelectionCleared}
                         onFocusSentenceChange={handleFocusSentenceChange}
@@ -1325,6 +1342,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                         scrollEventThrottle={16}
                         onScroll={highlightedWord ? dismissLookup : undefined}
                     >
+                        <Pressable onPress={dismissLookup} accessible={false}>
                         {lyricLines.map((line) => {
                             const translation = line.isBlank ? '' : lineTranslations.get(line.text.trim());
                             return (
@@ -1350,7 +1368,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                                             key={segment.id}
                                             suppressHighlighting
                                             onPress={segment.isWord
-                                                ? () => handleNativeWordSelected({
+                                                ? () => handleWordTap({
                                                     text: segment.text,
                                                     sentence: line.text,
                                                 })
@@ -1359,6 +1377,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                                                 ? () => explainWord({ text: segment.text, sentence: line.text })
                                                 : undefined}
                                             style={[
+                                                styles.lyricWord,
                                                 isSaved && styles.savedLyricWord,
                                                 isActive && styles.activeLyricWord,
                                             ]}
@@ -1386,6 +1405,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                             </View>
                             );
                         })}
+                        </Pressable>
                     </ScrollView>
                 )}
             </View>
@@ -1440,6 +1460,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                         currentBook={songUri}
                         sourceBook={sourceBook}
                         savedWords={savedWords ?? []}
+                        saveToggleRef={saveToggleRef}
                     />
                     {/* Always mounted, so it can slide away when closed. */}
                     <SelectionExplainPanel
@@ -1675,6 +1696,13 @@ const createStyles = (colors) => StyleSheet.create({
     },
     // Saved and tapped words look as they do in the book reader: a saved word
     // is a solid ink chip, the tapped one the reader's tapped-word surface.
+    // A word's plain look, set explicitly so a word that stops being saved or
+    // tapped really loses the chip (Android keeps a nested Text's old
+    // background when the style just leaves it out).
+    lyricWord: {
+        color: colors.readerBodyInk,
+        backgroundColor: 'transparent',
+    },
     savedLyricWord: {
         color: colors.readerSavedWordSurfaceText,
         backgroundColor: colors.readerSavedWordSurfaceBg,
