@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Animated, Easing, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useTranslation } from '../../hooks/useTranslation';
 import { streamExplainInContext } from '../../services/api/explainInContext';
@@ -9,6 +9,21 @@ import GrammarView from './GrammarView';
 
 const clean = (value) => (typeof value === 'string' ? value.trim() : '');
 
+// A long selection's explanation walks through it one chunk a line:
+// "chunk — what it does". Those lines are drawn as rows (the chunk in ink,
+// its note muted under it) so the walkthrough can be scanned; other lines stay
+// plain paragraphs. A line still streaming in without its dash is a paragraph
+// until the dash arrives.
+const CHUNK_LINE = /^(.*?\S)\s+[—–]\s+(.+)$/;
+export const explanationParts = (text) => clean(text)
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+        const match = line.match(CHUNK_LINE);
+        return match ? { chunk: match[1], note: match[2] } : { paragraph: line };
+    });
+
 /**
  * SelectionExplainPanel — the AI explanation of a long-pressed selection, in a
  * bottom sheet like the definition panel: idioms, phrases and archaic words the
@@ -17,7 +32,7 @@ const clean = (value) => (typeof value === 'string' ? value.trim() : '');
  * panel's job, so there is no save button here. Tapping the page (or swiping
  * the sheet down) closes it.
  */
-const SelectionExplainPanel = ({
+const ExplainSheet = ({
     text,
     sentence,
     language,
@@ -95,8 +110,14 @@ const SelectionExplainPanel = ({
     // A cut-off selection ("Gabl") is shown as the word it belongs to.
     const heading = state.expression || phrase;
 
+    const parts = explanationParts(state.text);
+    const waiting = state.loading && !state.text;
+
     return (
         <View style={[styles.sheet, { paddingBottom: 18 + bottomInset }]}>
+            <View style={styles.grabberWrap}>
+                <View style={styles.grabber} />
+            </View>
             <View style={styles.header}>
                 <MaterialIcons name="auto-awesome" size={15} color={colors.textTertiary} />
                 <Text style={styles.headerLabel}>{t('selection.aiExplain')}</Text>
@@ -121,15 +142,33 @@ const SelectionExplainPanel = ({
                     );
                 })}
             </View>
-            <ScrollView style={styles.body} contentContainerStyle={styles.bodyContent} nestedScrollEnabled>
+            <ScrollView
+                style={styles.body}
+                contentContainerStyle={[styles.bodyContent, tab === 'meaning' && styles.bodyMeaning]}
+                nestedScrollEnabled
+            >
                 {tab === 'meaning' ? (
                     <>
                         {state.gloss ? <Text style={styles.gloss} selectable>{state.gloss}</Text> : null}
-                        {state.text ? <Text style={styles.explanation} selectable>{state.text}</Text> : null}
-                        {state.loading && !state.text ? (
-                            <View style={styles.loadingRow}>
-                                <ActivityIndicator size="small" color={colors.textTertiary} />
-                                <Text style={styles.muted}>{t('lookup.explainLoading')}</Text>
+                        {parts.map((part, index) => (part.chunk ? (
+                            <View key={index} style={styles.chunkRow}>
+                                <Text style={styles.chunk} selectable>{part.chunk}</Text>
+                                <Text style={styles.chunkNote} selectable>{part.note}</Text>
+                            </View>
+                        ) : (
+                            <Text key={index} style={styles.explanation} selectable>{part.paragraph}</Text>
+                        )))}
+                        {/* Placeholder lines where the answer will be, so the
+                            sheet doesn't jump as it streams in. */}
+                        {waiting ? (
+                            <View
+                                style={styles.placeholder}
+                                accessible
+                                accessibilityLabel={t('lookup.explainLoading')}
+                            >
+                                {state.gloss ? null : <View style={[styles.placeholderBar, styles.placeholderGloss]} />}
+                                <View style={[styles.placeholderBar, { width: '92%' }]} />
+                                <View style={[styles.placeholderBar, { width: '68%' }]} />
                             </View>
                         ) : null}
                         {state.error ? <Text style={styles.muted}>{state.error}</Text> : null}
@@ -153,11 +192,57 @@ const SelectionExplainPanel = ({
     );
 };
 
+// The sheet slides up and fades in, and back out when closed, like the
+// definition panel (TopSection). It keeps the last selection on screen while it
+// slides away, since the reader clears `text` at once.
+const SHOW_MS = 180;
+const SelectionExplainPanel = (props) => {
+    const phrase = clean(props.text);
+    const sentence = props.sentence;
+    const [shown, setShown] = useState(() => (phrase ? { text: phrase, sentence } : null));
+    const translateY = useRef(new Animated.Value(24)).current;
+    const opacity = useRef(new Animated.Value(0)).current;
+
+    useEffect(() => {
+        if (phrase) {
+            setShown({ text: phrase, sentence });
+            Animated.parallel([
+                Animated.timing(translateY, {
+                    toValue: 0, duration: SHOW_MS, easing: Easing.out(Easing.cubic), useNativeDriver: true,
+                }),
+                Animated.timing(opacity, {
+                    toValue: 1, duration: 120, easing: Easing.out(Easing.quad), useNativeDriver: true,
+                }),
+            ]).start();
+            return;
+        }
+        Animated.parallel([
+            Animated.timing(translateY, {
+                toValue: 24, duration: SHOW_MS, easing: Easing.in(Easing.cubic), useNativeDriver: true,
+            }),
+            Animated.timing(opacity, {
+                toValue: 0, duration: SHOW_MS, easing: Easing.in(Easing.quad), useNativeDriver: true,
+            }),
+        ]).start(({ finished }) => {
+            if (finished) setShown(null);
+        });
+    }, [opacity, phrase, sentence, translateY]);
+
+    if (!shown) return null;
+    return (
+        <Animated.View
+            style={{ opacity, transform: [{ translateY }] }}
+            pointerEvents={phrase ? 'auto' : 'none'}
+        >
+            <ExplainSheet {...props} text={shown.text} sentence={shown.sentence} />
+        </Animated.View>
+    );
+};
+
 const createStyles = (colors) => StyleSheet.create({
     // Matches the definition panel's bottom sheet (TopSection).
     sheet: {
         paddingHorizontal: 24,
-        paddingTop: 14,
         borderTopLeftRadius: 24,
         borderTopRightRadius: 24,
         backgroundColor: colors.surfaceElevated,
@@ -167,7 +252,20 @@ const createStyles = (colors) => StyleSheet.create({
         ...panelLift(colors, 'up'),
         maxHeight: 560,
     },
+    // The bottom sheet's grabber, as on the definition panel.
+    grabberWrap: {
+        height: 22,
+        paddingTop: 9,
+        alignItems: 'center',
+    },
+    grabber: {
+        width: 36,
+        height: 4,
+        borderRadius: 2,
+        backgroundColor: colors.border,
+    },
     header: {
+        marginTop: 2,
         flexDirection: 'row',
         alignItems: 'center',
         gap: spacing.xs,
@@ -234,10 +332,38 @@ const createStyles = (colors) => StyleSheet.create({
         lineHeight: 22,
         color: colors.textSecondary,
     },
-    loadingRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: spacing.sm,
+    // Room for a short answer before it arrives, so the sheet keeps its size.
+    bodyMeaning: {
+        minHeight: 84,
+    },
+    chunkRow: {
+        gap: 2,
+    },
+    chunk: {
+        fontFamily: fontFamilies.sansMedium,
+        fontSize: 15,
+        lineHeight: 21,
+        color: colors.text,
+    },
+    chunkNote: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 14,
+        lineHeight: 20,
+        color: colors.textSecondary,
+    },
+    placeholder: {
+        gap: 10,
+        paddingTop: 4,
+    },
+    placeholderBar: {
+        height: 12,
+        borderRadius: 6,
+        backgroundColor: colors.surfaceMuted,
+    },
+    placeholderGloss: {
+        width: '45%',
+        height: 16,
+        borderRadius: 8,
     },
     muted: {
         fontFamily: fontFamilies.sansRegular,
