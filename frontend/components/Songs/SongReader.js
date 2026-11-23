@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+    ActivityIndicator,
     Alert,
     Animated,
     BackHandler,
@@ -51,6 +52,11 @@ import {
     recordVocabContextForSurface,
 } from '../../services/Database';
 import { ensureSongPreprocessed, getSongBookUri } from '../../services/songPreprocess';
+import { searchSongs } from '../../services/api/songSearch';
+import { findSongVideo } from '../../services/api/songVideo';
+import { activeLineIndex, lineEndTime, lyricLineTimes, parseLrc } from '../../services/lrc';
+import SongPlayer, { PLAYER_STATE } from './SongPlayer';
+import SingAlongLyrics from './SingAlongLyrics';
 import { tapCommit, tapUndo } from '../../services/haptics';
 import { requestUserDataSync } from '../../services/userDataSyncQueue';
 import { deriveCandidateReason, pickExampleSentence } from '../../services/wordCandidates';
@@ -98,6 +104,21 @@ const uniqueTerms = (values) => [...new Set(
         .map((value) => (typeof value === 'string' ? value.trim() : ''))
         .filter(Boolean)
 )];
+
+const PLAYBACK_RATES = [1, 0.75, 0.5];
+const OFFSET_STEP = 0.5;
+
+// Same song title, ignoring case, spacing, punctuation and a bracketed part
+// ("Through the Night (밤편지)" vs "Through the Night").
+const titleKey = (value) => String(value || '')
+    .toLowerCase()
+    .replace(/[([{].*?[)\]}]/g, '')
+    .replace(/[\s\p{P}\p{S}]+/gu, '');
+const sameTitle = (a, b) => {
+    const left = titleKey(a);
+    const right = titleKey(b);
+    return Boolean(left && right && (left === right || left.includes(right) || right.includes(left)));
+};
 
 const makeSongDraft = (song) => ({
     title: song?.title || '',
@@ -568,6 +589,150 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
         setFocusMode((current) => !current);
     }, [dismissLookup]);
 
+    // ── Player ───────────────────────────────────────────────────────────────
+    // The song's YouTube video over the lyrics, with the line being sung lit
+    // when the lyrics are timed. Opening it the first time finds timed lyrics
+    // (LRCLIB, through the song search) if the song has none, then the video
+    // (once per song; the backend shares what it found with every user).
+    const [playerOpen, setPlayerOpen] = useState(false);
+    const [videoStatus, setVideoStatus] = useState('idle'); // finding | ready | missing | error
+    const [playing, setPlaying] = useState(false);
+    const [rate, setRate] = useState(1);
+    const [loopLine, setLoopLine] = useState(null);
+    const [lyricOffset, setLyricOffset] = useState(() => (typeof song?.lyricOffset === 'number' ? song.lyricOffset : 0));
+    const playerRef = useRef(null);
+    const timeListenersRef = useRef(new Set());
+    const lastTimeRef = useRef(0);
+    const timedLines = useMemo(() => parseLrc(song?.syncedLyrics), [song?.syncedLyrics]);
+    const lineTimes = useMemo(() => lyricLineTimes(lyricLines, timedLines), [lyricLines, timedLines]);
+    const hasTiming = useMemo(() => lineTimes.some((time) => time != null), [lineTimes]);
+    const playbackRef = useRef({ lineTimes, lyricOffset, loopLine });
+    playbackRef.current = { lineTimes, lyricOffset, loopLine };
+
+    const subscribeTime = useCallback((listener) => {
+        timeListenersRef.current.add(listener);
+        listener(lastTimeRef.current);
+        return () => timeListenersRef.current.delete(listener);
+    }, []);
+
+    const handlePlayerTime = useCallback((time) => {
+        lastTimeRef.current = time;
+        const { lineTimes: times, lyricOffset: offset, loopLine: loop } = playbackRef.current;
+        if (loop != null) {
+            const start = times[loop];
+            const end = lineEndTime(times, loop);
+            if (start != null && end != null && time + offset >= end - 0.1) {
+                playerRef.current?.seek(start - offset);
+            }
+        }
+        timeListenersRef.current.forEach((listener) => listener(time));
+    }, []);
+
+    const findPlayback = useCallback(async ({ retry = false } = {}) => {
+        if (song?.video?.id) {
+            setVideoStatus('ready');
+            return;
+        }
+        if (song?.video === null && !retry) {
+            setVideoStatus('missing');
+            return;
+        }
+        setVideoStatus('finding');
+        const patch = {};
+        let duration = Number.isFinite(song?.duration) ? song.duration : null;
+        if (!song?.syncedLyrics && !song?.syncedChecked) {
+            try {
+                const results = await searchSongs({
+                    query: [song?.artist, song?.title].filter(Boolean).join(' '),
+                    language: songLanguage,
+                });
+                const match = results.find((result) => result.syncedLyrics && sameTitle(result.title, song?.title));
+                if (match) {
+                    patch.syncedLyrics = match.syncedLyrics;
+                    patch.duration = Number.isFinite(match.duration) ? match.duration : null;
+                    duration = patch.duration;
+                }
+            } catch (error) {
+                console.warn('[SongReader] Timed lyrics search failed:', error?.message ?? error);
+            }
+            patch.syncedChecked = true;
+        }
+        try {
+            const video = await findSongVideo({ title: song?.title, artist: song?.artist, duration });
+            patch.video = video ?? null;
+            setVideoStatus(video ? 'ready' : 'missing');
+        } catch (error) {
+            console.warn('[SongReader] Video lookup failed:', error?.message ?? error);
+            setVideoStatus('error');
+        }
+        if (Object.keys(patch).length > 0) {
+            onSongUpdate?.(patch);
+        }
+    }, [onSongUpdate, song?.artist, song?.duration, song?.syncedChecked, song?.syncedLyrics, song?.title, song?.video, songLanguage]);
+
+    const openPlayer = useCallback(() => {
+        setIsMenuVisible(false);
+        dismissLookup();
+        setFocusMode(false);
+        setPlayerOpen(true);
+        findPlayback();
+    }, [dismissLookup, findPlayback]);
+
+    const closePlayer = useCallback(() => {
+        setPlayerOpen(false);
+        setPlaying(false);
+        setLoopLine(null);
+        lastTimeRef.current = 0;
+    }, []);
+
+    const togglePlay = useCallback(() => {
+        if (playing) playerRef.current?.pause();
+        else playerRef.current?.play();
+    }, [playing]);
+
+    const cycleRate = useCallback(() => {
+        const next = PLAYBACK_RATES[(PLAYBACK_RATES.indexOf(rate) + 1) % PLAYBACK_RATES.length];
+        setRate(next);
+        playerRef.current?.setRate(next);
+    }, [rate]);
+
+    const playFromLine = useCallback((index) => {
+        const start = lineTimes[index];
+        if (start == null) return;
+        if (loopLine != null) setLoopLine(index);
+        playerRef.current?.seek(Math.max(0, start - lyricOffset));
+        playerRef.current?.play();
+    }, [lineTimes, loopLine, lyricOffset]);
+
+    const toggleLoop = useCallback(() => {
+        if (loopLine != null) {
+            setLoopLine(null);
+            return;
+        }
+        const current = activeLineIndex(lineTimes, lastTimeRef.current + lyricOffset);
+        if (current >= 0) setLoopLine(current);
+    }, [lineTimes, loopLine, lyricOffset]);
+
+    // The timing nudge is kept with the song, written a moment after the last tap.
+    const offsetSaveTimerRef = useRef(null);
+    const nudgeOffset = useCallback((delta) => {
+        setLyricOffset((current) => {
+            const next = Math.max(-30, Math.min(30, Math.round((current + delta) * 10) / 10));
+            if (offsetSaveTimerRef.current) clearTimeout(offsetSaveTimerRef.current);
+            offsetSaveTimerRef.current = setTimeout(() => onSongUpdate?.({ lyricOffset: next }), 1200);
+            return next;
+        });
+    }, [onSongUpdate]);
+    useEffect(() => () => {
+        if (offsetSaveTimerRef.current) clearTimeout(offsetSaveTimerRef.current);
+    }, []);
+
+    const handlePlayerState = useCallback((state) => {
+        setPlaying(state === PLAYER_STATE.PLAYING || state === PLAYER_STATE.BUFFERING);
+    }, []);
+
+    const singAlong = playerOpen && videoStatus === 'ready' && hasTiming;
+
     const focusPanelOpen = focusMode && !!highlightedWord;
     const focusPanelTotalHeight = focusPanelOpen ? Math.max(0, Math.round(lookupPanelHeight)) : 0;
     const focusControlsBaseBottom = insets.bottom + 28;
@@ -720,7 +885,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
     // then lookup panel) before Home's handler closes the song. Registered only
     // while a layer is open, so it sits above Home's listener.
     useEffect(() => {
-        if (!isMenuVisible && !highlightedWord) {
+        if (!isMenuVisible && !highlightedWord && !playerOpen) {
             return undefined;
         }
         const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
@@ -732,10 +897,14 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                 dismissLookup();
                 return true;
             }
+            if (playerOpen) {
+                closePlayer();
+                return true;
+            }
             return false;
         });
         return () => subscription.remove();
-    }, [dismissLookup, highlightedWord, isMenuVisible]);
+    }, [closePlayer, dismissLookup, highlightedWord, isMenuVisible, playerOpen]);
 
     // Swipe-down on the bottom lookup panel dismisses it, as in the book reader.
     const lookupPanResponder = useMemo(() => PanResponder.create({
@@ -771,14 +940,16 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                         onPress={openSavedPanel}
                         accessibilityLabel={t('read.savedTab', { count: songSavedWords.length })}
                     />
-                    <ReaderFocusModeButton
-                        styles={chrome}
-                        themeColors={colors}
-                        style={chrome.headerGroupGap}
-                        active={focusMode}
-                        onPress={toggleFocusMode}
-                        accessibilityLabel={t('read.focusMode')}
-                    />
+                    {playerOpen ? null : (
+                        <ReaderFocusModeButton
+                            styles={chrome}
+                            themeColors={colors}
+                            style={chrome.headerGroupGap}
+                            active={focusMode}
+                            onPress={toggleFocusMode}
+                            accessibilityLabel={t('read.focusMode')}
+                        />
+                    )}
                 </View>
 
                 <View style={styles.headerTitleBlock}>
@@ -797,6 +968,15 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                 </View>
 
                 <View style={chrome.headerControls}>
+                    <TouchableOpacity
+                        style={[chrome.headerIconButton, playerOpen && chrome.headerIconButtonActive]}
+                        onPress={playerOpen ? closePlayer : openPlayer}
+                        accessibilityRole="button"
+                        accessibilityState={{ selected: playerOpen }}
+                        accessibilityLabel={playerOpen ? t('song.player.hide') : t('song.player.open')}
+                    >
+                        <Feather name="music" size={21} color={colors.inkSlate} />
+                    </TouchableOpacity>
                     <ReaderMenuButton
                         styles={chrome}
                         themeColors={colors}
@@ -807,8 +987,119 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                 </View>
             </ReaderHeaderBar>
 
+            {playerOpen ? (
+                <View style={styles.playerArea}>
+                    {videoStatus === 'ready' && song?.video?.id ? (
+                        <SongPlayer
+                            ref={playerRef}
+                            videoId={song.video.id}
+                            onTime={handlePlayerTime}
+                            onStateChange={handlePlayerState}
+                            onRateChange={setRate}
+                            onError={() => setVideoStatus('error')}
+                        />
+                    ) : (
+                        <View style={styles.playerNotice}>
+                            {videoStatus === 'finding' ? (
+                                <ActivityIndicator size="small" color={colors.readerMutedInk} />
+                            ) : null}
+                            <Text style={styles.playerNoticeText}>
+                                {videoStatus === 'finding'
+                                    ? t('song.player.finding')
+                                    : videoStatus === 'missing'
+                                        ? t('song.player.notFound')
+                                        : t('song.player.unavailable')}
+                            </Text>
+                            {videoStatus === 'missing' || videoStatus === 'error' ? (
+                                <TouchableOpacity
+                                    accessibilityRole="button"
+                                    onPress={() => findPlayback({ retry: true })}
+                                    style={styles.playerRetry}
+                                >
+                                    <Text style={styles.playerRetryText}>{t('common.tryAgain')}</Text>
+                                </TouchableOpacity>
+                            ) : null}
+                        </View>
+                    )}
+                    {videoStatus === 'ready' ? (
+                        <View style={styles.playerControls}>
+                            <TouchableOpacity
+                                accessibilityRole="button"
+                                accessibilityLabel={playing ? t('song.player.pause') : t('song.player.play')}
+                                onPress={togglePlay}
+                                style={styles.playerButton}
+                            >
+                                <Feather name={playing ? 'pause' : 'play'} size={20} color={colors.readerBodyInk} />
+                            </TouchableOpacity>
+                            {hasTiming ? (
+                                <TouchableOpacity
+                                    accessibilityRole="button"
+                                    accessibilityLabel={t('song.player.loopLine')}
+                                    accessibilityState={{ selected: loopLine != null }}
+                                    onPress={toggleLoop}
+                                    style={[styles.playerButton, loopLine != null && styles.playerButtonActive]}
+                                >
+                                    <Feather name="repeat" size={18} color={colors.readerBodyInk} />
+                                </TouchableOpacity>
+                            ) : null}
+                            <TouchableOpacity
+                                accessibilityRole="button"
+                                accessibilityLabel={t('song.player.speed', { rate: String(rate) })}
+                                onPress={cycleRate}
+                                style={styles.playerButton}
+                            >
+                                <Text style={styles.playerRateText}>{`${rate}×`}</Text>
+                            </TouchableOpacity>
+                            {hasTiming ? (
+                                <View style={styles.offsetGroup}>
+                                    <TouchableOpacity
+                                        accessibilityRole="button"
+                                        accessibilityLabel={t('song.player.lyricsEarlier')}
+                                        onPress={() => nudgeOffset(OFFSET_STEP)}
+                                        style={styles.playerButtonSmall}
+                                    >
+                                        <Feather name="minus" size={16} color={colors.readerBodyInk} />
+                                    </TouchableOpacity>
+                                    <Text style={styles.offsetText}>
+                                        {`${lyricOffset > 0 ? '−' : lyricOffset < 0 ? '+' : ''}${Math.abs(lyricOffset).toFixed(1)}s`}
+                                    </Text>
+                                    <TouchableOpacity
+                                        accessibilityRole="button"
+                                        accessibilityLabel={t('song.player.lyricsLater')}
+                                        onPress={() => nudgeOffset(-OFFSET_STEP)}
+                                        style={styles.playerButtonSmall}
+                                    >
+                                        <Feather name="plus" size={16} color={colors.readerBodyInk} />
+                                    </TouchableOpacity>
+                                </View>
+                            ) : (
+                                <Text style={styles.untimedText} numberOfLines={2}>{t('song.player.untimed')}</Text>
+                            )}
+                        </View>
+                    ) : null}
+                </View>
+            ) : null}
+
             <View style={chrome.reader}>
-                {useNativeLyricReader ? (
+                {singAlong ? (
+                    <SingAlongLyrics
+                        lines={lyricLines}
+                        times={lineTimes}
+                        subscribeTime={subscribeTime}
+                        offset={lyricOffset}
+                        fontSize={settings.fontSize}
+                        lineHeight={lyricLineHeight}
+                        isWordSaved={(text) => songHighlightSet.has(normalizeForMatch(text))}
+                        activeWord={(text) => !isNativeSelection
+                            && !!highlightedWord
+                            && normalizeForMatch(highlightedWord) === normalizeForMatch(text)}
+                        onWordPress={handleNativeWordSelected}
+                        onLinePress={playFromLine}
+                        bottomPadding={insets.bottom + 190}
+                        colors={colors}
+                        styles={styles}
+                    />
+                ) : useNativeLyricReader ? (
                     <NativeEpubReaderView
                         ref={nativeReaderViewRef}
                         key={songUri || 'song:unknown'}
@@ -1067,6 +1358,86 @@ const createStyles = (colors) => StyleSheet.create({
         lineHeight: 16,
         color: colors.textTertiary,
         textAlign: 'center',
+    },
+    playerArea: {
+        borderBottomWidth: StyleSheet.hairlineWidth,
+        borderBottomColor: colors.readerHairline,
+        backgroundColor: colors.readerPaper,
+    },
+    playerNotice: {
+        aspectRatio: 16 / 9,
+        width: '100%',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 10,
+        paddingHorizontal: spacing.xl,
+        backgroundColor: colors.readerSurface,
+    },
+    playerNoticeText: {
+        fontFamily: fontFamilies.sansMedium,
+        fontSize: 14,
+        color: colors.readerMutedInk,
+        textAlign: 'center',
+    },
+    playerRetry: {
+        paddingHorizontal: 16,
+        paddingVertical: 8,
+        borderRadius: 999,
+        borderWidth: StyleSheet.hairlineWidth,
+        borderColor: colors.readerBorder,
+    },
+    playerRetryText: {
+        fontFamily: fontFamilies.sansMedium,
+        fontSize: 14,
+        color: colors.readerBodyInk,
+    },
+    playerControls: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        paddingHorizontal: spacing.md,
+        paddingVertical: 8,
+    },
+    playerButton: {
+        minWidth: 40,
+        height: 40,
+        paddingHorizontal: 8,
+        borderRadius: 20,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    playerButtonActive: {
+        backgroundColor: colors.accentSoft,
+    },
+    playerButtonSmall: {
+        width: 32,
+        height: 32,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    playerRateText: {
+        fontFamily: fontFamilies.sansMedium,
+        fontSize: 14,
+        color: colors.readerBodyInk,
+    },
+    offsetGroup: {
+        marginLeft: 'auto',
+        flexDirection: 'row',
+        alignItems: 'center',
+    },
+    offsetText: {
+        minWidth: 44,
+        fontFamily: fontFamilies.sansMedium,
+        fontSize: 13,
+        color: colors.readerMutedInk,
+        textAlign: 'center',
+        fontVariant: ['tabular-nums'],
+    },
+    untimedText: {
+        flex: 1,
+        fontFamily: fontFamilies.sansRegular ?? fontFamilies.sansMedium,
+        fontSize: 12,
+        color: colors.readerMutedInk,
     },
     lyricsScroll: {
         flex: 1,
