@@ -32,6 +32,7 @@ import { useTranslation } from '../hooks/useTranslation';
 import { useNavigationButtonsInset } from '../hooks/useNavigationButtonsInset';
 import { stripStoredPlaceholder } from '../i18n/userFacing';
 import { fetchHanjaRelated } from '../services/api/hanjaRelated';
+import { backfillChinesePronunciations } from '../services/dictionaryLookup';
 import { formatDate, formatNumber, tRuntime } from '../services/interfaceLanguage';
 import {
   addRelatedKnownWord,
@@ -1508,6 +1509,50 @@ const Learn = ({ navigation, user }) => {
   const wordsRequestIdRef = useRef(0);
   const candidatesRequestIdRef = useRef(0);
 
+  // Chinese pinyin fetched for saved words that had no cached entry on this
+  // device (see backfillChinesePronunciations), and the words already tried.
+  const pinyinByWordRef = useRef(new Map());
+  const pinyinTriedRef = useRef(new Set());
+
+  const withBackfilledPinyin = useCallback((row) => {
+    if (!row || normalizeBookLanguage(row.language ?? 'ko') !== 'zh' || getPronunciation(row)) {
+      return row;
+    }
+    const pinyin = pinyinByWordRef.current.get(row.word);
+    return pinyin ? { ...row, ipa: pinyin } : row;
+  }, []);
+
+  const backfillMissingPinyin = useCallback((rows) => {
+    const missing = [...new Set(rows
+      .filter((row) => (
+        normalizeBookLanguage(row.language ?? 'ko') === 'zh'
+        && cleanText(row.word)
+        && !getPronunciation(row)
+        && !pinyinTriedRef.current.has(row.word)
+      ))
+      .map((row) => row.word))];
+    if (missing.length === 0) {
+      return;
+    }
+    missing.forEach((word) => pinyinTriedRef.current.add(word));
+    backfillChinesePronunciations(missing, { interfaceLanguage })
+      .then((found) => {
+        if (found.size === 0) {
+          return;
+        }
+        found.forEach((pinyin, word) => pinyinByWordRef.current.set(word, pinyin));
+        const patch = (list) => (list.some((row) => found.has(row.word))
+          ? list.map(withBackfilledPinyin)
+          : list);
+        setWords(patch);
+        setLearnedWords(patch);
+        setSelectedWord((current) => withBackfilledPinyin(current));
+      })
+      .catch((error) => {
+        console.warn('[Learn] Pinyin backfill failed:', error?.message ?? error);
+      });
+  }, [interfaceLanguage, withBackfilledPinyin]);
+
   const fetchWords = useCallback(async () => {
     const requestId = ++wordsRequestIdRef.current;
     try {
@@ -1515,7 +1560,7 @@ const Learn = ({ navigation, user }) => {
       // Learned words (saved words whose highlight faded out while reading)
       // have their own tab and leave the saved list and the reviews.
       const overlay = gradeOverlayRef.current;
-      const all = normalizeRows(data).map((row) => (
+      const all = normalizeRows(data).map((row) => withBackfilledPinyin(
         overlay.find((entry) => sameWord(entry.original, row))?.optimistic ?? row
       ));
       const normalized = all.filter((row) => row.level !== LEARNED_LEVEL);
@@ -1533,12 +1578,13 @@ const Learn = ({ navigation, user }) => {
 
         return normalized.find((candidate) => sameWord(candidate, current)) ?? current;
       });
+      backfillMissingPinyin(all);
       return normalized;
     } catch (error) {
       console.error('[Learn] Error fetching vocab data:', error);
       return [];
     }
-  }, [activeOwnerId, targetLanguage]);
+  }, [activeOwnerId, backfillMissingPinyin, targetLanguage, withBackfilledPinyin]);
 
   const handleRestoreLearned = useCallback(async (row) => {
     try {

@@ -1074,3 +1074,57 @@ export const unsaveOverlayLookupResult = async ({
 
     return { saved: false };
 };
+
+// Chinese pinyin for saved words that have none on this device. A saved word's
+// pinyin is not stored with it: the Learn screen reads it from the word's
+// dictionary_cache row, which only exists when the word's chapter was processed
+// or the word was looked up on this device. Words restored from the cloud (a
+// reinstall, another device) or from books no longer here have no row. Fetches
+// each word's entry and caches it (an untranslated entry under the language its
+// definition is in), so the pinyin is there from then on.
+// Returns Map(word -> pinyin) for the words it found.
+const PINYIN_BACKFILL_BATCH = 6;
+
+export const backfillChinesePronunciations = async (
+    words,
+    {
+        interfaceLanguage = getRuntimeInterfaceLanguage(),
+        script = getRuntimeChineseScript(),
+    } = {}
+) => {
+    const stems = uniqueValues(words);
+    const normalizedInterfaceLanguage = normalizeInterfaceLanguageCode(interfaceLanguage);
+    const found = new Map();
+
+    for (let start = 0; start < stems.length; start += PINYIN_BACKFILL_BATCH) {
+        const batch = stems.slice(start, start + PINYIN_BACKFILL_BATCH);
+        let liveResults;
+        try {
+            liveResults = await fetchLiveDictionary(batch, normalizedInterfaceLanguage, 'zh', script);
+        } catch (error) {
+            // Offline or the server is down: keep what was found, try again later.
+            break;
+        }
+
+        const byLanguage = new Map();
+        batch.forEach((stem, index) => {
+            const first = liveResults[index]?.[0];
+            const pinyin = nullableValue(first?.pinyin) || nullableValue(first?.ipa);
+            if (!first || !pinyin) {
+                return;
+            }
+            found.set(stem, pinyin);
+            const entryLanguage = normalizeInterfaceLanguageCode(
+                getEntryFallbackLanguage(first, normalizedInterfaceLanguage) ?? normalizedInterfaceLanguage
+            );
+            const entries = byLanguage.get(entryLanguage) ?? [];
+            entries.push(liveEntryToCacheEntry(stem, first, entryLanguage, 'zh'));
+            byLanguage.set(entryLanguage, entries);
+        });
+        byLanguage.forEach((entries, entryLanguage) => {
+            writeLiveCacheEntries(entries, { language: 'zh', interfaceLanguage: entryLanguage });
+        });
+    }
+
+    return found;
+};
