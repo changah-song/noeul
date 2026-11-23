@@ -43,6 +43,8 @@ private const val TAP_BAND_SLACK_DP = 5f
 // Focus (sentence beam) mode rendering constants, mirroring the design spec:
 // unfocused sentences sit at 22% opacity and focus shifts animate over 300ms.
 private const val FOCUS_DIM_ALPHA = 0.22f
+// Song mode: the lines not being sung.
+private const val SONG_DIM_ALPHA = 0.38f
 // How much of the page colour is laid over the text outside the tapped
 // word's sentence while its panel is open (that text keeps 1 - this).
 private const val SENTENCE_FOCUS_VEIL = 0.6f
@@ -220,6 +222,17 @@ class EpubPageView(context: Context) : View(context) {
   private var focusModeEnabled = false
   // Set while the JS lookup panel is visible in focus mode; taps then dismiss
   // the panel instead of moving the beam or selecting another word.
+  // Song mode (a song playing with timed lyrics): the blocks of the line
+  // being sung (the lyric line and its translation). Every other block is
+  // drawn dimmed; an empty set dims them all (before the first line). Null:
+  // not a song playing.
+  var songLitBlockIds: Set<String>? = null
+    set(value) {
+      if (field == value) return
+      field = value
+      invalidate()
+    }
+
   var focusPanelOpen = false
   // Set while listen mode is on: only the lit span answers taps; a tap
   // anywhere else counts as blank space (closes the panel, moves nothing).
@@ -746,6 +759,22 @@ class EpubPageView(context: Context) : View(context) {
     }
     val focusPass = if (focusModeEnabled) mutableListOf<Triple<PageBlock, StaticLayout, Float>>() else null
 
+    // Song mode: like focus mode, one dim layer for every line but the one
+    // being sung, which is drawn over it afterwards at full strength.
+    val songLit = if (focusModeEnabled) null else songLitBlockIds
+    val songDimLayer = if (songLit != null) {
+      canvas.saveLayerAlpha(
+        0f,
+        if (windowTop.isFinite()) windowTop else 0f,
+        width.toFloat(),
+        if (windowBottom.isFinite()) windowBottom else height.toFloat(),
+        (SONG_DIM_ALPHA * 255).roundToInt()
+      )
+    } else {
+      -1
+    }
+    val songPass = if (songLit != null) mutableListOf<Triple<PageBlock, StaticLayout, Float>>() else null
+
     page?.blocks?.forEach { block ->
       yOffset += block.marginTop
 
@@ -769,6 +798,12 @@ class EpubPageView(context: Context) : View(context) {
       } else {
         val layout = block.textLayout ?: buildFallbackTextLayout(block, contentWidth) ?: return@forEach
 
+        if (songPass != null && songLit?.contains(block.blockId) == true) {
+          songPass.add(Triple(block, layout, yOffset))
+          yOffset += layout.height + block.marginBottom
+          return@forEach
+        }
+
         canvas.save()
         canvas.translate((paddingH + block.marginLeft).toFloat(), yOffset)
         drawingBlockTop = yOffset
@@ -784,6 +819,18 @@ class EpubPageView(context: Context) : View(context) {
       }
 
       yOffset += block.marginBottom
+    }
+
+    if (songPass != null) {
+      canvas.restoreToCount(songDimLayer)
+      songPass.forEach { (block, layout, top) ->
+        canvas.save()
+        canvas.translate((paddingH + block.marginLeft).toFloat(), top)
+        drawingBlockTop = top
+        drawBlockContent(canvas, block, layout)
+        canvas.restore()
+        drawNoteIcons(canvas, block, layout, top)
+      }
     }
 
     if (focusPass != null) {
@@ -1635,8 +1682,9 @@ class EpubPageView(context: Context) : View(context) {
           val panelOpen = (focusModeEnabled && focusPanelOpen) ||
             (!focusModeEnabled && activeSelectionKind != null && activeSelectionRanges.isNotEmpty())
           if (panelOpen) {
-            if (!focusModeEnabled && hitTestActiveSelectionHighlight(event.x, event.y)) {
-              // A second tap on the word whose panel is open: saves it.
+            if (hitTestActiveSelectionHighlight(event.x, event.y)) {
+              // A second tap on the word whose panel is open: saves it (in
+              // focus mode too).
               if (activeSelectionKind == ActiveSelectionKind.WORD) {
                 hitTestText(event.x, event.y)?.let { onWordSelected?.invoke(it.copy(again = true)) }
               }

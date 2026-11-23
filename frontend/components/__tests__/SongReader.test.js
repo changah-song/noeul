@@ -138,6 +138,23 @@ describe('SongReader', () => {
     expect(panel().props.highlightedWord).toBe('');
   });
 
+  it('saves the open word on a second tap, as the book reader does', async () => {
+    await act(async () => reader().props.onWordSelected({ text: '그리움', sentence: '그리움' }));
+    const toggle = jest.fn();
+    panel().props.saveToggleRef.current = toggle;
+
+    // Native marks a second tap on the same word with `again`.
+    await act(async () => reader().props.onWordSelected({ text: '그리움', sentence: '그리움', again: true }));
+    expect(toggle).toHaveBeenCalledTimes(1);
+    // The panel stays open on the word.
+    expect(panel().props.highlightedWord).toBe('그리움');
+
+    // A tap on another copy of the word (no `again`) only closes the panel.
+    await act(async () => reader().props.onWordSelected({ text: '그리움', sentence: '그리움' }));
+    expect(toggle).toHaveBeenCalledTimes(1);
+    expect(panel().props.highlightedWord).toBe('');
+  });
+
   it('explains a long-pressed selection with the AI, not the translation card', async () => {
     await act(async () => reader().props.onTextSelected({ text: '그리움' }));
     expect(panel().props.highlightedWord).toBe('');
@@ -171,6 +188,21 @@ describe('SongReader', () => {
     expect(JSON.stringify(tree.toJSON())).toContain('Saved (1)');
     await pressByLabel(tree, 'Words');
     expect(JSON.stringify(tree.toJSON())).toContain('Line translations');
+  });
+
+  it('plays a synced song in the native reader, with the sung line lit there', async () => {
+    const synced = {
+      ...song,
+      id: 's2',
+      video: { id: 'vid' },
+      syncedLyrics: '[00:01.00]사랑해\n[00:05.00]그리움',
+    };
+    await act(async () => tree.update(<SongReader song={synced} onClose={() => {}} />));
+    await flush();
+    expect(tree.root.findAllByType('NativeReader')).toHaveLength(1);
+    expect(reader().props.renderMode).toBe('continuous');
+    // Before the first line is sung nothing is lit.
+    expect(reader().props.songLine).toEqual({ blockIds: [], follow: 0 });
   });
 
   it('opens the shared reader options menu', async () => {

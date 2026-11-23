@@ -7,7 +7,6 @@ import {
     Easing,
     Modal,
     PanResponder,
-    Platform,
     Pressable,
     ScrollView,
     StyleSheet,
@@ -56,17 +55,14 @@ import { ensureSongPreprocessed, getSongBookUri } from '../../services/songPrepr
 import { searchSongs } from '../../services/api/songSearch';
 import { findSongVideo } from '../../services/api/songVideo';
 import { chapterTranslations } from '../../services/chapterTranslations';
-import { activeLineIndex, lineEndTime, lyricLineTimes, parseLrc } from '../../services/lrc';
-import { buildLevelLookup, tintWord as tintLyricWord } from '../../services/lyricTint';
+import { activeLineIndex, lyricLineTimes, parseLrc } from '../../services/lrc';
 import SongPlayer, { PLAYER_STATE } from './SongPlayer';
-import SingAlongLyrics, { TRANSLATION_SCALE, translationTextStyle } from './SingAlongLyrics';
 import { tapCommit, tapUndo } from '../../services/haptics';
 import { requestUserDataSync } from '../../services/userDataSyncQueue';
 import { deriveCandidateReason, pickExampleSentence } from '../../services/wordCandidates';
 import { saveWordCandidate } from '../../services/saveWordCandidate';
 import { selectExposureCredits } from '../../services/readerExposure';
 import { createReadingPaceTracker } from '../../services/readingPace';
-import { lookupLayerPlacement } from '../../services/readerSelection';
 import {
     DEFAULT_SONG_READER_SETTINGS,
     normalizeReaderSettings,
@@ -160,6 +156,9 @@ const buildLyricLines = (lyrics) => {
         segments: splitLyricSegments(line),
     }));
 };
+
+// A line's translation is drawn this much smaller than the lyrics.
+const TRANSLATION_SCALE = 0.68;
 
 // `translations` (line text → its translation) adds each line's translation
 // under it as an inert block: drawn in the muted ink, never tapped or credited
@@ -311,7 +310,6 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
         highlightedWordContext,
         isNativeSelection,
         textSelection,
-        lookupPlacement,
         clearSelectionToken,
         dismissLookup,
         openTextSelection,
@@ -590,16 +588,6 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
         language: songLanguage,
     }), [song?.artist, song?.title, songLanguage, songUri, t]);
 
-    const isScrollMode = settings.readingMode === 'scroll';
-    const nativeRenderMode = focusMode ? 'focus' : (isScrollMode ? 'continuous' : 'paged');
-    const nativeSongManifest = useMemo(() => ({
-        sourceUri: songUri || 'song:unknown',
-        currentSpineIndex: 0,
-        currentSpineHref: 'lyrics',
-        currentSpinePath: 'lyrics',
-        renderMode: nativeRenderMode,
-        readerEdgeStateEnabled: false,
-    }), [nativeRenderMode, songUri]);
     // Focus mode is one line at a time, without its translation.
     const nativeLyricBlocks = useMemo(
         () => buildNativeLyricBlocks(lyricLines, focusMode ? null : lineTranslations),
@@ -671,7 +659,6 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
     const [videoStatus, setVideoStatus] = useState('idle'); // finding | ready | missing | error
     const [playing, setPlaying] = useState(false);
     const [rate, setRate] = useState(1);
-    const [loopLine, setLoopLine] = useState(null);
     const [lyricOffset, setLyricOffset] = useState(() => (typeof song?.lyricOffset === 'number' ? song.lyricOffset : 0));
     const playerRef = useRef(null);
     const timeListenersRef = useRef(new Set());
@@ -679,8 +666,6 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
     const timedLines = useMemo(() => parseLrc(song?.syncedLyrics), [song?.syncedLyrics]);
     const lineTimes = useMemo(() => lyricLineTimes(lyricLines, timedLines), [lyricLines, timedLines]);
     const hasTiming = useMemo(() => lineTimes.some((time) => time != null), [lineTimes]);
-    const playbackRef = useRef({ lineTimes, lyricOffset, loopLine });
-    playbackRef.current = { lineTimes, lyricOffset, loopLine };
 
     const subscribeTime = useCallback((listener) => {
         timeListenersRef.current.add(listener);
@@ -690,14 +675,6 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
 
     const handlePlayerTime = useCallback((time) => {
         lastTimeRef.current = time;
-        const { lineTimes: times, lyricOffset: offset, loopLine: loop } = playbackRef.current;
-        if (loop != null) {
-            const start = times[loop];
-            const end = lineEndTime(times, loop);
-            if (start != null && end != null && time + offset >= end - 0.1) {
-                playerRef.current?.seek(start - offset);
-            }
-        }
         timeListenersRef.current.forEach((listener) => listener(time));
     }, []);
 
@@ -759,7 +736,6 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
     const closePlayer = useCallback(() => {
         setPlayerOpen(false);
         setPlaying(false);
-        setLoopLine(null);
         lastTimeRef.current = 0;
     }, []);
 
@@ -815,9 +791,9 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
     const [followToken, setFollowToken] = useState(0);
     const stepLine = useCallback((direction) => {
         const time = lastTimeRef.current + lyricOffset;
-        const current = loopLine ?? activeLineIndex(lineTimes, time);
+        const current = activeLineIndex(lineTimes, time);
         let target = -1;
-        if (direction < 0 && current >= 0 && loopLine == null && time - lineTimes[current] > 1.5) {
+        if (direction < 0 && current >= 0 && time - lineTimes[current] > 1.5) {
             target = current;
         } else {
             for (let index = current + direction; index >= 0 && index < lineTimes.length; index += direction) {
@@ -828,21 +804,22 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
             }
         }
         if (target < 0) return;
-        if (loopLine != null) setLoopLine(target);
         setFollowToken((value) => value + 1);
         lastTimeRef.current = Math.max(0, lineTimes[target] - lyricOffset);
         playerRef.current?.seek(lastTimeRef.current);
         playerRef.current?.play();
-    }, [lineTimes, loopLine, lyricOffset]);
+    }, [lineTimes, lyricOffset]);
 
-    const toggleLoop = useCallback(() => {
-        if (loopLine != null) {
-            setLoopLine(null);
-            return;
-        }
+    // Replay: the line being sung, once more from its start. A press, not a
+    // mode: the song carries on past the line as usual.
+    const replayLine = useCallback(() => {
         const current = activeLineIndex(lineTimes, lastTimeRef.current + lyricOffset);
-        if (current >= 0) setLoopLine(current);
-    }, [lineTimes, loopLine, lyricOffset]);
+        if (current < 0) return;
+        setFollowToken((value) => value + 1);
+        lastTimeRef.current = Math.max(0, lineTimes[current] - lyricOffset);
+        playerRef.current?.seek(lastTimeRef.current);
+        playerRef.current?.play();
+    }, [lineTimes, lyricOffset]);
 
     // The timing nudge is kept with the song, written a moment after the last tap.
     const offsetSaveTimerRef = useRef(null);
@@ -864,32 +841,53 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
 
     const singAlong = playerOpen && videoStatus === 'ready' && hasTiming;
 
+    // ── The line being sung, lit in the native reader (Android) ─────────────
+    // The reader's own song mode (songLine) lights the line and keeps it in
+    // view, so the song page reads exactly like a book while the song plays.
+    const nativeSingAlong = singAlong;
+    const [sungLine, setSungLine] = useState(-1);
+    useEffect(() => {
+        if (!nativeSingAlong) return undefined;
+        return subscribeTime((time) => {
+            const next = activeLineIndex(lineTimes, time + lyricOffset);
+            setSungLine((current) => (current === next ? current : next));
+        });
+    }, [lineTimes, lyricOffset, nativeSingAlong, subscribeTime]);
+    const songLine = useMemo(() => {
+        if (!nativeSingAlong) return null;
+        const line = lyricLines[sungLine];
+        const blockIds = line ? [line.id, `${line.id}-translation`] : [];
+        return { blockIds, follow: followToken };
+    }, [followToken, lyricLines, nativeSingAlong, sungLine]);
+
+    const isScrollMode = settings.readingMode === 'scroll';
+    // While the song plays along with its lyrics the reader scrolls (the sung
+    // line is kept in view), whatever the page setting.
+    const nativeRenderMode = focusMode ? 'focus' : (isScrollMode || singAlong ? 'continuous' : 'paged');
+    const nativeSongManifest = useMemo(() => ({
+        sourceUri: songUri || 'song:unknown',
+        currentSpineIndex: 0,
+        currentSpineHref: 'lyrics',
+        currentSpinePath: 'lyrics',
+        renderMode: nativeRenderMode,
+        readerEdgeStateEnabled: false,
+    }), [nativeRenderMode, songUri]);
+
     const focusPanelOpen = focusMode && (!!highlightedWord || !!textSelection);
 
-    // A long press on a word in the JS lyric views explains it in its line,
-    // as a long press does in the book reader.
-    const explainWord = useCallback(({ text, sentence } = {}) => {
-        const word = cleanLyricToken(text);
-        if (!word) return;
-        openTextSelection({ text: word, sentence });
-    }, [openTextSelection]);
-
-    // Level colours for the JS lyric views, by the book reader's rules.
-    const levelLookup = useMemo(() => buildLevelLookup(readerLevelTerms), [readerLevelTerms]);
-    const tappedSet = useMemo(
-        () => new Set(tappedTerms.map((term) => normalizeForMatch(term.text)).filter(Boolean)),
-        [tappedTerms]
-    );
-    const tintColors = useMemo(() => ({
-        easy: colors.readerLevelUnderlineEasy,
-        mid: colors.readerLevelUnderlineMid,
-        hard: colors.readerLevelUnderlineHard,
-        ink: colors.readerBodyInk,
-    }), [colors]);
-    const tintWord = useCallback(
-        (text) => tintLyricWord(text, levelLookup, tintColors, tappedSet),
-        [levelLookup, tappedSet, tintColors]
-    );
+    // A word tap, as in the book reader: a second tap on the very word whose
+    // panel is open (`again`, sent by the native reader and the JS lists)
+    // saves it, or takes the save back, through the panel's own save button;
+    // any other tap goes to the shared lookup handler (which closes an open
+    // panel or opens a new lookup).
+    const saveToggleRef = useRef(null);
+    const handleWordTap = useCallback((event = {}) => {
+        if (event?.again) {
+            saveToggleRef.current?.();
+            return;
+        }
+        handleNativeWordSelected(event);
+    }, [handleNativeWordSelected]);
 
     // The explanation's sentence: what native sent, else the lyric line the
     // selection sits in.
@@ -1094,10 +1092,10 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
         onPanResponderTerminationRequest: () => true,
     }), [dismissLookup]);
 
-    const placement = lookupLayerPlacement(lookupPlacement, focusMode);
+    // The panel always comes up from the bottom, as in the book reader.
+    const placement = 'bottom';
     const songTitleLabel = localizeStoredPlaceholder(song?.title, t) || t('song.untitled');
     const songArtistLabel = localizeStoredPlaceholder(song?.artist, t) || t('common.unknownArtist');
-    const useNativeLyricReader = Platform.OS === 'android';
     const lyricLineHeight = settings.fontSize * settings.lineSpacing;
 
     return (
@@ -1119,15 +1117,13 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                     disabled
                     accessibilityLabel={`${songTitleLabel}, ${songArtistLabel}`}
                 />
-                {useNativeLyricReader ? (
-                    <ReaderFocusModeButton
-                        styles={chrome}
-                        themeColors={colors}
-                        active={focusMode}
-                        onPress={toggleFocusMode}
-                        accessibilityLabel={t('read.focusMode')}
-                    />
-                ) : null}
+                <ReaderFocusModeButton
+                    styles={chrome}
+                    themeColors={colors}
+                    active={focusMode}
+                    onPress={toggleFocusMode}
+                    accessibilityLabel={t('read.focusMode')}
+                />
                 <TouchableOpacity
                     style={[chrome.headerIconButton, playerOpen && chrome.headerIconButtonActive]}
                     onPress={playerOpen ? closePlayer : openPlayer}
@@ -1214,9 +1210,8 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                                 <TouchableOpacity
                                     accessibilityRole="button"
                                     accessibilityLabel={t('song.player.loopLine')}
-                                    accessibilityState={{ selected: loopLine != null }}
-                                    onPress={toggleLoop}
-                                    style={[styles.playerButton, loopLine != null && styles.playerButtonActive]}
+                                    onPress={replayLine}
+                                    style={styles.playerButton}
                                 >
                                     <Feather name="repeat" size={18} color={colors.readerBodyInk} />
                                 </TouchableOpacity>
@@ -1260,137 +1255,42 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
             ) : null}
 
             <View style={chrome.reader}>
-                {singAlong ? (
-                    <SingAlongLyrics
-                        lines={lyricLines}
-                        times={lineTimes}
-                        translations={lineTranslations}
-                        subscribeTime={subscribeTime}
-                        offset={lyricOffset}
-                        fontSize={settings.fontSize}
-                        lineHeight={lyricLineHeight}
-                        isWordSaved={(text) => songHighlightSet.has(normalizeForMatch(text))}
-                        activeWord={(text) => !isNativeSelection
-                            && !!highlightedWord
-                            && normalizeForMatch(highlightedWord) === normalizeForMatch(text)}
-                        onWordPress={handleNativeWordSelected}
-                        onWordLongPress={explainWord}
-                        tintWord={tintWord}
-                        followToken={followToken}
-                        bottomPadding={insets.bottom + 190}
-                        colors={colors}
-                        styles={styles}
-                    />
-                ) : useNativeLyricReader ? (
-                    <NativeEpubReaderView
-                        ref={nativeReaderViewRef}
-                        key={songUri || 'song:unknown'}
-                        style={chrome.nativeReaderView}
-                        bookManifest={nativeSongManifest}
-                        chapterBlocks={nativeLyricBlocks}
-                        chapterResources={[]}
-                        chapterWindow={[]}
-                        restorePosition={SONG_RESTORE_POSITION}
-                        renderMode={nativeRenderMode}
-                        readerEdgeStateEnabled={false}
-                        fontSize={settings.fontSize}
-                        lineHeight={settings.lineSpacing}
-                        theme={isDarkMode ? 'dark' : 'light'}
-                        themeTokens={nativeReaderThemeTokens}
-                        highlightTerms={readerHighlightTerms}
-                        highlightStrengths={highlightStrengths}
-                        tappedTerms={tappedTerms}
-                        levelTerms={readerLevelTerms}
-                        showPinyin={readerShowPinyin}
-                        clearSelectionToken={clearSelectionToken}
-                        focusSentenceCount={1}
-                        focusSwipeEnabled
-                        focusNavToken={focusNavToken}
-                        focusPanelHeight={focusMode ? focusPanelTotalHeight : 0}
-                        onWordSelected={handleNativeWordSelected}
-                        onTextSelected={handleNativeTextSelected}
-                        onSelectionCleared={handleNativeSelectionCleared}
-                        onFocusSentenceChange={handleFocusSentenceChange}
-                        onExposure={handleNativeExposure}
-                        onSavedTermsShown={handleSavedTermsShown}
-                    />
-                ) : (
-                    <ScrollView
-                        style={styles.lyricsScroll}
-                        contentContainerStyle={[
-                            styles.lyricsContent,
-                            { paddingBottom: insets.bottom + 190 },
-                        ]}
-                        showsVerticalScrollIndicator={false}
-                        scrollEventThrottle={16}
-                        onScroll={highlightedWord ? dismissLookup : undefined}
-                    >
-                        {lyricLines.map((line) => {
-                            const translation = line.isBlank ? '' : lineTranslations.get(line.text.trim());
-                            return (
-                            <View key={line.id} style={styles.lyricBlock}>
-                            <Text
-                                style={[
-                                    styles.lyricLine,
-                                    { fontSize: settings.fontSize, lineHeight: lyricLineHeight },
-                                    line.isBlank && styles.lyricLineBlank,
-                                    translation && styles.lyricLineTranslated,
-                                ]}
-                            >
-                                {line.isBlank ? ' ' : line.segments.map((segment) => {
-                                    const normalized = normalizeForMatch(segment.text);
-                                    const isSaved = segment.isWord && songHighlightSet.has(normalized);
-                                    const isActive = segment.isWord
-                                        && normalized
-                                        && normalizeForMatch(highlightedWord) === normalized
-                                        && !isNativeSelection;
-
-                                    return (
-                                        <Text
-                                            key={segment.id}
-                                            suppressHighlighting
-                                            onPress={segment.isWord
-                                                ? () => handleNativeWordSelected({
-                                                    text: segment.text,
-                                                    sentence: line.text,
-                                                })
-                                                : undefined}
-                                            onLongPress={segment.isWord
-                                                ? () => explainWord({ text: segment.text, sentence: line.text })
-                                                : undefined}
-                                            style={[
-                                                isSaved && styles.savedLyricWord,
-                                                isActive && styles.activeLyricWord,
-                                            ]}
-                                        >
-                                            {segment.isWord && !isSaved && !isActive
-                                                ? tintWord(segment.text).map((piece, pieceIndex) => (piece.color ? (
-                                                    // eslint-disable-next-line react/no-array-index-key
-                                                    <Text key={pieceIndex} style={{ color: piece.color }}>{piece.text}</Text>
-                                                ) : piece.text))
-                                                : segment.text}
-                                        </Text>
-                                    );
-                                })}
-                            </Text>
-                            {translation ? (
-                                <Text
-                                    style={[
-                                        styles.lineTranslation,
-                                        translationTextStyle(settings.fontSize, lyricLineHeight),
-                                    ]}
-                                >
-                                    {translation}
-                                </Text>
-                            ) : null}
-                            </View>
-                            );
-                        })}
-                    </ScrollView>
-                )}
+                <NativeEpubReaderView
+                    ref={nativeReaderViewRef}
+                    key={songUri || 'song:unknown'}
+                    style={chrome.nativeReaderView}
+                    bookManifest={nativeSongManifest}
+                    chapterBlocks={nativeLyricBlocks}
+                    chapterResources={[]}
+                    chapterWindow={[]}
+                    restorePosition={SONG_RESTORE_POSITION}
+                    renderMode={nativeRenderMode}
+                    songLine={songLine}
+                    readerEdgeStateEnabled={false}
+                    fontSize={settings.fontSize}
+                    lineHeight={settings.lineSpacing}
+                    theme={isDarkMode ? 'dark' : 'light'}
+                    themeTokens={nativeReaderThemeTokens}
+                    highlightTerms={readerHighlightTerms}
+                    highlightStrengths={highlightStrengths}
+                    tappedTerms={tappedTerms}
+                    levelTerms={readerLevelTerms}
+                    showPinyin={readerShowPinyin}
+                    clearSelectionToken={clearSelectionToken}
+                    focusSentenceCount={1}
+                    focusSwipeEnabled
+                    focusNavToken={focusNavToken}
+                    focusPanelHeight={focusMode ? focusPanelTotalHeight : 0}
+                    onWordSelected={handleWordTap}
+                    onTextSelected={handleNativeTextSelected}
+                    onSelectionCleared={handleNativeSelectionCleared}
+                    onFocusSentenceChange={handleFocusSentenceChange}
+                    onExposure={handleNativeExposure}
+                    onSavedTermsShown={handleSavedTermsShown}
+                />
             </View>
 
-            {focusMode && useNativeLyricReader ? (
+            {focusMode ? (
                 <FocusControls
                     subscribe={subscribeFocusInfo}
                     focusSpan={1}
@@ -1440,6 +1340,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                         currentBook={songUri}
                         sourceBook={sourceBook}
                         savedWords={savedWords ?? []}
+                        saveToggleRef={saveToggleRef}
                     />
                     {/* Always mounted, so it can slide away when closed. */}
                     <SelectionExplainPanel
@@ -1643,7 +1544,11 @@ const createStyles = (colors) => StyleSheet.create({
         flex: 1,
         backgroundColor: colors.readerPaper,
     },
+    lyricsContentFill: {
+        flexGrow: 1,
+    },
     lyricsContent: {
+        flexGrow: 1,
         paddingTop: spacing.xl,
         paddingHorizontal: spacing.xl,
         alignItems: 'center',
@@ -1655,6 +1560,12 @@ const createStyles = (colors) => StyleSheet.create({
         color: colors.readerBodyInk,
         textAlign: 'center',
         letterSpacing: 0,
+    },
+    // A word of a lyric line laid out in a row (the sing-along list): the
+    // line's type without its full width and spacing.
+    lyricLineInRow: {
+        width: 'auto',
+        marginBottom: 0,
     },
     lyricLineBlank: {
         marginBottom: 18,
@@ -1675,6 +1586,13 @@ const createStyles = (colors) => StyleSheet.create({
     },
     // Saved and tapped words look as they do in the book reader: a saved word
     // is a solid ink chip, the tapped one the reader's tapped-word surface.
+    // A word's plain look, set explicitly so a word that stops being saved or
+    // tapped really loses the chip (Android keeps a nested Text's old
+    // background when the style just leaves it out).
+    lyricWord: {
+        color: colors.readerBodyInk,
+        backgroundColor: 'transparent',
+    },
     savedLyricWord: {
         color: colors.readerSavedWordSurfaceText,
         backgroundColor: colors.readerSavedWordSurfaceBg,

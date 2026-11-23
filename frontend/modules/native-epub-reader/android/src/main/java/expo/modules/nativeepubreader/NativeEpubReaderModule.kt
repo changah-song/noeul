@@ -451,6 +451,12 @@ class NativeEpubReaderModule : Module() {
         view.setPagedFocus(enabled)
       }
 
+      // Song mode: { blockIds: [...], follow: n } lights the line being sung
+      // and keeps it a third of the way down; an empty map turns it off.
+      Prop("songLine") { view: NativeEpubReaderView, line: Map<String, Any?> ->
+        view.setSongLine(line)
+      }
+
       Prop("chromeInsets") { view: NativeEpubReaderView, insets: Map<String, Any?> ->
         view.setChromeInsets(
           (insets["top"] as? Number)?.toDouble() ?: 0.0,
@@ -642,6 +648,8 @@ private const val FOCUS_BOTTOM_INSET_RATIO = 0.52f
 private const val FOCUS_SPAN_TOP_MARGIN_DP = 44f
 private const val FOCUS_SPAN_BOTTOM_MARGIN_DP = 12f
 private const val FOCUS_SCROLL_DURATION_MS = 380L
+// Song mode: after a scroll by hand the view stops following the song this long.
+private const val SONG_RESUME_FOLLOW_MS = 4000L
 private const val FOCUS_PANEL_LIFT_DURATION_MS = 450L
 // Rapid stepping: when the next beam move arrives within this window of the
 // previous one, the scroll/highlight animations run at the fast durations so
@@ -1311,6 +1319,12 @@ class NativeEpubReaderView(
   private var focusPanelHeightPx = 0f
   private var focusPanelLiftPx = 0f
   private var focusScrollAnimator: ValueAnimator? = null
+
+  // Song mode (see setSongLine).
+  private var songLineBlockIds: List<String> = emptyList()
+  private var songLineFollowToken = 0
+  private var songLastUserScrollAt = 0L
+  private var songScrollAnimator: ValueAnimator? = null
   private var suppressContinuousScrollEvents = false
   // The reader's controls (header, scrubber) lie over the reader instead of
   // resizing it, so coming and going never lays the text out again. Scroll
@@ -1431,6 +1445,11 @@ class NativeEpubReaderView(
       moveFocus(direction)
     }
     continuousScrollView.onScrollPositionChanged = { y ->
+      if (continuousScrollView.userDriven) {
+        // The reader scrolled by hand: song mode stops following for a while.
+        songLastUserScrollAt = SystemClock.uptimeMillis()
+        songScrollAnimator?.cancel()
+      }
       handleContinuousScrollChanged()
       if (
         readerRenderMode == "continuous" &&
@@ -1810,6 +1829,63 @@ class NativeEpubReaderView(
     // the restore path re-lands the reader at the current position in the new
     // mode's geometry (page for paged, scroll offset for continuous).
     repaginate(resetToFirstPage = true)
+  }
+
+  // ===== Song mode =====
+  // A song playing with timed lyrics: the line being sung is lit (the others
+  // dimmed, EpubPageView.songLitBlockIds) and kept a third of the way down.
+  // After a scroll by hand the view waits a few seconds before following
+  // again, unless `follow` changes (the back / next buttons), which follows
+  // at once.
+  fun setSongLine(line: Map<String, Any?>) {
+    val enabled = line.isNotEmpty()
+    val ids = (line["blockIds"] as? List<*>)?.mapNotNull { it as? String }.orEmpty()
+    val follow = (line["follow"] as? Number)?.toInt() ?: 0
+    continuousPageView.songLitBlockIds = if (enabled) ids.toSet() else null
+    val forced = follow != songLineFollowToken
+    songLineFollowToken = follow
+    val changed = ids != songLineBlockIds
+    songLineBlockIds = ids
+    if (!enabled || ids.isEmpty() || readerRenderMode != "continuous") return
+    if (!changed && !forced) return
+    if (!forced && SystemClock.uptimeMillis() - songLastUserScrollAt < SONG_RESUME_FOLLOW_MS) return
+    if (forced) songLastUserScrollAt = 0L
+    scrollToSongLine()
+  }
+
+  private fun scrollToSongLine() {
+    val page = pages.getOrNull(continuousPageIndex) ?: return
+    val ids = songLineBlockIds.toSet()
+    var top: Int? = null
+    var bottom: Int? = null
+    var y = continuousTextTop()
+    for (block in page.blocks) {
+      y += block.marginTop
+      val height = if (block.type == "image") block.imageHeight else block.textLayout?.height ?: 0
+      if (block.blockId in ids) {
+        top = minOf(top ?: y, y)
+        bottom = maxOf(bottom ?: (y + height), y + height)
+      }
+      y += height + block.marginBottom
+    }
+    if (top == null || bottom == null) return
+    val contentHeight = continuousPageView.layoutParams?.height ?: 0
+    val maxScroll = (contentHeight - layoutHeight).coerceAtLeast(0)
+    val target = ((top + bottom) / 2 - layoutHeight / 3).coerceIn(0, maxScroll)
+    val from = continuousScrollView.scrollY
+    songScrollAnimator?.cancel()
+    if (abs(target - from) < 2) return
+    // This scroll is the reader's own, not the reader's hand (a touch since
+    // left userDriven on).
+    continuousScrollView.userDriven = false
+    songScrollAnimator = ValueAnimator.ofInt(from, target).apply {
+      duration = FOCUS_SCROLL_DURATION_MS
+      interpolator = PathInterpolator(0.33f, 1f, 0.68f, 1f)
+      addUpdateListener { animator ->
+        continuousScrollView.scrollTo(0, animator.animatedValue as Int)
+      }
+      start()
+    }
   }
 
   private fun isFocusMode(): Boolean {

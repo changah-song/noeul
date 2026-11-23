@@ -20,6 +20,10 @@ struct ReaderBlock {
   let style: [String: Any]
   let fileUri: String?
 
+  // A song line's translation (styleTokens.inert): drawn in the muted ink,
+  // never tapped or credited as reading, as on Android.
+  var isInert: Bool { (style["inert"] as? Bool) == true }
+
   var isHeading: Bool {
     tag.count == 2 && tag.hasPrefix("h") && tag.last?.isNumber == true
   }

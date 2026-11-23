@@ -36,6 +36,7 @@ const playerHtml = (videoId, startSeconds) => `<!DOCTYPE html>
       else if (cmd.type === 'pause') player.pauseVideo();
       else if (cmd.type === 'seek') { player.seekTo(cmd.time, true); tick(); }
       else if (cmd.type === 'rate') player.setPlaybackRate(cmd.rate);
+
     } catch (e) { post({ type: 'error', code: 'command' }); }
   };
   window.onYouTubeIframeAPIReady = function () {
