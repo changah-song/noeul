@@ -23,8 +23,8 @@ def test_lrclib_result_maps_to_the_client_shape():
     assert song == {
         "id": "lrclib:9584202", "title": "봄날", "artist": "방탄소년단",
         "album": "YOU NEVER WALK ALONE", "duration": 273.0,
-        "lyrics": "보고 싶다\n이렇게 말하니까", "synced": True, "instrumental": False,
-        "source": "lrclib",
+        "lyrics": "보고 싶다\n이렇게 말하니까", "synced": True, "syncedLyrics": "[00:12.00] 보고 싶다",
+        "instrumental": False, "source": "lrclib",
     }
     assert lrclib_result_to_song({"artistName": "x"}) is None
     assert lrclib_result_to_song("junk") is None

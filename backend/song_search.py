@@ -58,6 +58,9 @@ def lrclib_result_to_song(item: dict[str, Any]) -> dict[str, Any] | None:
         "duration": float(duration) if isinstance(duration, (int, float)) else None,
         "lyrics": lyrics,
         "synced": bool(_clean(item.get("syncedLyrics"))),
+        # Timed lines ("[01:02.35] ..."): the song reader lights each line as
+        # the video plays.
+        "syncedLyrics": _clean(item.get("syncedLyrics")),
         "instrumental": bool(item.get("instrumental")),
         "source": "lrclib",
     }
@@ -80,6 +83,7 @@ def genius_hit_to_song(hit: dict[str, Any]) -> dict[str, Any] | None:
         "duration": None,
         "lyrics": "",
         "synced": False,
+        "syncedLyrics": "",
         "instrumental": False,
         "source": "genius",
     }

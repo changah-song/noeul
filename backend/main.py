@@ -21,7 +21,7 @@ try:
     import fcntl  # file locks; not on Windows
 except ImportError:
     fcntl = None
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache, partial
@@ -29,6 +29,19 @@ import certifi
 from dotenv import load_dotenv
 
 from word_features import attach_word_features, lookup_word_features
+from song_video import (
+    SONG_VIDEO_FOUND_TTL_DAYS,
+    SONG_VIDEO_MISSING_TTL_DAYS,
+    YOUTUBE_DAILY_LOOKUPS,
+    YOUTUBE_SEARCH_MAX_RESULTS,
+    YOUTUBE_SEARCH_URL,
+    YOUTUBE_USER_DAILY_LOOKUPS,
+    YOUTUBE_VIDEOS_URL,
+    candidates_from_payloads,
+    pick_video,
+    song_video_key,
+    song_video_query,
+)
 from song_search import (
     GENIUS_SEARCH_URL,
     LRCLIB_SEARCH_URL,
@@ -1435,6 +1448,15 @@ def create_ops_tables(conn: sqlite3.Connection):
             explanation TEXT NOT NULL,
             created_at TEXT NOT NULL,
             hit_count INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS song_video_cache (
+            key TEXT PRIMARY KEY,
+            video_json TEXT,
+            created_at TEXT NOT NULL
         )
         """
     )
@@ -4011,7 +4033,7 @@ async def _genius_search(client: httpx.AsyncClient, query: str) -> list[dict[str
             matches = []
         match = next((m for m in matches if m.get("lyrics")), None)
         if match:
-            completed.append({**song, **{k: match[k] for k in ("album", "duration", "lyrics", "synced")}})
+            completed.append({**song, **{k: match[k] for k in ("album", "duration", "lyrics", "synced", "syncedLyrics")}})
     return completed
 
 
@@ -4039,6 +4061,110 @@ async def search_songs(payload: dict, auth: dict[str, Any] = Depends(verify_supa
     results = merge_song_results(lrclib, genius)
     _song_search_cache.put(query, results)
     return {"results": results}
+
+
+YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "").strip()
+YOUTUBE_BUDGET_USER_ID = "__global__"
+YOUTUBE_BUDGET_BUCKET = "youtube_lookups"
+_song_video_logger = logging.getLogger("noeul.song_video")
+
+
+def _song_video_cache_get(key: str) -> tuple[bool, dict[str, Any] | None]:
+    """(hit, video). A hit with video None means "looked, nothing found"."""
+    row = _db_fetchone("SELECT video_json, created_at FROM song_video_cache WHERE key=?", (key,))
+    if not row:
+        return False, None
+    try:
+        created = datetime.fromisoformat(row["created_at"])
+    except (TypeError, ValueError):
+        return False, None
+    video = json.loads(row["video_json"]) if row["video_json"] else None
+    ttl_days = SONG_VIDEO_FOUND_TTL_DAYS if video else SONG_VIDEO_MISSING_TTL_DAYS
+    if datetime.now(timezone.utc) - created > timedelta(days=ttl_days):
+        return False, None
+    return True, video
+
+
+def _song_video_cache_put(key: str, video: dict[str, Any] | None) -> None:
+    _db_execute(
+        """
+        INSERT INTO song_video_cache (key, video_json, created_at) VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET video_json=excluded.video_json, created_at=excluded.created_at
+        """,
+        (key, json.dumps(video, ensure_ascii=False) if video else None, datetime.now(timezone.utc).isoformat()),
+    )
+
+
+async def _youtube_find_video(title: str, artist: str, duration: float | None) -> dict[str, Any] | None:
+    async with httpx.AsyncClient(timeout=SONG_SEARCH_PROVIDER_TIMEOUT_SECONDS) as client:
+        search = await client.get(
+            YOUTUBE_SEARCH_URL,
+            params={
+                "key": YOUTUBE_API_KEY,
+                "part": "snippet",
+                "type": "video",
+                "videoEmbeddable": "true",
+                "maxResults": YOUTUBE_SEARCH_MAX_RESULTS,
+                "q": song_video_query(title, artist),
+            },
+        )
+        if search.status_code != 200:
+            raise RuntimeError(f"youtube search {search.status_code}: {search.text[:200]}")
+        search_payload = search.json()
+        ids = [
+            (item.get("id") or {}).get("videoId")
+            for item in search_payload.get("items") or []
+            if isinstance(item, dict)
+        ]
+        ids = [video_id for video_id in ids if video_id]
+        videos_payload: dict[str, Any] = {}
+        if ids:
+            videos = await client.get(
+                YOUTUBE_VIDEOS_URL,
+                params={"key": YOUTUBE_API_KEY, "part": "contentDetails,status", "id": ",".join(ids)},
+            )
+            if videos.status_code == 200:
+                videos_payload = videos.json()
+    return pick_video(candidates_from_payloads(search_payload, videos_payload), title, artist, duration)
+
+
+# The song reader's player: title + artist (+ the lyrics' duration, which picks
+# the upload that matches the timed lyrics) -> one YouTube video, looked up once
+# and shared by every user through cache.db.
+@app.post("/songs/video/")
+async def song_video(payload: dict, auth: dict[str, Any] = Depends(verify_supabase_token)):
+    title = str(payload.get("title") or "")
+    artist = str(payload.get("artist") or "")
+    raw_duration = payload.get("duration")
+    duration = float(raw_duration) if isinstance(raw_duration, (int, float)) and raw_duration > 0 else None
+    key = song_video_key(title, artist)
+    if not key:
+        return {"video": None}
+
+    hit, video = await asyncio.to_thread(_song_video_cache_get, key)
+    if hit:
+        return {"video": video}
+    if not YOUTUBE_API_KEY:
+        raise ApiError(503, "song_video_unavailable", "Song videos are not set up on the server")
+
+    allowed = await asyncio.to_thread(
+        _usage_check_and_increment, auth["user_id"], "song_video", YOUTUBE_USER_DAILY_LOOKUPS, 1
+    )
+    if not allowed:
+        raise ApiError(429, "song_video_daily_limit", "Video lookups are resting until tomorrow")
+    allowed = await asyncio.to_thread(
+        _usage_check_and_increment, YOUTUBE_BUDGET_USER_ID, YOUTUBE_BUDGET_BUCKET, YOUTUBE_DAILY_LOOKUPS, 1
+    )
+    if not allowed:
+        raise ApiError(429, "song_video_daily_limit", "Video lookups are resting until tomorrow")
+
+    try:
+        video = await _youtube_find_video(title, artist, duration)
+    except Exception as error:
+        _song_video_logger.warning("youtube lookup failed for %r: %s", key, error)
+        raise ApiError(503, "song_video_unavailable", "Song videos are unavailable right now")
+    await asyncio.to_thread(_song_video_cache_put, key, video)
+    return {"video": video}
 
 
 @app.post("/translate/")

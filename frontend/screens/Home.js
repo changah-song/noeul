@@ -28,6 +28,7 @@ import { Feather, Ionicons, MaterialCommunityIcons, MaterialIcons } from '@expo/
 import { createTabBarBaseStyle } from '../components/shared/TabBar';
 import Book3D from '../components/Home/Book3D';
 import SongReader from '../components/Songs/SongReader';
+import LyricWebSearch from '../components/Songs/LyricWebSearch';
 import { IconButton, Screen } from '../components/ui';
 import { useAppContext } from '../contexts/AppContext';
 import { useLocalOwner } from '../contexts/LocalOwnerContext';
@@ -203,7 +204,9 @@ const getSongsStorageKey = (ownerId, language = 'ko') => {
     );
 };
 const OCR_SETTINGS_KEY = '@ff/ocr-settings';
-const EMPTY_SONG_DRAFT = { title: '', artist: '', lyrics: '' };
+// syncedLyrics / duration come from a song search result (timed lyrics for
+// the reader's player); typed or pasted lyrics have neither.
+const EMPTY_SONG_DRAFT = { title: '', artist: '', lyrics: '', syncedLyrics: '', duration: null };
 const DEFAULT_SONG_FONT_SIZE = 28;
 const EMPTY_OCR_STATUS = {
     overlayPermissionGranted: false,
@@ -339,6 +342,12 @@ const normalizeStoredSong = (song, fallbackLanguage = 'ko') => {
         instrumental: !!song.instrumental,
         lyrics,
         syncedLyrics: String(song.syncedLyrics || '').trim(),
+        // The song reader's player: the YouTube video found for the song
+        // ({ id, title, channel, duration }, or null when none fits), whether
+        // timed lyrics were looked for, and the reader's timing nudge (s).
+        video: song.video && typeof song.video.id === 'string' ? song.video : (song.video === null ? null : undefined),
+        syncedChecked: !!song.syncedChecked,
+        lyricOffset: typeof song.lyricOffset === 'number' ? clamp(song.lyricOffset, -30, 30) : 0,
         lines: countSongLines(lyrics),
         fontSize: typeof song.fontSize === 'number'
             ? clamp(song.fontSize, 20, 40)
@@ -468,9 +477,15 @@ const mergeLocalAndCloudSongs = (localSongs, cloudRows, targetLanguage = 'ko') =
 
         const cloudUpdatedAt = getSongTimestamp(cloudRow, ['updated_at', 'created_at']);
         if (cloudUpdatedAt > localUpdatedAt) {
+            // The player's details live on this device only; keep them.
             merged.push(normalizeStoredSong({
                 ...cloudSongToLocalSong(cloudRow),
                 savedTerms: localSong.savedTerms ?? [],
+                syncedLyrics: localSong.syncedLyrics,
+                duration: localSong.duration,
+                video: localSong.video,
+                syncedChecked: localSong.syncedChecked,
+                lyricOffset: localSong.lyricOffset,
             }, targetLanguage));
             return;
         }
@@ -1927,6 +1942,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         return () => subscription.remove();
     }, [openFolderId, selectedBookPreview, selectedSongId]);
     const [showAddSongModal, setShowAddSongModal] = useState(false);
+    const [showLyricWebSearch, setShowLyricWebSearch] = useState(false);
     const [songDraft, setSongDraft] = useState(EMPTY_SONG_DRAFT);
     // Song suggestions while the reader types a title, artist or line of
     // lyrics in the editor; a tap fills the draft, which stays editable.
@@ -4042,6 +4058,8 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             title: String(song?.title || ''),
             artist: String(song?.artist || ''),
             lyrics: String(song?.lyrics || ''),
+            syncedLyrics: String(song?.syncedLyrics || ''),
+            duration: Number.isFinite(song?.duration) ? song.duration : null,
         });
         resetSongSearch();
     }, [resetSongSearch]);
@@ -4080,6 +4098,8 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             title,
             artist,
             lyrics,
+            syncedLyrics: songDraft.syncedLyrics || '',
+            duration: songDraft.duration ?? null,
             lines: countSongLines(lyrics),
             fontSize: DEFAULT_SONG_FONT_SIZE,
             savedTerms: [],
@@ -4104,7 +4124,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         setShowAddSongModal(false);
         setSongDraft(EMPTY_SONG_DRAFT);
         setActiveLibraryTab('Songs');
-    }, [songDraft.artist, songDraft.lyrics, songDraft.title, songs, syncSongToCloud, targetLanguage, t]);
+    }, [songDraft.artist, songDraft.duration, songDraft.lyrics, songDraft.syncedLyrics, songDraft.title, songs, syncSongToCloud, targetLanguage, t]);
 
     const handleUpdateSong = useCallback((songId, patch) => {
         const currentSong = songs.find((song) => song.id === songId);
@@ -4925,7 +4945,14 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                     setActiveBookFilter('public-domain');
                                 },
                             },
-                            // Songs are set aside for now.
+                            {
+                                id: 'songs',
+                                label: t('home.songs'),
+                                onPress: () => {
+                                    setActiveBookMenuKey(null);
+                                    setActiveLibraryTab('Songs');
+                                },
+                            },
                         ]}
                     />
                 </View>
@@ -5397,6 +5424,15 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                         {songSearch.status === 'error' ? (
                             <Text style={styles.songSearchNotice}>{t('home.songSearchFailed')}</Text>
                         ) : null}
+                        <TouchableOpacity
+                            accessibilityRole="button"
+                            activeOpacity={Motion.pressedOpacity}
+                            onPress={() => setShowLyricWebSearch(true)}
+                            style={styles.songWebSearchButton}
+                        >
+                            <Feather name="globe" size={16} color={HOME_COLORS.accent} />
+                            <Text style={styles.songWebSearchText}>{t('home.songWebSearch')}</Text>
+                        </TouchableOpacity>
 
                         <View style={styles.songEditorDividerRow}>
                             <View style={styles.songEditorDividerLine} />
@@ -5453,6 +5489,17 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                         </View>
                     </KeyboardAvoidingView>
                 </View>
+                <LyricWebSearch
+                    visible={showLyricWebSearch}
+                    query={songSearch.query.trim() || [songDraft.artist, songDraft.title].filter(Boolean).join(' ')}
+                    language={normalizeBookLanguage(targetLanguage)}
+                    onClose={() => setShowLyricWebSearch(false)}
+                    onUseText={(text) => {
+                        // Lyrics from a web page have no timing.
+                        setSongDraft((prev) => ({ ...prev, lyrics: text, syncedLyrics: '', duration: null }));
+                        setShowLyricWebSearch(false);
+                    }}
+                />
             </Modal>
         </Screen>
         </HomeThemeContext.Provider>
@@ -7131,6 +7178,19 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
         color: HOME_COLORS.text,
         paddingVertical: 0,
         includeFontPadding: false,
+    },
+    songWebSearchButton: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        alignSelf: 'flex-start',
+        gap: 6,
+        paddingVertical: 8,
+        marginTop: 4,
+    },
+    songWebSearchText: {
+        fontSize: 14,
+        fontWeight: '600',
+        color: HOME_COLORS.accent,
     },
     songSearchResults: {
         maxHeight: 280,
