@@ -1334,15 +1334,17 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                 ) : (
                     <ScrollView
                         style={styles.lyricsScroll}
-                        contentContainerStyle={[
-                            styles.lyricsContent,
-                            { paddingBottom: insets.bottom + 190 },
-                        ]}
+                        contentContainerStyle={styles.lyricsContentFill}
                         showsVerticalScrollIndicator={false}
                         scrollEventThrottle={16}
                         onScroll={highlightedWord ? dismissLookup : undefined}
                     >
-                        <Pressable onPress={dismissLookup} accessible={false}>
+                        <Pressable
+                            onPress={dismissLookup}
+                            accessible={false}
+                            // The margins are inside, so a tap there closes the panel too.
+                            style={[styles.lyricsContent, { paddingBottom: insets.bottom + 190 }]}
+                        >
                         {lyricLines.map((line) => {
                             const translation = line.isBlank ? '' : lineTranslations.get(line.text.trim());
                             return (
@@ -1668,7 +1670,11 @@ const createStyles = (colors) => StyleSheet.create({
         flex: 1,
         backgroundColor: colors.readerPaper,
     },
+    lyricsContentFill: {
+        flexGrow: 1,
+    },
     lyricsContent: {
+        flexGrow: 1,
         paddingTop: spacing.xl,
         paddingHorizontal: spacing.xl,
         alignItems: 'center',

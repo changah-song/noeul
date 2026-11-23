@@ -90,7 +90,7 @@ const SingAlongLyrics = ({
         <ScrollView
             ref={scrollRef}
             style={styles.scroll}
-            contentContainerStyle={[styles.content, { paddingBottom: bottomPadding }]}
+            contentContainerStyle={styles.contentFill}
             showsVerticalScrollIndicator={false}
             onLayout={(event) => { viewHeightRef.current = event.nativeEvent.layout.height; }}
             onScrollBeginDrag={() => { userScrolledAtRef.current = Date.now(); }}
@@ -99,7 +99,13 @@ const SingAlongLyrics = ({
         >
             {/* A tap that lands on no word closes the panel, as on a book
                 page; word taps are caught by the words first. */}
-            <Pressable onPress={onBackgroundPress} android_disableSound accessible={false}>
+            <Pressable
+                onPress={onBackgroundPress}
+                android_disableSound
+                accessible={false}
+                // The margins are inside, so a tap there closes the panel too.
+                style={[styles.content, { paddingBottom: bottomPadding }]}
+            >
             {lines.map((line, index) => {
                 const isActive = index === active;
                 const translation = line.isBlank ? '' : translations?.get(line.text.trim());
@@ -179,7 +185,11 @@ const styles = StyleSheet.create({
     scroll: {
         flex: 1,
     },
+    contentFill: {
+        flexGrow: 1,
+    },
     content: {
+        flexGrow: 1,
         paddingTop: 24,
         paddingHorizontal: 24,
     },
