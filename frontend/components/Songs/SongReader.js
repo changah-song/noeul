@@ -866,21 +866,21 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
 
     const focusPanelOpen = focusMode && (!!highlightedWord || !!textSelection);
 
-    // A word tap, as in the book reader: a second tap on the word whose panel
-    // is open saves it (or takes the save back) through the panel's own save
-    // button; any other tap goes to the shared lookup handler (which closes an
-    // open panel or opens a new lookup).
+    // A word tap, as in the book reader: a second tap on the very word whose
+    // panel is open (`again`, sent by the native reader and the JS lists)
+    // saves it, or takes the save back, through the panel's own save button;
+    // any other tap goes to the shared lookup handler (which closes an open
+    // panel or opens a new lookup).
     const saveToggleRef = useRef(null);
+    // The plain (iOS) lyric list's tapped copy of a word: line id + segment id.
+    const [plainTappedKey, setPlainTappedKey] = useState(null);
     const handleWordTap = useCallback((event = {}) => {
-        const open = !isNativeSelection && highlightedWord;
-        const sameWord = open
-            && normalizeForMatch(event?.text) === normalizeForMatch(highlightedWord);
-        if (event?.again || sameWord) {
+        if (event?.again) {
             saveToggleRef.current?.();
             return;
         }
         handleNativeWordSelected(event);
-    }, [handleNativeWordSelected, highlightedWord, isNativeSelection]);
+    }, [handleNativeWordSelected]);
 
     // A long press on a word in the JS lyric views explains it in its line,
     // as a long press does in the book reader.
@@ -1286,12 +1286,11 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                         fontSize={settings.fontSize}
                         lineHeight={lyricLineHeight}
                         isWordSaved={(text) => songHighlightSet.has(normalizeForMatch(text))}
-                        activeWord={(text) => !isNativeSelection
-                            && !!highlightedWord
-                            && normalizeForMatch(highlightedWord) === normalizeForMatch(text)}
+                        lookupOpen={!isNativeSelection && !!highlightedWord}
                         onWordPress={handleWordTap}
                         onBackgroundPress={dismissLookup}
-                        onWordLongPress={explainWord}
+                        onSelectText={openTextSelection}
+                        selectionOpen={!!textSelection}
                         tintWord={tintWord}
                         followToken={followToken}
                         bottomPadding={insets.bottom + 190}
@@ -1362,20 +1361,24 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                                 {line.isBlank ? ' ' : line.segments.map((segment) => {
                                     const normalized = normalizeForMatch(segment.text);
                                     const isSaved = segment.isWord && songHighlightSet.has(normalized);
-                                    const isActive = segment.isWord
-                                        && normalized
-                                        && normalizeForMatch(highlightedWord) === normalized
-                                        && !isNativeSelection;
+                                    // Only the copy tapped, as in the book reader.
+                                    const tapKey = `${line.id}:${segment.id}`;
+                                    const lookupOpen = !!highlightedWord && !isNativeSelection;
+                                    const isActive = segment.isWord && lookupOpen && plainTappedKey === tapKey;
 
                                     return (
                                         <Text
                                             key={segment.id}
                                             suppressHighlighting
                                             onPress={segment.isWord
-                                                ? () => handleWordTap({
-                                                    text: segment.text,
-                                                    sentence: line.text,
-                                                })
+                                                ? () => {
+                                                    if (!lookupOpen) setPlainTappedKey(tapKey);
+                                                    handleWordTap({
+                                                        text: segment.text,
+                                                        sentence: line.text,
+                                                        again: isActive,
+                                                    });
+                                                }
                                                 : undefined}
                                             onLongPress={segment.isWord
                                                 ? () => explainWord({ text: segment.text, sentence: line.text })
@@ -1686,6 +1689,12 @@ const createStyles = (colors) => StyleSheet.create({
         color: colors.readerBodyInk,
         textAlign: 'center',
         letterSpacing: 0,
+    },
+    // A word of a lyric line laid out in a row (the sing-along list): the
+    // line's type without its full width and spacing.
+    lyricLineInRow: {
+        width: 'auto',
+        marginBottom: 0,
     },
     lyricLineBlank: {
         marginBottom: 18,

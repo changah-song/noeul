@@ -143,14 +143,16 @@ describe('SongReader', () => {
     const toggle = jest.fn();
     panel().props.saveToggleRef.current = toggle;
 
-    await act(async () => reader().props.onWordSelected({ text: '그리움', sentence: '그리움' }));
+    // Native marks a second tap on the same word with `again`.
+    await act(async () => reader().props.onWordSelected({ text: '그리움', sentence: '그리움', again: true }));
     expect(toggle).toHaveBeenCalledTimes(1);
     // The panel stays open on the word.
     expect(panel().props.highlightedWord).toBe('그리움');
 
-    // Native's own "again" flag does the same.
-    await act(async () => reader().props.onWordSelected({ text: '그리움', again: true }));
-    expect(toggle).toHaveBeenCalledTimes(2);
+    // A tap on another copy of the word (no `again`) only closes the panel.
+    await act(async () => reader().props.onWordSelected({ text: '그리움', sentence: '그리움' }));
+    expect(toggle).toHaveBeenCalledTimes(1);
+    expect(panel().props.highlightedWord).toBe('');
   });
 
   it('explains a long-pressed selection with the AI, not the translation card', async () => {
