@@ -1348,6 +1348,8 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                             return (
                             <View key={line.id} style={styles.lyricBlock}>
                             <Text
+                                suppressHighlighting
+                                onPress={dismissLookup}
                                 style={[
                                     styles.lyricLine,
                                     { fontSize: settings.fontSize, lineHeight: lyricLineHeight },
@@ -1394,6 +1396,8 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                             </Text>
                             {translation ? (
                                 <Text
+                                    suppressHighlighting
+                                    onPress={dismissLookup}
                                     style={[
                                         styles.lineTranslation,
                                         translationTextStyle(settings.fontSize, lyricLineHeight),

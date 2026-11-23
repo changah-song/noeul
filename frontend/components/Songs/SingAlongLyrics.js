@@ -108,8 +108,11 @@ const SingAlongLyrics = ({
                         key={line.id}
                         onLayout={(event) => lineLayoutsRef.current.set(index, event.nativeEvent.layout)}
                     >
+                        {/* Rows span the full width and catch every tap on
+                            them; one that misses the words closes the panel. */}
                         <Text
                             suppressHighlighting
+                            onPress={onBackgroundPress}
                             style={[
                                 lyricStyles.lyricLine,
                                 { fontSize, lineHeight },
@@ -154,6 +157,7 @@ const SingAlongLyrics = ({
                         {translation ? (
                             <Text
                                 suppressHighlighting
+                                onPress={onBackgroundPress}
                                 style={[
                                     lyricStyles.lineTranslation,
                                     translationStyle,
