@@ -57,6 +57,7 @@ import { searchSongs } from '../../services/api/songSearch';
 import { findSongVideo } from '../../services/api/songVideo';
 import { chapterTranslations } from '../../services/chapterTranslations';
 import { activeLineIndex, lineEndTime, lyricLineTimes, parseLrc } from '../../services/lrc';
+import { buildLevelLookup, tintWord as tintLyricWord } from '../../services/lyricTint';
 import SongPlayer, { PLAYER_STATE } from './SongPlayer';
 import SingAlongLyrics, { TRANSLATION_SCALE, translationTextStyle } from './SingAlongLyrics';
 import { tapCommit, tapUndo } from '../../services/haptics';
@@ -808,14 +809,6 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
         playerRef.current?.setRate(next);
     }, [rate]);
 
-    const playFromLine = useCallback((index) => {
-        const start = lineTimes[index];
-        if (start == null) return;
-        if (loopLine != null) setLoopLine(index);
-        playerRef.current?.seek(Math.max(0, start - lyricOffset));
-        playerRef.current?.play();
-    }, [lineTimes, loopLine, lyricOffset]);
-
     // Back or forward one timed line from the one being sung. Back from the
     // first second or so of a line goes to the line before; later, to the
     // start of this one (as a music player's back button does).
@@ -873,11 +866,30 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
 
     const focusPanelOpen = focusMode && (!!highlightedWord || !!textSelection);
 
-    // A long press on a lyric line (the JS lyric views) explains the line.
-    const explainLine = useCallback((line) => {
-        if (!line || line.isBlank) return;
-        openTextSelection({ text: line.text, sentence: line.text });
+    // A long press on a word in the JS lyric views explains it in its line,
+    // as a long press does in the book reader.
+    const explainWord = useCallback(({ text, sentence } = {}) => {
+        const word = cleanLyricToken(text);
+        if (!word) return;
+        openTextSelection({ text: word, sentence });
     }, [openTextSelection]);
+
+    // Level colours for the JS lyric views, by the book reader's rules.
+    const levelLookup = useMemo(() => buildLevelLookup(readerLevelTerms), [readerLevelTerms]);
+    const tappedSet = useMemo(
+        () => new Set(tappedTerms.map((term) => normalizeForMatch(term.text)).filter(Boolean)),
+        [tappedTerms]
+    );
+    const tintColors = useMemo(() => ({
+        easy: colors.readerLevelUnderlineEasy,
+        mid: colors.readerLevelUnderlineMid,
+        hard: colors.readerLevelUnderlineHard,
+        ink: colors.readerBodyInk,
+    }), [colors]);
+    const tintWord = useCallback(
+        (text) => tintLyricWord(text, levelLookup, tintColors, tappedSet),
+        [levelLookup, tappedSet, tintColors]
+    );
 
     // The explanation's sentence: what native sent, else the lyric line the
     // selection sits in.
@@ -1262,8 +1274,8 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                             && !!highlightedWord
                             && normalizeForMatch(highlightedWord) === normalizeForMatch(text)}
                         onWordPress={handleNativeWordSelected}
-                        onLinePress={playFromLine}
-                        onLineLongPress={(index) => explainLine(lyricLines[index])}
+                        onWordLongPress={explainWord}
+                        tintWord={tintWord}
                         followToken={followToken}
                         bottomPadding={insets.bottom + 190}
                         colors={colors}
@@ -1318,7 +1330,6 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                             return (
                             <View key={line.id} style={styles.lyricBlock}>
                             <Text
-                                onLongPress={line.isBlank ? undefined : () => explainLine(line)}
                                 style={[
                                     styles.lyricLine,
                                     { fontSize: settings.fontSize, lineHeight: lyricLineHeight },
@@ -1344,13 +1355,20 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                                                     sentence: line.text,
                                                 })
                                                 : undefined}
-                                            onLongPress={() => explainLine(line)}
+                                            onLongPress={segment.isWord
+                                                ? () => explainWord({ text: segment.text, sentence: line.text })
+                                                : undefined}
                                             style={[
                                                 isSaved && styles.savedLyricWord,
                                                 isActive && styles.activeLyricWord,
                                             ]}
                                         >
-                                            {segment.text}
+                                            {segment.isWord && !isSaved && !isActive
+                                                ? tintWord(segment.text).map((piece, pieceIndex) => (piece.color ? (
+                                                    // eslint-disable-next-line react/no-array-index-key
+                                                    <Text key={pieceIndex} style={{ color: piece.color }}>{piece.text}</Text>
+                                                ) : piece.text))
+                                                : segment.text}
                                         </Text>
                                     );
                                 })}

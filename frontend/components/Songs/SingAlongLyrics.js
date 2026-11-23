@@ -3,9 +3,10 @@ import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { activeLineIndex } from '../../services/lrc';
 
 // The lyrics while the song plays: the line being sung is lit and kept a
-// third of the way down; the others are dimmed. A tap on a word looks it up
-// (as in the reader); a tap elsewhere on a line plays the song from there; a
-// long press anywhere on a line explains the line (the AI explanation).
+// third of the way down; the others are dimmed. Words are coloured as in the
+// book reader (services/lyricTint.js). A tap on a word looks it up and a long
+// press explains it in its line (the AI explanation), as in the reader. Moving
+// between lines is the player's back / next buttons; a row tap does nothing.
 // After the reader scrolls by hand the view stops following for a few seconds.
 // A line's translation, when there is one, sits under it in the muted ink.
 //
@@ -39,8 +40,10 @@ const SingAlongLyrics = ({
     isWordSaved,
     activeWord,
     onWordPress,
-    onLinePress,
-    onLineLongPress,
+    onWordLongPress,
+    // (text) → [{ text, color? }]: the word in pieces, its level colour on
+    // the part the level term covers.
+    tintWord,
     // Bumped when the reader jumps to a line (the back / next buttons): the
     // view follows again at once, even right after a scroll by hand.
     followToken = 0,
@@ -81,12 +84,6 @@ const SingAlongLyrics = ({
         if (activeRef.current >= 0) follow(activeRef.current);
     }, [follow, followToken]);
 
-    // Playing from a tapped line follows the song again too.
-    const pressLine = useCallback((index) => {
-        userScrolledAtRef.current = 0;
-        onLinePress(index);
-    }, [onLinePress]);
-
     return (
         <ScrollView
             ref={scrollRef}
@@ -100,7 +97,6 @@ const SingAlongLyrics = ({
         >
             {lines.map((line, index) => {
                 const isActive = index === active;
-                const timed = times[index] != null;
                 const translation = line.isBlank ? '' : translations?.get(line.text.trim());
                 return (
                     <View
@@ -109,8 +105,6 @@ const SingAlongLyrics = ({
                     >
                         <Text
                             suppressHighlighting
-                            onPress={timed ? () => pressLine(index) : undefined}
-                            onLongPress={line.isBlank ? undefined : () => onLineLongPress?.(index)}
                             style={[
                                 lyricStyles.lyricLine,
                                 { fontSize, lineHeight },
@@ -120,22 +114,30 @@ const SingAlongLyrics = ({
                             ]}
                         >
                             {line.isBlank ? ' ' : line.segments.map((segment) => {
-                                const saved = segment.isWord && isWordSaved(segment.text);
-                                const tapped = segment.isWord && activeWord(segment.text);
+                                if (!segment.isWord) {
+                                    return <Text key={segment.id}>{segment.text}</Text>;
+                                }
+                                const saved = isWordSaved(segment.text);
+                                const tapped = activeWord(segment.text);
+                                const pieces = saved || tapped || !tintWord ? null : tintWord(segment.text);
+                                const word = { text: segment.text, sentence: line.text };
                                 return (
                                     <Text
                                         key={segment.id}
                                         suppressHighlighting
-                                        onPress={segment.isWord
-                                            ? () => onWordPress({ text: segment.text, sentence: line.text })
-                                            : undefined}
-                                        onLongPress={() => onLineLongPress?.(index)}
+                                        onPress={() => onWordPress(word)}
+                                        onLongPress={onWordLongPress ? () => onWordLongPress(word) : undefined}
                                         style={[
                                             saved && lyricStyles.savedLyricWord,
                                             tapped && lyricStyles.activeLyricWord,
                                         ]}
                                     >
-                                        {segment.text}
+                                        {pieces && pieces.some((piece) => piece.color)
+                                            ? pieces.map((piece, pieceIndex) => (piece.color ? (
+                                                // eslint-disable-next-line react/no-array-index-key
+                                                <Text key={pieceIndex} style={{ color: piece.color }}>{piece.text}</Text>
+                                            ) : piece.text))
+                                            : segment.text}
                                     </Text>
                                 );
                             })}
@@ -143,8 +145,6 @@ const SingAlongLyrics = ({
                         {translation ? (
                             <Text
                                 suppressHighlighting
-                                onPress={timed ? () => pressLine(index) : undefined}
-                                onLongPress={() => onLineLongPress?.(index)}
                                 style={[
                                     lyricStyles.lineTranslation,
                                     translationStyle,
