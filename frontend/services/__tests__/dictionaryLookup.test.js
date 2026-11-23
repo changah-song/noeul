@@ -46,6 +46,7 @@ import {
 import { api } from '../api/client';
 import stemWord from '../api/stemWord';
 import {
+    backfillChinesePronunciations,
     getEntryFallbackLanguage,
     resetLookupSessionStateForTests,
     resolveDictionaryLookup,
@@ -377,5 +378,44 @@ describe('Chinese compounds with no dictionary entry', () => {
         const result = await zhLookup({ surface: '先生' });
         expect(result.cachedResults).toEqual([row]);
         expect(stemWord).not.toHaveBeenCalled();
+    });
+});
+
+describe('backfillChinesePronunciations', () => {
+    test('fetches each word, returns its pinyin and caches the entry', async () => {
+        api.get.mockImplementation((url, { params }) => Promise.resolve({
+            data: {
+                results: params.stem === '学习'
+                    ? [{ word: '学习', pinyin: 'xué xí', definition: '공부하다', interface_language: 'ko' }]
+                    : [{ word: '苹果', pinyin: 'píng guǒ', definition: 'apple', fallback_language: 'en' }],
+            },
+        }));
+
+        const found = await backfillChinesePronunciations(['学习', '苹果', '学习'], {
+            interfaceLanguage: 'ko',
+            script: 'zh-Hans',
+        });
+
+        expect(api.get).toHaveBeenCalledTimes(2);
+        expect([...found]).toEqual([['学习', 'xué xí'], ['苹果', 'píng guǒ']]);
+        // The translated entry is cached under the app language, the English
+        // fallback under English, each with its pinyin.
+        expect(insertCacheEntries).toHaveBeenCalledWith(
+            [expect.objectContaining({ stem: '学习', ipa: 'xué xí', language: 'zh' })],
+            { language: 'zh', interfaceLanguage: 'ko' },
+        );
+        expect(insertCacheEntries).toHaveBeenCalledWith(
+            [expect.objectContaining({ stem: '苹果', ipa: 'píng guǒ', definition: 'apple' })],
+            { language: 'zh', interfaceLanguage: 'en' },
+        );
+    });
+
+    test('offline: returns nothing and caches nothing', async () => {
+        api.get.mockRejectedValue(new Error('Network Error'));
+
+        const found = await backfillChinesePronunciations(['学习'], { interfaceLanguage: 'en' });
+
+        expect(found.size).toBe(0);
+        expect(insertCacheEntries).not.toHaveBeenCalled();
     });
 });
