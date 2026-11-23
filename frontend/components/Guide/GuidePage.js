@@ -55,6 +55,8 @@ function GuidePage({ page, frame, targetId, waiting, onTarget, t, colors, accent
     const barShown = useShown(frame.bar);
     const listenShown = useShown(frame.listenOn, 340);
     const toastShown = useShown(frame.toast, 250);
+    // Listening is full screen in the reader: only its own bar stays up.
+    const chromeShown = useShown(!frame.listenOn, 260);
 
     const isTarget = (id) => waiting && targetId === id;
     const target = (id) => ({
@@ -74,8 +76,10 @@ function GuidePage({ page, frame, targetId, waiting, onTarget, t, colors, accent
         const id = `${sentence}:${index}`;
         const level = page.levels[id];
         let backgroundColor = 'transparent';
-        let color = ink;
-        let borderBottomColor = level ? levelInk[level] : 'transparent';
+        // Words around the reader's level and harder are tinted by level, as
+        // the reader does it (the text, not an underline).
+        let color = level ? levelInk[level] : ink;
+        let borderBottomColor = 'transparent';
         let borderRadius = 0;
         if (frame.savedMark && id === page.word) borderBottomColor = ink;
         if (frame.reading === sentence) backgroundColor = `${colors.readerTappedWordSurfaceBg}99`;
@@ -105,30 +109,33 @@ function GuidePage({ page, frame, targetId, waiting, onTarget, t, colors, accent
     };
 
     const holdQuote = page.sentences[GUIDE_HOLD_SENTENCE].join(page.joiner);
-    const dictLine = [page.dictReading, page.gloss.pos, page.dictExtra].filter(Boolean).join(' · ');
+    // Korean hanja sits beside the word, as in the reader; a level tag goes
+    // in the line under it with the reading.
+    const dictHanja = page.font === 'krSerif' ? page.dictExtra : null;
+    const dictLine = [page.dictReading, dictHanja ? null : page.dictExtra].filter(Boolean).join(' · ');
     const activeTab = [styles.tab, styles.tabActive];
 
     return (
         <View style={styles.frame}>
-            <View style={styles.header}>
+            <Animated.View style={[styles.header, { opacity: chromeShown }]}>
                 <View style={styles.iconButton}>
-                    <Feather name="chevron-left" size={22} color={colors.inkSlate} />
+                    <Feather name="chevron-left" size={20} color={colors.inkSlate} />
                 </View>
                 {/* The book over the chapter being read, as in the reader. */}
                 <View style={styles.titleCluster}>
                     <Text numberOfLines={1} style={styles.titleBook}>{page.bookTitle}</Text>
                     <View style={styles.titleChapterRow}>
                         <Text numberOfLines={1} style={styles.titleChapter}>{page.chapter}</Text>
-                        <Feather name="chevron-down" size={14} color={colors.inkSlate} />
+                        <Feather name="chevron-down" size={15} color={colors.textTertiary} />
                     </View>
                 </View>
                 <View style={styles.iconButton}>
                     <Feather name="bookmark" size={19} color={colors.inkSlate} />
                 </View>
                 <View style={styles.iconButton}>
-                    <Feather name="menu" size={20} color={colors.inkSlate} />
+                    <Feather name="menu" size={19} color={colors.inkSlate} />
                 </View>
-            </View>
+            </Animated.View>
 
             <View style={styles.page}>
                 <Text style={[styles.chapter, { fontFamily: fonts.regular }]}>{page.chapter}</Text>
@@ -140,13 +147,23 @@ function GuidePage({ page, frame, targetId, waiting, onTarget, t, colors, accent
                 ))}
             </View>
 
-            <View pointerEvents="none" style={styles.scrubber}>
-                <View style={styles.scrubberTrack}>
+            {/* The line along the bottom, as in the reader: track, percent,
+                and the play button at its right end, where listening starts. */}
+            <Animated.View style={[styles.scrubber, { opacity: chromeShown }]} pointerEvents={frame.listenOn ? 'none' : 'box-none'}>
+                <View pointerEvents="none" style={styles.scrubberTrack}>
                     <View style={styles.scrubberFill} />
                     <View style={styles.scrubberThumb} />
                 </View>
-                <Text style={styles.scrubberLabel}>12%</Text>
-            </View>
+                <Text pointerEvents="none" style={styles.scrubberLabel}>12%</Text>
+                <Pressable
+                    {...target('play')}
+                    accessibilityLabel={t('read.listen')}
+                    style={styles.playButton}
+                >
+                    <Feather name="play" size={15} color={colors.white} style={styles.playIcon} />
+                    {marks('play', 16)}
+                </Pressable>
+            </Animated.View>
 
             <Animated.View
                 pointerEvents="none"
@@ -217,20 +234,31 @@ function GuidePage({ page, frame, targetId, waiting, onTarget, t, colors, accent
                     <View style={styles.dictHeadBlock}>
                         <View style={styles.dictHeadRow}>
                             <Text style={[styles.dictHead, { fontFamily: fonts.strong }]}>{page.dictHead}</Text>
-                            <MaterialIcons name="volume-up" size={16} color={colors.readerMutedInk} />
+                            {dictHanja ? (
+                                <Text style={[styles.dictHanja, { fontFamily: fonts.regular }]}>{dictHanja}</Text>
+                            ) : null}
                         </View>
-                        <Text style={styles.dictLine}>{dictLine}</Text>
+                        {dictLine ? (
+                            <View style={styles.dictMetaRow}>
+                                <Text style={styles.dictLine}>{dictLine}</Text>
+                                <MaterialIcons name="volume-up" size={15} color={colors.textTertiary} />
+                            </View>
+                        ) : null}
                     </View>
                     <Pressable {...target('save')} accessibilityLabel={t('lookup.saveWord')} style={styles.saveButton}>
-                        <MaterialIcons name={frame.saved ? 'bookmark' : 'bookmark-border'} size={24} color={colors.inkSlate} />
+                        <MaterialIcons name={frame.saved ? 'bookmark' : 'bookmark-border'} size={21} color={colors.inkSlate} />
                         {marks('save', 12)}
                     </Pressable>
                 </View>
-                <View style={styles.rule} />
                 <View style={styles.senseRow}>
-                    <Text style={styles.senseNumber}>1</Text>
+                    {page.gloss.pos ? (
+                        <View style={styles.posChip}>
+                            <Text style={styles.posChipText}>{page.gloss.pos}</Text>
+                        </View>
+                    ) : null}
                     <Text style={styles.sense}>{page.gloss.sense}</Text>
                 </View>
+                <View style={styles.rule} />
                 <Text style={styles.dictNote}>{page.gloss.note}</Text>
             </Animated.View>
 
@@ -238,51 +266,39 @@ function GuidePage({ page, frame, targetId, waiting, onTarget, t, colors, accent
                 <Text style={styles.toast}>{t('guide.savedToast')}</Text>
             </Animated.View>
 
-            {/* Listening starts here, as in the reader; the listen bar takes
-                its place. */}
-            {frame.listenOn ? null : (
-                <Pressable
-                    {...target('play')}
-                    accessibilityLabel={t('read.listen')}
-                    style={styles.playButton}
-                >
-                    <Feather name="play" size={17} color={colors.inkSlate} style={styles.playIcon} />
-                    {marks('play', 16)}
-                </Pressable>
-            )}
-
             <Animated.View
                 pointerEvents="none"
                 style={[
                     styles.listenBar,
-                    { transform: [{ translateY: listenShown.interpolate({ inputRange: [0, 1], outputRange: [90, 0] }) }] },
+                    { transform: [{ translateY: listenShown.interpolate({ inputRange: [0, 1], outputRange: [90, 0] }) }], opacity: listenShown },
                 ]}
             >
-                {/* The reader's listen bar: previous / pause / next, the voice
-                    and speed chip, the two study toggles, close. */}
+                {/* The reader's listen bar (components/Read/ListenBar.js):
+                    previous / pause / next, voice and speed, the two study
+                    toggles, close. Only play/pause is filled. */}
                 <View style={styles.listenButton}>
-                    <MaterialIcons name="skip-previous" size={20} color={colors.inkSlate} />
+                    <Feather name="skip-back" size={18} color={colors.text} />
                 </View>
                 <View style={styles.listenPlay}>
-                    <MaterialIcons name="pause" size={20} color={colors.readerPaper} />
+                    <Feather name="pause" size={17} color={colors.white} />
                 </View>
                 <View style={styles.listenButton}>
-                    <MaterialIcons name="skip-next" size={20} color={colors.inkSlate} />
+                    <Feather name="skip-forward" size={18} color={colors.text} />
                 </View>
                 <View style={styles.listenDivider} />
                 <View style={styles.listenChip}>
-                    <MaterialCommunityIcons name="waveform" size={13} color={colors.inkSlate} />
+                    <MaterialCommunityIcons name="waveform" size={15} color={colors.text} />
                     <Text style={styles.listenChipText}>{t('read.listenRateValue', { rate: '1.0' })}</Text>
                 </View>
                 <View style={styles.listenToggle}>
-                    <MaterialIcons name="school" size={14} color={colors.inkSlate} />
+                    <MaterialIcons name="school" size={17} color={colors.textSecondary} />
                 </View>
                 <View style={styles.listenToggle}>
-                    <MaterialIcons name="translate" size={14} color={colors.inkSlate} />
+                    <MaterialIcons name="translate" size={17} color={colors.textSecondary} />
                 </View>
                 <View style={styles.listenSpacer} />
                 <View style={styles.listenButton}>
-                    <Feather name="x" size={17} color={colors.textTertiary} />
+                    <Feather name="x" size={18} color={colors.textTertiary} />
                 </View>
             </Animated.View>
         </View>
@@ -310,8 +326,10 @@ const createStyles = (colors, compact) => {
             flexDirection: 'row',
             alignItems: 'center',
             gap: 2,
-            paddingHorizontal: 8,
+            paddingHorizontal: 6,
             backgroundColor: colors.readerPaper,
+            borderBottomWidth: 1,
+            borderBottomColor: colors.divider,
             zIndex: 3,
         },
         iconButton: {
@@ -331,7 +349,7 @@ const createStyles = (colors, compact) => {
         titleBook: {
             fontFamily: fontFamilies.sansRegular,
             fontSize: 10,
-            lineHeight: 13,
+            lineHeight: 12,
             color: colors.textTertiary,
         },
         titleChapterRow: {
@@ -342,32 +360,38 @@ const createStyles = (colors, compact) => {
         titleChapter: {
             flexShrink: 1,
             fontFamily: fontFamilies.sansSemiBold,
-            fontSize: 13,
-            lineHeight: 18,
-            color: colors.inkSlate,
+            fontSize: 14,
+            lineHeight: 19,
+            color: colors.text,
         },
-        // The page scrubber along the bottom: the place in the chapter.
+        // The page scrubber along the bottom (components/Read/PageScrubber.js):
+        // the place in the book, the percent, and the play button on the line.
         scrubber: {
             position: 'absolute',
-            left: 18,
-            right: 14,
-            bottom: 18,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            height: 48,
             zIndex: 2,
             flexDirection: 'row',
             alignItems: 'center',
-            gap: 8,
+            paddingLeft: 18,
+            paddingRight: 12,
+            borderTopWidth: 1,
+            borderTopColor: colors.divider,
+            backgroundColor: colors.readerPaper,
         },
         scrubberTrack: {
             flex: 1,
             height: 2,
             borderRadius: 1,
-            backgroundColor: colors.readerProgressTrack,
+            backgroundColor: colors.readerHairline,
         },
         scrubberFill: {
             width: '12%',
             height: '100%',
             borderRadius: 1,
-            backgroundColor: colors.readerProgressFill,
+            backgroundColor: colors.readerBodyInk,
         },
         scrubberThumb: {
             position: 'absolute',
@@ -377,12 +401,15 @@ const createStyles = (colors, compact) => {
             height: 10,
             marginLeft: -5,
             borderRadius: 5,
-            backgroundColor: colors.readerProgressFill,
+            backgroundColor: colors.readerBodyInk,
         },
         scrubberLabel: {
+            width: 36,
+            textAlign: 'right',
             fontFamily: fontFamilies.sansRegular,
-            fontSize: 11,
-            color: colors.readerMutedInk,
+            fontSize: 12,
+            color: colors.textTertiary,
+            fontVariant: ['tabular-nums'],
         },
         page: {
             paddingTop: 8,
@@ -420,14 +447,13 @@ const createStyles = (colors, compact) => {
         // hanging from the header (the word panel's twin).
         bar: {
             position: 'absolute',
-            left: 0,
-            right: 0,
-            top: 44,
+            left: 8,
+            right: 8,
+            top: 50,
             zIndex: 4,
             paddingVertical: 12,
-            paddingHorizontal: 18,
-            borderBottomLeftRadius: 18,
-            borderBottomRightRadius: 18,
+            paddingHorizontal: 16,
+            borderRadius: 20,
             backgroundColor: colors.surfaceElevated,
             ...panelShadow,
         },
@@ -445,9 +471,9 @@ const createStyles = (colors, compact) => {
             zIndex: 5,
             paddingTop: 14,
             paddingBottom: 18,
-            paddingHorizontal: 18,
-            borderTopLeftRadius: 18,
-            borderTopRightRadius: 18,
+            paddingHorizontal: 20,
+            borderTopLeftRadius: 22,
+            borderTopRightRadius: 22,
             backgroundColor: colors.surfaceElevated,
             ...panelShadow,
         },
@@ -552,8 +578,8 @@ const createStyles = (colors, compact) => {
             paddingTop: 8,
             paddingBottom: 18,
             paddingHorizontal: 20,
-            borderTopLeftRadius: 18,
-            borderTopRightRadius: 18,
+            borderTopLeftRadius: 22,
+            borderTopRightRadius: 22,
             backgroundColor: colors.surfaceElevated,
             ...panelShadow,
         },
@@ -572,45 +598,70 @@ const createStyles = (colors, compact) => {
         },
         dictHeadBlock: {
             flex: 1,
+            minWidth: 0,
+            paddingTop: 2,
         },
+        // Word and hanja on one baseline, left-aligned.
         dictHeadRow: {
             flexDirection: 'row',
-            alignItems: 'center',
-            gap: 8,
+            alignItems: 'baseline',
+            flexWrap: 'wrap',
+            columnGap: 8,
         },
         dictHead: {
             fontSize: 25,
-            lineHeight: 34,
+            lineHeight: 33,
             color: colors.text,
+        },
+        dictHanja: {
+            fontSize: 17,
+            lineHeight: 24,
+            color: colors.textSecondary,
+        },
+        // The pronunciation: an italic meta line under the word.
+        dictMetaRow: {
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 5,
         },
         dictLine: {
             fontFamily: fontFamilies.sansRegular,
+            fontStyle: 'italic',
             fontSize: 13,
             lineHeight: 18,
-            color: colors.textMuted,
+            color: colors.textTertiary,
         },
         saveButton: {
             width: 44,
             height: 44,
-            borderRadius: 12,
+            marginRight: -11,
             alignItems: 'center',
             justifyContent: 'center',
         },
+        // The part-of-speech chip beside the meaning, left-aligned.
         senseRow: {
+            marginTop: 8,
             flexDirection: 'row',
+            flexWrap: 'wrap',
+            alignItems: 'center',
             gap: 10,
         },
-        senseNumber: {
-            fontFamily: fontFamilies.sansRegular,
-            fontSize: 13,
-            lineHeight: 21,
-            color: colors.textTertiary,
+        posChip: {
+            paddingVertical: 3,
+            paddingHorizontal: 8,
+            borderRadius: 8,
+            backgroundColor: colors.surfaceMuted,
+        },
+        posChipText: {
+            fontFamily: fontFamilies.sansSemiBold,
+            fontSize: 12,
+            color: colors.textSecondary,
         },
         sense: {
-            flex: 1,
+            flexShrink: 1,
             fontFamily: fontFamilies.sansRegular,
-            fontSize: 15,
-            lineHeight: 21,
+            fontSize: 16,
+            lineHeight: 23,
             color: colors.text,
         },
         dictNote: {
@@ -637,20 +688,15 @@ const createStyles = (colors, compact) => {
             color: colors.surface,
             backgroundColor: colors.inkSlate,
         },
+        // Solid, centred on the line: the one filled control on the page.
         playButton: {
-            position: 'absolute',
-            right: 14,
-            bottom: 40,
-            zIndex: 4,
-            width: 38,
-            height: 38,
-            borderRadius: 19,
+            marginLeft: 10,
+            width: 36,
+            height: 36,
+            borderRadius: 18,
             alignItems: 'center',
             justifyContent: 'center',
-            borderWidth: 1,
-            borderColor: colors.readerBorder,
-            backgroundColor: colors.readerSurface,
-            ...panelShadow,
+            backgroundColor: colors.inkSlate,
         },
         playIcon: {
             marginLeft: 2,
@@ -659,28 +705,28 @@ const createStyles = (colors, compact) => {
             position: 'absolute',
             left: 10,
             right: 10,
-            bottom: 34,
+            bottom: 14,
             zIndex: 5,
-            height: 50,
+            height: 52,
             flexDirection: 'row',
             alignItems: 'center',
             paddingHorizontal: 6,
-            borderRadius: 25,
+            borderRadius: 26,
             borderWidth: StyleSheet.hairlineWidth,
             borderColor: colors.readerBorder,
             backgroundColor: colors.readerSurface,
             ...panelShadow,
         },
         listenButton: {
-            width: 30,
+            width: 32,
             height: 36,
             alignItems: 'center',
             justifyContent: 'center',
         },
         listenPlay: {
-            width: 36,
-            height: 36,
-            borderRadius: 18,
+            width: 38,
+            height: 38,
+            borderRadius: 19,
             alignItems: 'center',
             justifyContent: 'center',
             backgroundColor: colors.inkSlate,
@@ -689,31 +735,25 @@ const createStyles = (colors, compact) => {
             width: 1,
             height: 20,
             marginHorizontal: 4,
-            backgroundColor: colors.readerHairline,
+            backgroundColor: colors.divider,
         },
+        // Speed and the study toggles are plain icons: only play is filled.
         listenChip: {
-            height: 28,
+            height: 32,
             flexDirection: 'row',
             alignItems: 'center',
             gap: 3,
-            paddingHorizontal: 7,
-            marginRight: 3,
-            borderRadius: 14,
-            borderWidth: 1,
-            borderColor: colors.readerBorder,
+            paddingHorizontal: 5,
         },
         listenChipText: {
             fontFamily: fontFamilies.sansSemiBold,
-            fontSize: 11,
-            color: colors.readerBodyInk,
+            fontSize: 13,
+            color: colors.text,
+            fontVariant: ['tabular-nums'],
         },
         listenToggle: {
-            width: 28,
-            height: 28,
-            marginHorizontal: 1,
-            borderRadius: 14,
-            borderWidth: 1,
-            borderColor: colors.readerBorder,
+            width: 32,
+            height: 32,
             alignItems: 'center',
             justifyContent: 'center',
         },
