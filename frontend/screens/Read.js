@@ -13,6 +13,7 @@ import FocusControls from '../components/Read/FocusControls';
 import {
     ReaderBackButton,
     ReaderCheckpointButton,
+    ReaderFocusModeButton,
     ReaderHeaderBar,
     ReaderMenuButton,
     ReaderTitleButton,
@@ -4105,9 +4106,15 @@ const Read = ({
     ]);
 
     const isScrollMode = readingMode === 'scroll';
-    // Listening (focus mode) reads in the beam in scroll mode; in paged mode
-    // it stays on the page, which lights the sentence and turns with the voice.
-    const nativeRenderMode = isScrollMode ? (focusMode ? 'focus' : 'continuous') : 'paged';
+    // Focus mode the reader turned on (the eye in the header), as opposed to
+    // the focus mode listening turns on for itself.
+    const userFocus = focusMode && !listenEnteredFocusRef.current;
+    // The reader's own focus mode is the sentence beam in either reading mode.
+    // Listening reads in the beam in scroll mode; in paged mode it stays on
+    // the page, which lights the sentence and turns with the voice.
+    const nativeRenderMode = focusMode && (isScrollMode || userFocus)
+        ? 'focus'
+        : (isScrollMode ? 'continuous' : 'paged');
     const pagedListening = focusMode && nativeRenderMode === 'paged';
     // 'off' hides the marks only; exposure/lookup evidence keeps flowing, since
     // the model should keep learning even when the marks are turned off.
@@ -4264,8 +4271,9 @@ const Read = ({
     // ─── Page scrubber ───────────────────────────────────────────────────────
     // The line along the bottom: where you are in the story, its chapters and
     // bookmarks; dragging previews and releasing goes there.
-    // Listening (focus mode) is full screen too: only its own bar is up.
-    const chromeHidden = isFullscreen || focusMode;
+    // Listening is full screen too: only its own bar is up. The reader's own
+    // focus mode keeps the header (its eye turns it off) and the line.
+    const chromeHidden = isFullscreen || (focusMode && (!userFocus || listenActive));
     const scrubberShown = Boolean(currentBook) && bookLoadState === 'ready' && !chromeHidden;
     const scrubberSpace = scrubberShown ? PAGE_SCRUBBER_HEIGHT + insets.bottom : 0;
     // Listening starts from the play button at the line's right end; it goes
@@ -5306,6 +5314,13 @@ const Read = ({
                             disabled={toc.length === 0}
                             onPress={() => setShowToc(true)}
                             accessibilityLabel={`${t('read.contents')}, ${activeChapterTitle}, ${t('common.percent', { value: headerProgressPercent })}`}
+                        />
+                        <ReaderFocusModeButton
+                            styles={chrome}
+                            themeColors={themeColors}
+                            active={userFocus}
+                            onPress={toggleFocusMode}
+                            accessibilityLabel={t('read.focusMode')}
                         />
                         <ReaderCheckpointButton
                             styles={chrome}
