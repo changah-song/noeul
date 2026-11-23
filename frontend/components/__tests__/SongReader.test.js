@@ -34,6 +34,10 @@ jest.mock('../Read/TopSection/TopSection', () => {
   return (props) => ReactLocal.createElement('LookupPanel', props);
 });
 jest.mock('../Read/SavedWordsPanel', () => () => null);
+// The player's network calls and the WebView player (no Supabase in CI).
+jest.mock('../../services/api/songSearch', () => ({ searchSongs: jest.fn(async () => []) }));
+jest.mock('../../services/api/songVideo', () => ({ findSongVideo: jest.fn(async () => null) }));
+jest.mock('../Songs/SongPlayer', () => ({ __esModule: true, default: () => null, PLAYER_STATE: { PLAYING: 1, BUFFERING: 3 } }));
 jest.mock('../../services/haptics', () => ({
   tapSelect: jest.fn(),
   tapCommit: jest.fn(),
