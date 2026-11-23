@@ -667,8 +667,6 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
     const timedLines = useMemo(() => parseLrc(song?.syncedLyrics), [song?.syncedLyrics]);
     const lineTimes = useMemo(() => lyricLineTimes(lyricLines, timedLines), [lyricLines, timedLines]);
     const hasTiming = useMemo(() => lineTimes.some((time) => time != null), [lineTimes]);
-    const playbackRef = useRef({ lineTimes, lyricOffset, loopLine });
-    playbackRef.current = { lineTimes, lyricOffset, loopLine };
 
     const subscribeTime = useCallback((listener) => {
         timeListenersRef.current.add(listener);
@@ -678,14 +676,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
 
     const handlePlayerTime = useCallback((time) => {
         lastTimeRef.current = time;
-        const { lineTimes: times, lyricOffset: offset, loopLine: loop } = playbackRef.current;
-        if (loop != null) {
-            const start = times[loop];
-            const end = lineEndTime(times, loop);
-            if (start != null && end != null && time + offset >= end - 0.1) {
-                playerRef.current?.seek(start - offset);
-            }
-        }
+        // (Repeating a line is done in the player page: SongPlayer setLoop.)
         timeListenersRef.current.forEach((listener) => listener(time));
     }, []);
 
@@ -823,14 +814,30 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
         playerRef.current?.play();
     }, [lineTimes, loopLine, lyricOffset]);
 
+    // Repeat starts the line being sung again at once, then loops it.
     const toggleLoop = useCallback(() => {
         if (loopLine != null) {
             setLoopLine(null);
             return;
         }
         const current = activeLineIndex(lineTimes, lastTimeRef.current + lyricOffset);
-        if (current >= 0) setLoopLine(current);
+        if (current < 0) return;
+        setLoopLine(current);
+        lastTimeRef.current = Math.max(0, lineTimes[current] - lyricOffset);
+        playerRef.current?.seek(lastTimeRef.current);
+        playerRef.current?.play();
     }, [lineTimes, loopLine, lyricOffset]);
+
+    // The line repeated, handed to the player page (video seconds).
+    useEffect(() => {
+        const start = loopLine != null ? lineTimes[loopLine] : null;
+        const end = loopLine != null ? lineEndTime(lineTimes, loopLine) : null;
+        if (start == null || end == null) {
+            playerRef.current?.setLoop?.(null);
+            return;
+        }
+        playerRef.current?.setLoop?.({ start: start - lyricOffset, end: end - lyricOffset });
+    }, [lineTimes, loopLine, lyricOffset, videoStatus]);
 
     // The timing nudge is kept with the song, written a moment after the last tap.
     const offsetSaveTimerRef = useRef(null);
