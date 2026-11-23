@@ -4,7 +4,8 @@ import { activeLineIndex } from '../../services/lrc';
 
 // The lyrics while the song plays: the line being sung is lit and kept a
 // third of the way down; the others are dimmed. A tap on a word looks it up
-// (as in the reader); a tap elsewhere on a line plays the song from there.
+// (as in the reader); a tap elsewhere on a line plays the song from there; a
+// long press anywhere on a line explains the line (the AI explanation).
 // After the reader scrolls by hand the view stops following for a few seconds.
 // A line's translation, when there is one, sits under it in the muted ink.
 //
@@ -39,6 +40,10 @@ const SingAlongLyrics = ({
     activeWord,
     onWordPress,
     onLinePress,
+    onLineLongPress,
+    // Bumped when the reader jumps to a line (the back / next buttons): the
+    // view follows again at once, even right after a scroll by hand.
+    followToken = 0,
     bottomPadding = 0,
     colors,
     styles: lyricStyles,
@@ -68,6 +73,20 @@ const SingAlongLyrics = ({
         follow(active);
     }, [active, follow]);
 
+    const activeRef = useRef(active);
+    activeRef.current = active;
+    useEffect(() => {
+        if (!followToken) return;
+        userScrolledAtRef.current = 0;
+        if (activeRef.current >= 0) follow(activeRef.current);
+    }, [follow, followToken]);
+
+    // Playing from a tapped line follows the song again too.
+    const pressLine = useCallback((index) => {
+        userScrolledAtRef.current = 0;
+        onLinePress(index);
+    }, [onLinePress]);
+
     return (
         <ScrollView
             ref={scrollRef}
@@ -90,7 +109,8 @@ const SingAlongLyrics = ({
                     >
                         <Text
                             suppressHighlighting
-                            onPress={timed ? () => onLinePress(index) : undefined}
+                            onPress={timed ? () => pressLine(index) : undefined}
+                            onLongPress={line.isBlank ? undefined : () => onLineLongPress?.(index)}
                             style={[
                                 lyricStyles.lyricLine,
                                 { fontSize, lineHeight },
@@ -109,6 +129,7 @@ const SingAlongLyrics = ({
                                         onPress={segment.isWord
                                             ? () => onWordPress({ text: segment.text, sentence: line.text })
                                             : undefined}
+                                        onLongPress={() => onLineLongPress?.(index)}
                                         style={[
                                             saved && lyricStyles.savedLyricWord,
                                             tapped && lyricStyles.activeLyricWord,
@@ -122,7 +143,8 @@ const SingAlongLyrics = ({
                         {translation ? (
                             <Text
                                 suppressHighlighting
-                                onPress={timed ? () => onLinePress(index) : undefined}
+                                onPress={timed ? () => pressLine(index) : undefined}
+                                onLongPress={() => onLineLongPress?.(index)}
                                 style={[
                                     lyricStyles.lineTranslation,
                                     translationStyle,

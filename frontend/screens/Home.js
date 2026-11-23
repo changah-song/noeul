@@ -29,6 +29,7 @@ import { createTabBarBaseStyle } from '../components/shared/TabBar';
 import Book3D from '../components/Home/Book3D';
 import SongReader from '../components/Songs/SongReader';
 import LyricWebSearch from '../components/Songs/LyricWebSearch';
+import SongCover from '../components/Songs/SongCover';
 import { IconButton, Screen } from '../components/ui';
 import { useAppContext } from '../contexts/AppContext';
 import { useLocalOwner } from '../contexts/LocalOwnerContext';
@@ -5141,11 +5142,18 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                             pressed && styles.songRowPressed,
                                         ]}
                                     >
-                                        <View style={styles.songTile}>
-                                            <Text style={[styles.songTileText, getSerifFontForText(song.title)]} numberOfLines={1}>
-                                                {String(song.title || '').trim().charAt(0) || '♪'}
-                                            </Text>
-                                        </View>
+                                        <SongCover
+                                            song={song}
+                                            size={48}
+                                            radius={10}
+                                            fallback={(
+                                                <View style={styles.songTile}>
+                                                    <Text style={[styles.songTileText, getSerifFontForText(song.title)]} numberOfLines={1}>
+                                                        {String(song.title || '').trim().charAt(0) || '♪'}
+                                                    </Text>
+                                                </View>
+                                            )}
+                                        />
                                         <View style={styles.songCopy}>
                                             <Text
                                                 style={[

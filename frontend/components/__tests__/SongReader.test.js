@@ -34,6 +34,10 @@ jest.mock('../Read/TopSection/TopSection', () => {
   return (props) => ReactLocal.createElement('LookupPanel', props);
 });
 jest.mock('../Read/SavedWordsPanel', () => () => null);
+jest.mock('../Read/SelectionExplainPanel', () => {
+  const ReactLocal = require('react');
+  return (props) => ReactLocal.createElement('ExplainPanel', props);
+});
 // The player's network calls and the WebView player (no Supabase in CI).
 jest.mock('../../services/api/songSearch', () => ({ searchSongs: jest.fn(async () => []) }));
 jest.mock('../../services/api/songVideo', () => ({ findSongVideo: jest.fn(async () => null) }));
@@ -131,6 +135,20 @@ describe('SongReader', () => {
     expect(panel().props.highlightedWord).toBe('그리움');
 
     await act(async () => reader().props.onWordSelected({ text: '사랑해', sentence: '사랑해' }));
+    expect(panel().props.highlightedWord).toBe('');
+  });
+
+  it('explains a long-pressed selection with the AI, not the translation card', async () => {
+    await act(async () => reader().props.onTextSelected({ text: '그리움' }));
+    expect(panel().props.highlightedWord).toBe('');
+    const explain = tree.root.findByType('ExplainPanel');
+    expect(explain.props.text).toBe('그리움');
+    // Native sent no sentence: the lyric line the selection sits in.
+    expect(explain.props.sentence).toBe('그리움');
+
+    // The next word tap only closes it.
+    await act(async () => reader().props.onWordSelected({ text: '사랑해', sentence: '사랑해' }));
+    expect(tree.root.findByType('ExplainPanel').props.text).toBe('');
     expect(panel().props.highlightedWord).toBe('');
   });
 

@@ -32,23 +32,63 @@ const normalizeLine = (text) => String(text || '')
   .toLowerCase()
   .replace(/[\s\p{P}\p{S}]+/gu, '');
 
+// The shortest lyric line matched inside a timed line (rather than at its
+// start or right where the last match ended): shorter ones ("oh", "yeah") would
+// be found in the middle of unrelated words.
+const MIN_MID_LINE_MATCH = 4;
+
 // For each lyric line (the reader's own text), the time it starts, or null.
-// Lines are matched in order: the next timed line with the same text, looking
-// a few lines ahead so an added or removed line doesn't throw off the rest.
+// Lines are matched in order, a few timed lines ahead at most so an added or
+// removed line doesn't throw off the rest. The match runs over the timed
+// lyrics joined into one string, so a line the lyrics break in two (or two
+// timed lines the lyrics join) still match: a lyric line that starts partway
+// through a timed line gets a time that far between it and the next one.
 export const lyricLineTimes = (lyricLines, timedLines, { lookAhead = 6 } = {}) => {
-  const timed = (timedLines || []).filter((line) => normalizeLine(line.text));
+  const timed = (timedLines || [])
+    .map((line) => ({ time: line.time, key: normalizeLine(line.text) }))
+    .filter((line) => line.key);
+  const starts = [];
+  let stream = '';
+  timed.forEach((line) => {
+    starts.push(stream.length);
+    stream += line.key;
+  });
+
+  // The timed line holding character `pos` of the joined string.
+  const lineAt = (pos) => {
+    let index = 0;
+    while (index + 1 < starts.length && starts[index + 1] <= pos) index += 1;
+    return index;
+  };
+  const timeAt = (pos) => {
+    const index = lineAt(pos);
+    const line = timed[index];
+    const into = pos - starts[index];
+    const next = timed[index + 1]?.time;
+    if (into <= 0 || next == null || next <= line.time) return line.time;
+    return line.time + ((next - line.time) * into) / line.key.length;
+  };
+
   let cursor = 0;
   return (lyricLines || []).map((line) => {
     const key = normalizeLine(typeof line === 'string' ? line : line?.text);
-    if (!key) return null;
-    const end = Math.min(timed.length, cursor + lookAhead);
-    for (let index = cursor; index < end; index += 1) {
-      if (normalizeLine(timed[index].text) === key) {
-        cursor = index + 1;
-        return timed[index].time;
+    if (!key || !stream) return null;
+    const firstLine = lineAt(cursor);
+    const windowEnd = starts[firstLine + lookAhead] ?? stream.length;
+    let fallback = -1;
+    let found = -1;
+    for (let pos = stream.indexOf(key, cursor); pos >= 0 && pos < windowEnd; pos = stream.indexOf(key, pos + 1)) {
+      // Best: right where the last line ended, or at the start of a timed line.
+      if (pos === cursor || starts[lineAt(pos)] === pos) {
+        found = pos;
+        break;
       }
+      if (fallback < 0 && key.length >= MIN_MID_LINE_MATCH) fallback = pos;
     }
-    return null;
+    if (found < 0) found = fallback;
+    if (found < 0) return null;
+    cursor = found + key.length;
+    return timeAt(found);
   });
 };
 

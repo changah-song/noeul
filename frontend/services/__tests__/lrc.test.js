@@ -23,6 +23,19 @@ describe('lyricLineTimes', () => {
   it('keeps going after a line the timed lyrics do not have', () => {
     expect(lyricLineTimes(['hello world', 'my own line', 'third'], timed)).toEqual([10, null, 20]);
   });
+
+  it('times a timed line the lyrics break over two rows', () => {
+    // "Hello, world" is 10 letters, sung from 10s to 15s: "world" starts halfway.
+    expect(lyricLineTimes(['Hello,', 'world', 'second line'], timed)).toEqual([10, 12.5, 15]);
+  });
+
+  it('times one row that joins two timed lines', () => {
+    expect(lyricLineTimes(['Hello world, second line', 'third'], timed)).toEqual([10, 20]);
+  });
+
+  it('does not match a short line in the middle of another', () => {
+    expect(lyricLineTimes(['hello world', 'con'], timed)).toEqual([10, null]);
+  });
 });
 
 describe('activeLineIndex / lineEndTime', () => {

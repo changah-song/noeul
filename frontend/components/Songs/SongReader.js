@@ -21,6 +21,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import TopSection from '../Read/TopSection/TopSection';
+import SelectionExplainPanel from '../Read/SelectionExplainPanel';
 import FocusControls from '../Read/FocusControls';
 import SavedWordsPanel from '../Read/SavedWordsPanel';
 import ReaderSettingsSheet from '../Read/ReaderSettingsSheet';
@@ -308,9 +309,11 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
         highlightedWord,
         highlightedWordContext,
         isNativeSelection,
+        textSelection,
         lookupPlacement,
         clearSelectionToken,
         dismissLookup,
+        openTextSelection,
         clearNativeSelection,
         handleNativeWordSelected,
         handleNativeTextSelected,
@@ -813,6 +816,32 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
         playerRef.current?.play();
     }, [lineTimes, loopLine, lyricOffset]);
 
+    // Back or forward one timed line from the one being sung. Back from the
+    // first second or so of a line goes to the line before; later, to the
+    // start of this one (as a music player's back button does).
+    const [followToken, setFollowToken] = useState(0);
+    const stepLine = useCallback((direction) => {
+        const time = lastTimeRef.current + lyricOffset;
+        const current = loopLine ?? activeLineIndex(lineTimes, time);
+        let target = -1;
+        if (direction < 0 && current >= 0 && loopLine == null && time - lineTimes[current] > 1.5) {
+            target = current;
+        } else {
+            for (let index = current + direction; index >= 0 && index < lineTimes.length; index += direction) {
+                if (lineTimes[index] != null) {
+                    target = index;
+                    break;
+                }
+            }
+        }
+        if (target < 0) return;
+        if (loopLine != null) setLoopLine(target);
+        setFollowToken((value) => value + 1);
+        lastTimeRef.current = Math.max(0, lineTimes[target] - lyricOffset);
+        playerRef.current?.seek(lastTimeRef.current);
+        playerRef.current?.play();
+    }, [lineTimes, loopLine, lyricOffset]);
+
     const toggleLoop = useCallback(() => {
         if (loopLine != null) {
             setLoopLine(null);
@@ -842,7 +871,22 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
 
     const singAlong = playerOpen && videoStatus === 'ready' && hasTiming;
 
-    const focusPanelOpen = focusMode && !!highlightedWord;
+    const focusPanelOpen = focusMode && (!!highlightedWord || !!textSelection);
+
+    // A long press on a lyric line (the JS lyric views) explains the line.
+    const explainLine = useCallback((line) => {
+        if (!line || line.isBlank) return;
+        openTextSelection({ text: line.text, sentence: line.text });
+    }, [openTextSelection]);
+
+    // The explanation's sentence: what native sent, else the lyric line the
+    // selection sits in.
+    const selectionSentence = useMemo(() => {
+        if (!textSelection) return '';
+        if (textSelection.sentence) return textSelection.sentence;
+        const line = lyricLines.find((item) => !item.isBlank && item.text.includes(textSelection.text));
+        return line?.text ?? textSelection.text;
+    }, [lyricLines, textSelection]);
     const focusPanelTotalHeight = focusPanelOpen ? Math.max(0, Math.round(lookupPanelHeight)) : 0;
     const focusControlsBaseBottom = insets.bottom + 28;
     const focusPillTop = insets.top + spacing.xs + 52 + 12;
@@ -1003,7 +1047,8 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
     // then lookup panel) before Home's handler closes the song. Registered only
     // while a layer is open, so it sits above Home's listener.
     useEffect(() => {
-        if (!isMenuVisible && !highlightedWord && !playerOpen) {
+        const lookupOpen = !!highlightedWord || !!textSelection;
+        if (!isMenuVisible && !lookupOpen && !playerOpen) {
             return undefined;
         }
         const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
@@ -1011,7 +1056,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                 setIsMenuVisible(false);
                 return true;
             }
-            if (highlightedWord) {
+            if (lookupOpen) {
                 dismissLookup();
                 return true;
             }
@@ -1022,7 +1067,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
             return false;
         });
         return () => subscription.remove();
-    }, [closePlayer, dismissLookup, highlightedWord, isMenuVisible, playerOpen]);
+    }, [closePlayer, dismissLookup, highlightedWord, isMenuVisible, playerOpen, textSelection]);
 
     // Swipe-down on the bottom lookup panel dismisses it, as in the book reader.
     const lookupPanResponder = useMemo(() => PanResponder.create({
@@ -1125,6 +1170,16 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                     )}
                     {videoStatus === 'ready' ? (
                         <View style={styles.playerControls}>
+                            {hasTiming ? (
+                                <TouchableOpacity
+                                    accessibilityRole="button"
+                                    accessibilityLabel={t('song.player.previousLine')}
+                                    onPress={() => stepLine(-1)}
+                                    style={styles.playerButtonStep}
+                                >
+                                    <Feather name="skip-back" size={18} color={colors.readerBodyInk} />
+                                </TouchableOpacity>
+                            ) : null}
                             <TouchableOpacity
                                 accessibilityRole="button"
                                 accessibilityLabel={playing ? t('song.player.pause') : t('song.player.play')}
@@ -1133,6 +1188,16 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                             >
                                 <Feather name={playing ? 'pause' : 'play'} size={20} color={colors.readerBodyInk} />
                             </TouchableOpacity>
+                            {hasTiming ? (
+                                <TouchableOpacity
+                                    accessibilityRole="button"
+                                    accessibilityLabel={t('song.player.nextLine')}
+                                    onPress={() => stepLine(1)}
+                                    style={styles.playerButtonStep}
+                                >
+                                    <Feather name="skip-forward" size={18} color={colors.readerBodyInk} />
+                                </TouchableOpacity>
+                            ) : null}
                             {hasTiming ? (
                                 <TouchableOpacity
                                     accessibilityRole="button"
@@ -1198,6 +1263,8 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                             && normalizeForMatch(highlightedWord) === normalizeForMatch(text)}
                         onWordPress={handleNativeWordSelected}
                         onLinePress={playFromLine}
+                        onLineLongPress={(index) => explainLine(lyricLines[index])}
+                        followToken={followToken}
                         bottomPadding={insets.bottom + 190}
                         colors={colors}
                         styles={styles}
@@ -1251,6 +1318,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                             return (
                             <View key={line.id} style={styles.lyricBlock}>
                             <Text
+                                onLongPress={line.isBlank ? undefined : () => explainLine(line)}
                                 style={[
                                     styles.lyricLine,
                                     { fontSize: settings.fontSize, lineHeight: lyricLineHeight },
@@ -1276,6 +1344,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                                                     sentence: line.text,
                                                 })
                                                 : undefined}
+                                            onLongPress={() => explainLine(line)}
                                             style={[
                                                 isSaved && styles.savedLyricWord,
                                                 isActive && styles.activeLyricWord,
@@ -1353,6 +1422,17 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                         currentBook={songUri}
                         sourceBook={sourceBook}
                         savedWords={savedWords ?? []}
+                    />
+                    {/* Always mounted, so it can slide away when closed. */}
+                    <SelectionExplainPanel
+                        text={textSelection?.text ?? ''}
+                        sentence={selectionSentence}
+                        language={songLanguage}
+                        interfaceLanguage={interfaceLanguage}
+                        bottomInset={insets.bottom}
+                        ownerId={activeOwnerId}
+                        bookUri={songUri}
+                        bookTitle={song?.title ?? null}
                     />
                 </View>
             </View>
@@ -1490,7 +1570,7 @@ const createStyles = (colors) => StyleSheet.create({
     playerControls: {
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 8,
+        gap: 4,
         paddingHorizontal: spacing.md,
         paddingVertical: 8,
     },
@@ -1499,6 +1579,12 @@ const createStyles = (colors) => StyleSheet.create({
         height: 40,
         paddingHorizontal: 8,
         borderRadius: 20,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    playerButtonStep: {
+        width: 36,
+        height: 40,
         alignItems: 'center',
         justifyContent: 'center',
     },
