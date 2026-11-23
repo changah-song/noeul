@@ -238,6 +238,18 @@ const SingAlongLyrics = ({
 
     const textStyle = [lyricStyles.lyricLine, lyricStyles.lyricLineInRow, { fontSize, lineHeight }];
 
+    // Where a word's baseline sits in its Text (every word has the same type,
+    // so one reading serves all); read again when the type changes.
+    const [baseline, setBaseline] = useState(null);
+    useEffect(() => { setBaseline(null); }, [fontSize, lineHeight]);
+    const handleTextLayout = useCallback((event) => {
+        const line = event?.nativeEvent?.lines?.[0];
+        const next = Number.isFinite(line?.baseline) ? line.baseline : (
+            Number.isFinite(line?.y) && Number.isFinite(line?.ascender) ? line.y + line.ascender : null
+        );
+        if (next != null) setBaseline((current) => (current === next ? current : next));
+    }, []);
+
     return (
         <ScrollView
             ref={scrollRef}
@@ -295,7 +307,7 @@ const SingAlongLyrics = ({
                                 const strength = savedStrength ? savedStrength(segment.text) : 0;
                                 const tapped = lookupOpen && tappedKey === key;
                                 const pieces = tapped || !tintWord ? null : tintWord(segment.text);
-                                const marks = wordMarks(fontSize, lineHeight);
+                                const marks = wordMarks(fontSize, lineHeight, baseline);
                                 return (
                                     <View
                                         key={segment.id}
@@ -332,6 +344,7 @@ const SingAlongLyrics = ({
                                     ) : null}
                                     <Text
                                         suppressHighlighting
+                                        onTextLayout={baseline == null ? handleTextLayout : undefined}
                                         onPress={() => {
                                             const again = lookupOpen && tappedKey === key;
                                             if (!lookupOpen) setTappedKey(key);
@@ -425,12 +438,23 @@ export const inkWithAlpha = (color, alpha) => {
 // Where the marks sit in a word's line box: snug to the letters (the line's
 // extra leading is split above and below the glyphs), rounded 3, with the
 // underline 2 thick just under the baseline — as the book reader draws them.
-const wordMarks = (fontSize, lineHeight) => {
+// `baseline` is the word's baseline from the top of its Text, as the text
+// layout reports it; the book reader centres its 2-thick underline 3 below
+// the baseline (drawLevelUnderline).
+const UNDERLINE_BELOW_BASELINE = 3;
+const UNDERLINE_THICKNESS = 2;
+const wordMarks = (fontSize, lineHeight, baseline) => {
     const glyphs = fontSize * 1.18;
     const top = Math.max(0, (lineHeight - glyphs) / 2) - 1;
+    const base = Number.isFinite(baseline) ? baseline : top + 1 + glyphs * 0.86;
     return {
         box: { top, height: glyphs + 3, left: -1, right: -1, borderRadius: 3 },
-        underline: { top: top + glyphs * 0.86, height: 2, left: 0, right: 0, borderRadius: 1 },
+        underline: {
+            top: base + UNDERLINE_BELOW_BASELINE - UNDERLINE_THICKNESS / 2,
+            height: UNDERLINE_THICKNESS,
+            left: 0,
+            right: 0,
+        },
     };
 };
 

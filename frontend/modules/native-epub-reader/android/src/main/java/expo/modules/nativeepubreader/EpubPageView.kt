@@ -1635,8 +1635,9 @@ class EpubPageView(context: Context) : View(context) {
           val panelOpen = (focusModeEnabled && focusPanelOpen) ||
             (!focusModeEnabled && activeSelectionKind != null && activeSelectionRanges.isNotEmpty())
           if (panelOpen) {
-            if (!focusModeEnabled && hitTestActiveSelectionHighlight(event.x, event.y)) {
-              // A second tap on the word whose panel is open: saves it.
+            if (hitTestActiveSelectionHighlight(event.x, event.y)) {
+              // A second tap on the word whose panel is open: saves it (in
+              // focus mode too).
               if (activeSelectionKind == ActiveSelectionKind.WORD) {
                 hitTestText(event.x, event.y)?.let { onWordSelected?.invoke(it.copy(again = true)) }
               }

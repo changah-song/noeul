@@ -1909,6 +1909,15 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     var hit = surface.view.wordHit(at: point)
     if focusTapsInSpanOnly, let found = hit, !isInLitSpan(found.item.layout.block.id, found.range.location) { hit = nil }
     if focusPanelHeight > 0 {
+      // A second tap on the word whose panel is open: saves it, as outside
+      // focus mode.
+      if selection?.kind == .word, surface.view.selectionContains(point) {
+        if let found = surface.view.wordHit(at: point) {
+          let text = collapseSpaces(found.item.layout.text.substring(with: found.range))
+          if !text.isEmpty { onWordSelected(["text": text, "again": true]) }
+        }
+        return
+      }
       if let hit {
         selectWord(hit, page: page, surface: surface)
       } else {
