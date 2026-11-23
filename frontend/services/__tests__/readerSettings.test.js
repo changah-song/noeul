@@ -54,6 +54,7 @@ describe('normalizeReaderSettings', () => {
       readingMode: DEFAULT_SONG_READER_SETTINGS.readingMode,
       levelMarkStyle: DEFAULT_SONG_READER_SETTINGS.levelMarkStyle,
       pinyinAnnotations: true,
+      lineTranslations: true,
     });
   });
 

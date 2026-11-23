@@ -29,7 +29,10 @@ data class PageBlock(
   val marginBottom: Int = 0,
   val lineHeightMult: Float = 1.5f,
   val sentenceRanges: List<IntRange> = emptyList(),
-  val sourceText: String = ""
+  val sourceText: String = "",
+  // Shown but not read: a line's translation under it in the song reader.
+  // Drawn in the muted ink; taps, selection and reading credit skip it.
+  val inert: Boolean = false
 )
 
 data class ReaderPage(

@@ -6,6 +6,7 @@ import { activeLineIndex } from '../../services/lrc';
 // third of the way down; the others are dimmed. A tap on a word looks it up
 // (as in the reader); a tap elsewhere on a line plays the song from there.
 // After the reader scrolls by hand the view stops following for a few seconds.
+// A line's translation, when there is one, sits under it in the muted ink.
 //
 // The time comes through `subscribeTime` instead of a prop so only this list
 // renders four times a second, not the whole song reader.
@@ -15,6 +16,7 @@ const RESUME_FOLLOW_MS = 4000;
 const SingAlongLyrics = ({
     lines,
     times,
+    translations,
     subscribeTime,
     offset = 0,
     fontSize,
@@ -27,6 +29,7 @@ const SingAlongLyrics = ({
     colors,
     styles: lyricStyles,
 }) => {
+    const translationSize = Math.max(12, Math.round(fontSize * 0.68));
     const [active, setActive] = useState(-1);
     const scrollRef = useRef(null);
     const viewHeightRef = useRef(0);
@@ -65,6 +68,7 @@ const SingAlongLyrics = ({
             {lines.map((line, index) => {
                 const isActive = index === active;
                 const timed = times[index] != null;
+                const translation = line.isBlank ? '' : translations?.get(line.text.trim());
                 return (
                     <View
                         key={line.id}
@@ -101,6 +105,19 @@ const SingAlongLyrics = ({
                                 );
                             })}
                         </Text>
+                        {translation ? (
+                            <Text
+                                suppressHighlighting
+                                onPress={timed ? () => onLinePress(index) : undefined}
+                                style={[
+                                    lyricStyles.lineTranslation,
+                                    { fontSize: translationSize, lineHeight: Math.round(translationSize * 1.45) },
+                                    !isActive && styles.dimmed,
+                                ]}
+                            >
+                                {translation}
+                            </Text>
+                        ) : null}
                     </View>
                 );
             })}

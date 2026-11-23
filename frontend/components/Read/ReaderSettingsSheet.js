@@ -76,7 +76,8 @@ const scopeOrDefault = (value, fallback) => (ANNOTATION_SCOPES.includes(value) ?
  *   Text  — font size, line spacing, appearance (light / sepia / dark),
  *           page turns (horizontal / vertical icons)
  *   Words — difficulty underlines (+ threshold legend), pinyin (+ scope,
- *           Chinese only), translation under words (+ scope)
+ *           Chinese only), translation under words (+ scope), each line's
+ *           translation (songs only)
  *
  * Focus mode has nothing to set (one sentence, swiped), and the sentence
  * translation bar is always on.
@@ -195,6 +196,7 @@ const ReaderSettingsSheet = ({
     const pinyinOn = Boolean(source.pinyinAnnotations);
     const glossOn = Boolean(source.glossAnnotations);
     const hideSavedOn = source.hideSavedAnnotations !== false;
+    const lineTranslationsOn = Boolean(source.lineTranslations);
     // Settings saved before the scopes were split carried one `annotationScope`.
     const legacyScope = scopeOrDefault(source.annotationScope, null);
     const pinyinScope = scopeOrDefault(source.pinyinScope, legacyScope || 'underlined');
@@ -393,6 +395,21 @@ const ReaderSettingsSheet = ({
                     ),
                 });
             }
+        }
+        if (features.lineTranslations === true) {
+            rows.push({
+                key: 'lineTranslations',
+                label: t('song.lineTranslations'),
+                control: (
+                    <ToggleSwitch
+                        styles={controlStyles}
+                        colors={colors}
+                        value={lineTranslationsOn}
+                        onChange={(value) => onSettingChange('lineTranslations', value)}
+                        accessibilityLabel={t('song.lineTranslations')}
+                    />
+                ),
+            });
         }
         if (showHideSaved) {
             rows.push({

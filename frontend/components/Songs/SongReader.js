@@ -18,7 +18,7 @@ import {
     ToastAndroid,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Feather } from '@expo/vector-icons';
+import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import TopSection from '../Read/TopSection/TopSection';
 import FocusControls from '../Read/FocusControls';
@@ -29,7 +29,7 @@ import {
     ReaderFocusModeButton,
     ReaderHeaderBar,
     ReaderMenuButton,
-    ReaderSavedWordsButton,
+    ReaderTitleButton,
 } from '../Read/ReaderHeaderBar';
 import { createReaderChromeStyles } from '../Read/readerChromeStyles';
 import NativeEpubReaderView from '../../modules/native-epub-reader/src/NativeEpubReaderView';
@@ -54,6 +54,7 @@ import {
 import { ensureSongPreprocessed, getSongBookUri } from '../../services/songPreprocess';
 import { searchSongs } from '../../services/api/songSearch';
 import { findSongVideo } from '../../services/api/songVideo';
+import { chapterTranslations } from '../../services/chapterTranslations';
 import { activeLineIndex, lineEndTime, lyricLineTimes, parseLrc } from '../../services/lrc';
 import SongPlayer, { PLAYER_STATE } from './SongPlayer';
 import SingAlongLyrics from './SingAlongLyrics';
@@ -78,12 +79,16 @@ const SONG_RESTORE_POSITION = { spineIndex: 0, pageIndex: 0 };
 // Stable empty reference so toggling underlines off doesn't churn native.
 const EMPTY_LEVEL_TERMS = [];
 // Lyrics have no read-fade or word-translation support yet, and pinyin has no
-// scope choice: the sheet shows only the rows the song reader acts on.
+// scope choice: the sheet shows only the rows the song reader acts on. Songs
+// have one row of their own: each line's translation under it.
 const SONG_SHEET_FEATURES = {
     glossAnnotations: false,
     annotationScope: false,
     hideSavedAnnotations: false,
+    lineTranslations: true,
 };
+// A line's translation is drawn this much smaller than the lyrics.
+const TRANSLATION_SCALE = 0.68;
 
 // Word characters we treat as tappable/lookup-able across supported targets:
 // Hangul (jamo + syllables), Latin letters, digits, and CJK ideographs
@@ -156,21 +161,45 @@ const buildLyricLines = (lyrics) => {
     }));
 };
 
-const buildNativeLyricBlocks = (lyricLines) => lyricLines.map((line, index) => {
+// `translations` (line text → its translation) adds each line's translation
+// under it as an inert block: drawn in the muted ink, never tapped or credited
+// as reading (the native reader skips inert blocks).
+const buildNativeLyricBlocks = (lyricLines, translations) => lyricLines.flatMap((line, index) => {
     const text = line.isBlank ? ' ' : line.text;
-    return {
-        id: line.id || `song-lyric-line-${index}`,
+    const id = line.id || `song-lyric-line-${index}`;
+    const translation = line.isBlank ? '' : translations?.get(line.text.trim());
+    const blocks = [{
+        id,
         type: 'text',
         tag: 'p',
         text,
         styleTokens: {
             textAlign: 'center',
             marginTop: 0,
-            marginBottom: line.isBlank ? 18 : 10,
+            marginBottom: line.isBlank ? 18 : (translation ? 2 : 10),
             fontFamily: 'serif',
         },
         spans: [{ text }],
-    };
+    }];
+    if (translation) {
+        blocks.push({
+            id: `${id}-translation`,
+            type: 'text',
+            tag: 'p',
+            text: translation,
+            styleTokens: {
+                textAlign: 'center',
+                marginTop: 0,
+                marginBottom: 14,
+                fontScale: TRANSLATION_SCALE,
+                lineHeight: 1.15,
+                fontFamily: 'sans-serif',
+                inert: true,
+            },
+            spans: [{ text: translation }],
+        });
+    }
+    return blocks;
 });
 
 const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsChange }) => {
@@ -484,6 +513,48 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
     }, [song?.id]);
 
     const lyricLines = useMemo(() => buildLyricLines(song?.lyrics), [song?.lyrics]);
+
+    // ── Line translations ────────────────────────────────────────────────────
+    // Each line's translation in the app's language, under the line. Fetched
+    // for the whole song at once and kept on the phone (chapterTranslations),
+    // so a song is translated once. Line text → translation.
+    const [lineTranslations, setLineTranslations] = useState(() => new Map());
+    const showLineTranslations = settings.lineTranslations !== false;
+    useEffect(() => {
+        if (!showLineTranslations || !songUri) {
+            setLineTranslations(new Map());
+            return undefined;
+        }
+        const texts = [...new Set(lyricLines.filter((line) => !line.isBlank).map((line) => line.text.trim()))];
+        let active = true;
+        const fill = () => {
+            if (!active) return;
+            const next = new Map();
+            texts.forEach((text) => {
+                const translated = chapterTranslations.peek(text, songLanguage, interfaceLanguage);
+                // The same language (or a line that reads the same) needs none.
+                if (translated && translated !== text) next.set(text, translated);
+            });
+            setLineTranslations((current) => (
+                current.size === next.size && [...next].every(([key, value]) => current.get(key) === value)
+                    ? current
+                    : next
+            ));
+        };
+        fill();
+        chapterTranslations.prefetchChapter({
+            key: `${songUri}\u0002${song?.lyrics || ''}`,
+            paragraphs: texts,
+            source: songLanguage,
+            target: interfaceLanguage,
+        }).then(fill).catch((error) => {
+            console.warn('[SongReader] Line translations failed:', error?.message ?? error);
+        });
+        return () => {
+            active = false;
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [interfaceLanguage, lyricLines, showLineTranslations, songLanguage, songUri]);
     const readerHighlightTerms = useMemo(() => uniqueTerms([
         ...(savedWords || []),
         ...highlightSurfaces,
@@ -524,7 +595,11 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
         renderMode: nativeRenderMode,
         readerEdgeStateEnabled: false,
     }), [nativeRenderMode, songUri]);
-    const nativeLyricBlocks = useMemo(() => buildNativeLyricBlocks(lyricLines), [lyricLines]);
+    // Focus mode is one line at a time, without its translation.
+    const nativeLyricBlocks = useMemo(
+        () => buildNativeLyricBlocks(lyricLines, focusMode ? null : lineTranslations),
+        [focusMode, lineTranslations, lyricLines]
+    );
     const nativeReaderThemeTokens = useMemo(() => createNativeReaderThemeTokens(colors), [colors]);
 
     const levelMarksEnabled = settings.levelMarkStyle !== 'off';
@@ -582,13 +657,6 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
         onSavedWordsPassed({ surfaces: fresh, surfaceToWord: highlightSurfaceWordsRef.current });
     }, [onSavedWordsPassed, songUri]);
 
-    // ── Focus mode ───────────────────────────────────────────────────────────
-    const toggleFocusMode = useCallback(() => {
-        setIsMenuVisible(false);
-        dismissLookup();
-        setFocusMode((current) => !current);
-    }, [dismissLookup]);
-
     // ── Player ───────────────────────────────────────────────────────────────
     // The song's YouTube video over the lyrics, with the line being sung lit
     // when the lyrics are timed. Opening it the first time finds timed lyrics
@@ -628,14 +696,15 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
         timeListenersRef.current.forEach((listener) => listener(time));
     }, []);
 
+    // Resolves true when the song has a video to play.
     const findPlayback = useCallback(async ({ retry = false } = {}) => {
         if (song?.video?.id) {
             setVideoStatus('ready');
-            return;
+            return true;
         }
         if (song?.video === null && !retry) {
             setVideoStatus('missing');
-            return;
+            return false;
         }
         setVideoStatus('finding');
         const patch = {};
@@ -657,10 +726,12 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
             }
             patch.syncedChecked = true;
         }
+        let found = false;
         try {
             const video = await findSongVideo({ title: song?.title, artist: song?.artist, duration });
             patch.video = video ?? null;
-            setVideoStatus(video ? 'ready' : 'missing');
+            found = Boolean(video?.id);
+            setVideoStatus(found ? 'ready' : 'missing');
         } catch (error) {
             console.warn('[SongReader] Video lookup failed:', error?.message ?? error);
             setVideoStatus('error');
@@ -668,6 +739,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
         if (Object.keys(patch).length > 0) {
             onSongUpdate?.(patch);
         }
+        return found;
     }, [onSongUpdate, song?.artist, song?.duration, song?.syncedChecked, song?.syncedLyrics, song?.title, song?.video, songLanguage]);
 
     const openPlayer = useCallback(() => {
@@ -675,8 +747,9 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
         dismissLookup();
         setFocusMode(false);
         setPlayerOpen(true);
-        findPlayback();
+        findPlayback().catch(() => {});
     }, [dismissLookup, findPlayback]);
+
 
     const closePlayer = useCallback(() => {
         setPlayerOpen(false);
@@ -684,6 +757,41 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
         setLoopLine(null);
         lastTimeRef.current = 0;
     }, []);
+
+    // The player opens by itself when the song has a video: at once when one
+    // was found before, else after a quiet first lookup (a song with no video
+    // just stays as lyrics, with no notice). Once per song opened.
+    const autoOpenedRef = useRef(null);
+    const findPlaybackRef = useRef(findPlayback);
+    findPlaybackRef.current = findPlayback;
+    useEffect(() => {
+        if (!song?.id || autoOpenedRef.current === song.id) return undefined;
+        autoOpenedRef.current = song.id;
+        if (song.video?.id) {
+            setPlayerOpen(true);
+            setVideoStatus('ready');
+            return undefined;
+        }
+        if (song.video === null || !song.title) return undefined;
+        let active = true;
+        findPlaybackRef.current().then((found) => {
+            if (active && found) setPlayerOpen(true);
+        }).catch(() => {});
+        return () => {
+            active = false;
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [song?.id]);
+
+    // ── Focus mode ───────────────────────────────────────────────────────────
+    // One line at a time, swiped; the player closes for it (the lyrics would
+    // move under the reader as the song plays).
+    const toggleFocusMode = useCallback(() => {
+        setIsMenuVisible(false);
+        dismissLookup();
+        if (!focusMode) closePlayer();
+        setFocusMode(!focusMode);
+    }, [closePlayer, dismissLookup, focusMode]);
 
     const togglePlay = useCallback(() => {
         if (playing) playerRef.current?.pause();
@@ -867,6 +975,15 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
     // Rows above the settings tabs in the sheet.
     const songSheetActions = useMemo(() => [
         {
+            key: 'saved',
+            label: t('read.savedTab', { count: songSavedWords.length }),
+            icon: <MaterialCommunityIcons name="cards-outline" size={21} color={colors.readerBodyInk} />,
+            onPress: () => {
+                setIsMenuVisible(false);
+                openSavedPanel();
+            },
+        },
+        {
             key: 'edit',
             label: t('song.editLyrics'),
             icon: <Feather name="edit-3" size={19} color={colors.readerBodyInk} />,
@@ -879,7 +996,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
             onPress: confirmDeleteSong,
             destructive: true,
         },
-    ], [colors.danger, colors.readerBodyInk, confirmDeleteSong, openEditModal, t]);
+    ], [colors.danger, colors.readerBodyInk, confirmDeleteSong, openEditModal, openSavedPanel, songSavedWords.length, t]);
 
     // Hardware back steps out of transient chrome one layer at a time (menu,
     // then lookup panel) before Home's handler closes the song. Registered only
@@ -920,71 +1037,55 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
     }), [dismissLookup]);
 
     const placement = lookupLayerPlacement(lookupPlacement, focusMode);
+    const songTitleLabel = localizeStoredPlaceholder(song?.title, t) || t('song.untitled');
+    const songArtistLabel = localizeStoredPlaceholder(song?.artist, t) || t('common.unknownArtist');
     const useNativeLyricReader = Platform.OS === 'android';
     const lyricLineHeight = settings.fontSize * settings.lineSpacing;
 
     return (
         <View style={styles.container}>
             <ReaderHeaderBar styles={chrome} topInset={insets.top}>
-                <View style={chrome.headerLeft}>
-                    <ReaderBackButton
+                <ReaderBackButton
+                    styles={chrome}
+                    themeColors={colors}
+                    onPress={onClose}
+                    accessibilityLabel={t('song.back')}
+                />
+                {/* The artist over the song, as the book reader shows the book
+                    over its chapter. Saved words are in the menu, as there. */}
+                <ReaderTitleButton
+                    styles={chrome}
+                    themeColors={colors}
+                    bookTitle={songArtistLabel}
+                    chapterTitle={songTitleLabel}
+                    disabled
+                    accessibilityLabel={`${songTitleLabel}, ${songArtistLabel}`}
+                />
+                {useNativeLyricReader ? (
+                    <ReaderFocusModeButton
                         styles={chrome}
                         themeColors={colors}
-                        onPress={onClose}
-                        accessibilityLabel={t('song.back')}
+                        active={focusMode}
+                        onPress={toggleFocusMode}
+                        accessibilityLabel={t('read.focusMode')}
                     />
-                    <ReaderSavedWordsButton
-                        styles={chrome}
-                        themeColors={colors}
-                        count={songSavedWords.length}
-                        onPress={openSavedPanel}
-                        accessibilityLabel={t('read.savedTab', { count: songSavedWords.length })}
-                    />
-                    {playerOpen ? null : (
-                        <ReaderFocusModeButton
-                            styles={chrome}
-                            themeColors={colors}
-                            style={chrome.headerGroupGap}
-                            active={focusMode}
-                            onPress={toggleFocusMode}
-                            accessibilityLabel={t('read.focusMode')}
-                        />
-                    )}
-                </View>
-
-                <View style={styles.headerTitleBlock}>
-                    <Text
-                        style={[
-                            styles.headerTitle,
-                            /[ㄱ-ㆎ가-힣]/.test(song?.title || '') && styles.koreanTitle,
-                        ]}
-                        numberOfLines={1}
-                    >
-                        {localizeStoredPlaceholder(song?.title, t) || t('song.untitled')}
-                    </Text>
-                    <Text style={styles.headerArtist} numberOfLines={1}>
-                        {localizeStoredPlaceholder(song?.artist, t) || t('common.unknownArtist')}
-                    </Text>
-                </View>
-
-                <View style={chrome.headerControls}>
-                    <TouchableOpacity
-                        style={[chrome.headerIconButton, playerOpen && chrome.headerIconButtonActive]}
-                        onPress={playerOpen ? closePlayer : openPlayer}
-                        accessibilityRole="button"
-                        accessibilityState={{ selected: playerOpen }}
-                        accessibilityLabel={playerOpen ? t('song.player.hide') : t('song.player.open')}
-                    >
-                        <Feather name="music" size={21} color={colors.inkSlate} />
-                    </TouchableOpacity>
-                    <ReaderMenuButton
-                        styles={chrome}
-                        themeColors={colors}
-                        open={isMenuVisible}
-                        onPress={() => setIsMenuVisible((visible) => !visible)}
-                        accessibilityLabel={t('song.options')}
-                    />
-                </View>
+                ) : null}
+                <TouchableOpacity
+                    style={[chrome.headerIconButton, playerOpen && chrome.headerIconButtonActive]}
+                    onPress={playerOpen ? closePlayer : openPlayer}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: playerOpen }}
+                    accessibilityLabel={playerOpen ? t('song.player.hide') : t('song.player.open')}
+                >
+                    <Feather name="music" size={21} color={colors.inkSlate} />
+                </TouchableOpacity>
+                <ReaderMenuButton
+                    styles={chrome}
+                    themeColors={colors}
+                    open={isMenuVisible}
+                    onPress={() => setIsMenuVisible((visible) => !visible)}
+                    accessibilityLabel={t('song.options')}
+                />
             </ReaderHeaderBar>
 
             {playerOpen ? (
@@ -1085,6 +1186,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                     <SingAlongLyrics
                         lines={lyricLines}
                         times={lineTimes}
+                        translations={lineTranslations}
                         subscribeTime={subscribeTime}
                         offset={lyricOffset}
                         fontSize={settings.fontSize}
@@ -1143,13 +1245,16 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                         scrollEventThrottle={16}
                         onScroll={highlightedWord ? dismissLookup : undefined}
                     >
-                        {lyricLines.map((line) => (
+                        {lyricLines.map((line) => {
+                            const translation = line.isBlank ? '' : lineTranslations.get(line.text.trim());
+                            return (
+                            <View key={line.id} style={styles.lyricBlock}>
                             <Text
-                                key={line.id}
                                 style={[
                                     styles.lyricLine,
                                     { fontSize: settings.fontSize, lineHeight: lyricLineHeight },
                                     line.isBlank && styles.lyricLineBlank,
+                                    translation && styles.lyricLineTranslated,
                                 ]}
                             >
                                 {line.isBlank ? ' ' : line.segments.map((segment) => {
@@ -1180,7 +1285,22 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                                     );
                                 })}
                             </Text>
-                        ))}
+                            {translation ? (
+                                <Text
+                                    style={[
+                                        styles.lineTranslation,
+                                        {
+                                            fontSize: Math.max(12, Math.round(settings.fontSize * TRANSLATION_SCALE)),
+                                            lineHeight: Math.round(Math.max(12, settings.fontSize * TRANSLATION_SCALE) * 1.45),
+                                        },
+                                    ]}
+                                >
+                                    {translation}
+                                </Text>
+                            ) : null}
+                            </View>
+                            );
+                        })}
                     </ScrollView>
                 )}
             </View>
@@ -1208,7 +1328,9 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                         // The song reader hides the tab bar, so (like the book
                         // reader in fullscreen) the panel clears the gesture
                         // area — except in focus mode, where it sits flush.
-                        : { paddingBottom: focusMode ? 0 : insets.bottom + 6 },
+                        // Flush to the bottom edge; the panel keeps clear of the
+                        // navigation buttons itself (bottomInset), as in a book.
+                        : null,
                 ]}
                 pointerEvents="box-none"
             >
@@ -1221,8 +1343,10 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                     <TopSection
                         highlightedWord={highlightedWord}
                         sourceSentence={highlightedWordContext?.sentence ?? ''}
+                        phraseWord={highlightedWordContext?.phraseWord ?? ''}
                         isNativeSelection={isNativeSelection}
                         placement={placement}
+                        bottomInset={insets.bottom}
                         isDarkMode={isDarkMode}
                         onClose={dismissLookup}
                         onWordSave={handleWordSave}
@@ -1333,32 +1457,6 @@ const createStyles = (colors) => StyleSheet.create({
         flex: 1,
         backgroundColor: colors.readerPaper,
     },
-    headerTitleBlock: {
-        flex: 1,
-        minWidth: 0,
-        alignItems: 'center',
-        paddingHorizontal: 8,
-    },
-    headerTitle: {
-        maxWidth: '100%',
-        fontFamily: fontFamilies.krSerifSemiBold,
-        fontSize: 15,
-        lineHeight: 20,
-        color: colors.readerBodyInk,
-        letterSpacing: 0,
-        textAlign: 'center',
-    },
-    koreanTitle: {
-        fontFamily: fontFamilies.krSerifBold,
-    },
-    headerArtist: {
-        maxWidth: '100%',
-        fontFamily: fontFamilies.sansMedium,
-        fontSize: 12,
-        lineHeight: 16,
-        color: colors.textTertiary,
-        textAlign: 'center',
-    },
     playerArea: {
         borderBottomWidth: StyleSheet.hairlineWidth,
         borderBottomColor: colors.readerHairline,
@@ -1459,14 +1557,29 @@ const createStyles = (colors) => StyleSheet.create({
     lyricLineBlank: {
         marginBottom: 18,
     },
+    lyricBlock: {
+        width: '100%',
+    },
+    lyricLineTranslated: {
+        marginBottom: 2,
+    },
+    lineTranslation: {
+        width: '100%',
+        marginBottom: 14,
+        fontFamily: fontFamilies.sansRegular ?? fontFamilies.sansMedium,
+        color: colors.readerMutedInk,
+        textAlign: 'center',
+        letterSpacing: 0,
+    },
+    // Saved and tapped words look as they do in the book reader: a saved word
+    // is a solid ink chip, the tapped one the reader's tapped-word surface.
     savedLyricWord: {
-        textDecorationLine: 'underline',
-        textDecorationStyle: 'dotted',
-        textDecorationColor: colors.textTertiary,
+        color: colors.readerSavedWordSurfaceText,
+        backgroundColor: colors.readerSavedWordSurfaceBg,
     },
     activeLyricWord: {
-        color: colors.bgPage,
-        backgroundColor: colors.accent,
+        color: colors.readerTappedWordText,
+        backgroundColor: colors.readerTappedWordBg,
     },
     modalBackdrop: {
         flex: 1,

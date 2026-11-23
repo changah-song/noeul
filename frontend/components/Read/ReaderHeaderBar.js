@@ -78,7 +78,8 @@ export const ReaderFocusModeButton = memo(({ styles, themeColors, active, onPres
         accessibilityState={{ selected: !!active }}
         accessibilityLabel={accessibilityLabel}
     >
-        <Feather name="eye" size={22} color={themeColors.inkSlate} />
+        {/* A camera's focus frame: one sentence, centered, the rest dimmed. */}
+        <MaterialCommunityIcons name="image-filter-center-focus" size={23} color={themeColors.inkSlate} />
     </TouchableOpacity>
 ));
 ReaderFocusModeButton.displayName = 'ReaderFocusModeButton';

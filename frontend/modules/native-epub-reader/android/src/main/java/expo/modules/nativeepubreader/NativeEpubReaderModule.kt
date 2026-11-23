@@ -2195,6 +2195,7 @@ class NativeEpubReaderView(
           isDark = isDarkSnapshot,
           readerTextColor = themePaletteSnapshot.bodyTextColor,
           context = appContext,
+          readerMutedTextColor = themePaletteSnapshot.mutedTextColor,
           rubySpacePx = rubySpaceSnapshot,
           textLocale = textLocaleSnapshot,
           // Paged: the bottom controls' room below the page margin (the top's
@@ -2204,6 +2205,7 @@ class NativeEpubReaderView(
         val layoutKey = listOf(
           renderModeSnapshot, layoutWidthSnapshot, layoutHeightSnapshot, pagedChromeBottomSnapshot,
           fontSizeSnapshot, lineHeightSnapshot, isDarkSnapshot, themePaletteSnapshot.bodyTextColor,
+          themePaletteSnapshot.mutedTextColor,
           rubySpaceSnapshot, textLocaleSnapshot
         ).joinToString("|")
         if (renderModeSnapshot == "continuous" || renderModeSnapshot == "focus") {
@@ -4395,7 +4397,7 @@ class NativeEpubReaderView(
   }
 
   private fun blockTextLength(block: PageBlock): Int {
-    if (block.type != "text") return 0
+    if (block.type != "text" || block.inert) return 0
     return block.plainText.ifEmpty { block.styledText?.toString() ?: "" }.length
   }
 
@@ -4521,7 +4523,7 @@ class NativeEpubReaderView(
       val bottom = yOffset + height
       yOffset = bottom + block.marginBottom
 
-      if (block.type != "text" || exposedBlockIds.contains(block.blockId)) {
+      if (block.type != "text" || block.inert || exposedBlockIds.contains(block.blockId)) {
         continue
       }
 

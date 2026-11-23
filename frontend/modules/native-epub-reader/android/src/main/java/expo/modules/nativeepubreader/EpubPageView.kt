@@ -2229,6 +2229,10 @@ class EpubPageView(context: Context) : View(context) {
       if (tapY < rendered.y || tapY > blockBottom) {
         return@forEach
       }
+      // A translation line: a tap there is a tap on blank space.
+      if (block.inert) {
+        return null
+      }
 
       if (tapX < rendered.x || tapX > rendered.x + rendered.width) {
         Log.d(PAGE_VIEW_TAG, "word hit no-hit: reason=margin block=${block.blockId}")
@@ -2393,7 +2397,7 @@ class EpubPageView(context: Context) : View(context) {
       val block = rendered.block
       val blockBottom = rendered.y + layout.height
 
-      if (tapY < rendered.y || tapY > blockBottom || layout.lineCount <= 0) {
+      if (tapY < rendered.y || tapY > blockBottom || layout.lineCount <= 0 || block.inert) {
         return@forEachIndexed
       }
 

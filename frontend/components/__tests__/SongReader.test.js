@@ -37,6 +37,18 @@ jest.mock('../Read/SavedWordsPanel', () => () => null);
 // The player's network calls and the WebView player (no Supabase in CI).
 jest.mock('../../services/api/songSearch', () => ({ searchSongs: jest.fn(async () => []) }));
 jest.mock('../../services/api/songVideo', () => ({ findSongVideo: jest.fn(async () => null) }));
+jest.mock('../../services/chapterTranslations', () => {
+  const done = new Set();
+  return {
+    chapterTranslations: {
+      peek: (text) => (done.has(text) ? `EN ${text}` : null),
+      prefetchChapter: jest.fn(async ({ paragraphs }) => {
+        paragraphs.forEach((text) => done.add(text));
+        return { total: paragraphs.length, done: paragraphs.length };
+      }),
+    },
+  };
+});
 jest.mock('../Songs/SongPlayer', () => ({ __esModule: true, default: () => null, PLAYER_STATE: { PLAYING: 1, BUFFERING: 3 } }));
 jest.mock('../../services/haptics', () => ({
   tapSelect: jest.fn(),
@@ -122,9 +134,25 @@ describe('SongReader', () => {
     expect(panel().props.highlightedWord).toBe('');
   });
 
-  it('toggles focus mode from the header', async () => {
+  it('draws each line\'s translation under it as an inert block', () => {
+    const blocks = reader().props.chapterBlocks;
+    expect(blocks.map((block) => block.text)).toEqual(['사랑해', 'EN 사랑해', '그리움', 'EN 그리움']);
+    expect(blocks[1].styleTokens.inert).toBe(true);
+    expect(blocks[0].styleTokens.inert).toBeUndefined();
+  });
+
+  it('toggles focus mode from the header, without the translations', async () => {
     await pressByLabel(tree, 'Focus mode');
     expect(reader().props.renderMode).toBe('focus');
+    expect(reader().props.chapterBlocks.map((block) => block.text)).toEqual(['사랑해', '그리움']);
+  });
+
+  it('keeps saved words in the menu, as the book reader does', async () => {
+    expect(tree.root.findAll((node) => /^Saved/.test(node.props.accessibilityLabel || ''))).toHaveLength(0);
+    await pressByLabel(tree, 'Song options');
+    expect(JSON.stringify(tree.toJSON())).toContain('Saved (1)');
+    await pressByLabel(tree, 'Words');
+    expect(JSON.stringify(tree.toJSON())).toContain('Line translations');
   });
 
   it('opens the shared reader options menu', async () => {

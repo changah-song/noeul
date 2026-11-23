@@ -34,6 +34,8 @@ class EpubPaginator(
   private val isDark: Boolean,
   private val readerTextColor: Int,
   private val context: Context,
+  // Ink of inert blocks (a song line's translation), in both themes.
+  private val readerMutedTextColor: Int = readerTextColor,
   // Extra vertical space added above each line to hold pinyin annotations (0 when
   // the pinyin toggle is off). Applied as leading so lines separate and the ruby
   // row has room; the page view draws the pinyin into that gap.
@@ -258,7 +260,10 @@ class EpubPaginator(
       )
     }
 
-    val textPaint = textPaintForBlock(tag, styleTokens)
+    val inert = styleTokens["inert"] == true
+    val textPaint = textPaintForBlock(tag, styleTokens).apply {
+      if (inert) color = readerMutedTextColor
+    }
     val isHeading = HEADING_TAG_RE.matches(tag)
     val blockLineHeightMult = lineHeightMultiplierForBlock(styleTokens["lineHeight"], textPaint.textSize)
       // A heading's lines stay close: the reader's looser spacing is for body
@@ -290,7 +295,8 @@ class EpubPaginator(
       marginBottom = marginBottom,
       lineHeightMult = blockLineHeightMult,
       sentenceRanges = splitSentences(styledText.toString()),
-      sourceText = styledText.toString()
+      sourceText = styledText.toString(),
+      inert = inert
     ))
   }
 
