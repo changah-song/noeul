@@ -55,7 +55,7 @@ import { ensureSongPreprocessed, getSongBookUri } from '../../services/songPrepr
 import { searchSongs } from '../../services/api/songSearch';
 import { findSongVideo } from '../../services/api/songVideo';
 import { chapterTranslations } from '../../services/chapterTranslations';
-import { activeLineIndex, lineEndTime, lyricLineTimes, parseLrc } from '../../services/lrc';
+import { activeLineIndex, lyricLineTimes, parseLrc } from '../../services/lrc';
 import SongPlayer, { PLAYER_STATE } from './SongPlayer';
 import { tapCommit, tapUndo } from '../../services/haptics';
 import { requestUserDataSync } from '../../services/userDataSyncQueue';
@@ -659,7 +659,6 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
     const [videoStatus, setVideoStatus] = useState('idle'); // finding | ready | missing | error
     const [playing, setPlaying] = useState(false);
     const [rate, setRate] = useState(1);
-    const [loopLine, setLoopLine] = useState(null);
     const [lyricOffset, setLyricOffset] = useState(() => (typeof song?.lyricOffset === 'number' ? song.lyricOffset : 0));
     const playerRef = useRef(null);
     const timeListenersRef = useRef(new Set());
@@ -676,7 +675,6 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
 
     const handlePlayerTime = useCallback((time) => {
         lastTimeRef.current = time;
-        // (Repeating a line is done in the player page: SongPlayer setLoop.)
         timeListenersRef.current.forEach((listener) => listener(time));
     }, []);
 
@@ -738,7 +736,6 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
     const closePlayer = useCallback(() => {
         setPlayerOpen(false);
         setPlaying(false);
-        setLoopLine(null);
         lastTimeRef.current = 0;
     }, []);
 
@@ -794,9 +791,9 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
     const [followToken, setFollowToken] = useState(0);
     const stepLine = useCallback((direction) => {
         const time = lastTimeRef.current + lyricOffset;
-        const current = loopLine ?? activeLineIndex(lineTimes, time);
+        const current = activeLineIndex(lineTimes, time);
         let target = -1;
-        if (direction < 0 && current >= 0 && loopLine == null && time - lineTimes[current] > 1.5) {
+        if (direction < 0 && current >= 0 && time - lineTimes[current] > 1.5) {
             target = current;
         } else {
             for (let index = current + direction; index >= 0 && index < lineTimes.length; index += direction) {
@@ -807,43 +804,22 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
             }
         }
         if (target < 0) return;
-        if (loopLine != null) setLoopLine(target);
         setFollowToken((value) => value + 1);
         lastTimeRef.current = Math.max(0, lineTimes[target] - lyricOffset);
         playerRef.current?.seek(lastTimeRef.current);
         playerRef.current?.play();
-    }, [lineTimes, loopLine, lyricOffset]);
+    }, [lineTimes, lyricOffset]);
 
-    // Repeat starts the line being sung again at once, then loops it.
-    // Read from a ref, so taps quicker than a render still alternate on / off
-    // instead of each one counting as "on" (and jumping back again).
-    const loopLineRef = useRef(loopLine);
-    loopLineRef.current = loopLine;
-    const toggleLoop = useCallback(() => {
-        if (loopLineRef.current != null) {
-            loopLineRef.current = null;
-            setLoopLine(null);
-            return;
-        }
+    // Replay: the line being sung, once more from its start. A press, not a
+    // mode: the song carries on past the line as usual.
+    const replayLine = useCallback(() => {
         const current = activeLineIndex(lineTimes, lastTimeRef.current + lyricOffset);
         if (current < 0) return;
-        loopLineRef.current = current;
-        setLoopLine(current);
+        setFollowToken((value) => value + 1);
         lastTimeRef.current = Math.max(0, lineTimes[current] - lyricOffset);
         playerRef.current?.seek(lastTimeRef.current);
         playerRef.current?.play();
     }, [lineTimes, lyricOffset]);
-
-    // The line repeated, handed to the player page (video seconds).
-    useEffect(() => {
-        const start = loopLine != null ? lineTimes[loopLine] : null;
-        const end = loopLine != null ? lineEndTime(lineTimes, loopLine) : null;
-        if (start == null || end == null) {
-            playerRef.current?.setLoop?.(null);
-            return;
-        }
-        playerRef.current?.setLoop?.({ start: start - lyricOffset, end: end - lyricOffset });
-    }, [lineTimes, loopLine, lyricOffset, videoStatus]);
 
     // The timing nudge is kept with the song, written a moment after the last tap.
     const offsetSaveTimerRef = useRef(null);
@@ -1234,9 +1210,8 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                                 <TouchableOpacity
                                     accessibilityRole="button"
                                     accessibilityLabel={t('song.player.loopLine')}
-                                    accessibilityState={{ selected: loopLine != null }}
-                                    onPress={toggleLoop}
-                                    style={[styles.playerButton, loopLine != null && styles.playerButtonActive]}
+                                    onPress={replayLine}
+                                    style={styles.playerButton}
                                 >
                                     <Feather name="repeat" size={18} color={colors.readerBodyInk} />
                                 </TouchableOpacity>

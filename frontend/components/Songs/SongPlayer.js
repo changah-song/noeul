@@ -25,25 +25,6 @@ const playerHtml = (videoId, startSeconds) => `<!DOCTYPE html>
   var post = function (msg) { window.ReactNativeWebView.postMessage(JSON.stringify(msg)); };
   var player = null;
   var timer = null;
-  // Repeat one line: { start, end } in video seconds. Checked here, every
-  // 50 ms while playing, so the jump back lands at the line's end instead of
-  // waiting for the app to hear the time (4 a second) and answer.
-  var loop = null;
-  var loopTimer = null;
-  // After a jump back the player keeps reporting the old time for a moment;
-  // checks wait this long so one line end makes one jump, not a pile of them.
-  var loopSeekedAt = 0;
-  var LOOP_SEEK_SETTLE_MS = 600;
-  var checkLoop = function () {
-    if (!loop || !player || !player.getCurrentTime) return;
-    if (Date.now() - loopSeekedAt < LOOP_SEEK_SETTLE_MS) return;
-    var t = player.getCurrentTime();
-    if (t >= loop.end - 0.05 || t < loop.start - 1) {
-      loopSeekedAt = Date.now();
-      player.seekTo(loop.start, true);
-      tick();
-    }
-  };
   var tick = function () {
     if (!player || !player.getCurrentTime) return;
     post({ type: 'time', time: player.getCurrentTime() });
@@ -53,13 +34,9 @@ const playerHtml = (videoId, startSeconds) => `<!DOCTYPE html>
     try {
       if (cmd.type === 'play') player.playVideo();
       else if (cmd.type === 'pause') player.pauseVideo();
-      else if (cmd.type === 'seek') { loopSeekedAt = Date.now(); player.seekTo(cmd.time, true); tick(); }
+      else if (cmd.type === 'seek') { player.seekTo(cmd.time, true); tick(); }
       else if (cmd.type === 'rate') player.setPlaybackRate(cmd.rate);
-      else if (cmd.type === 'loop') {
-        loop = cmd.end > cmd.start ? { start: cmd.start, end: cmd.end } : null;
-        clearInterval(loopTimer);
-        if (loop) loopTimer = setInterval(checkLoop, 50);
-      }
+
     } catch (e) { post({ type: 'error', code: 'command' }); }
   };
   window.onYouTubeIframeAPIReady = function () {
@@ -110,10 +87,6 @@ const SongPlayer = forwardRef(({ videoId, startSeconds = 0, onReady, onTime, onS
         play: () => send({ type: 'play' }),
         pause: () => send({ type: 'pause' }),
         seek: (time) => send({ type: 'seek', time: Math.max(0, Number(time) || 0) }),
-        // Repeat [start, end) (video seconds) in the page itself; null stops.
-        setLoop: (range) => send(range
-            ? { type: 'loop', start: Math.max(0, Number(range.start) || 0), end: Number(range.end) || 0 }
-            : { type: 'loop', start: 0, end: 0 }),
         setRate: (rate) => send({ type: 'rate', rate }),
     }), [send]);
 
