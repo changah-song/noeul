@@ -30,10 +30,19 @@ const playerHtml = (videoId, startSeconds) => `<!DOCTYPE html>
   // waiting for the app to hear the time (4 a second) and answer.
   var loop = null;
   var loopTimer = null;
+  // After a jump back the player keeps reporting the old time for a moment;
+  // checks wait this long so one line end makes one jump, not a pile of them.
+  var loopSeekedAt = 0;
+  var LOOP_SEEK_SETTLE_MS = 600;
   var checkLoop = function () {
     if (!loop || !player || !player.getCurrentTime) return;
+    if (Date.now() - loopSeekedAt < LOOP_SEEK_SETTLE_MS) return;
     var t = player.getCurrentTime();
-    if (t >= loop.end - 0.05 || t < loop.start - 1) { player.seekTo(loop.start, true); tick(); }
+    if (t >= loop.end - 0.05 || t < loop.start - 1) {
+      loopSeekedAt = Date.now();
+      player.seekTo(loop.start, true);
+      tick();
+    }
   };
   var tick = function () {
     if (!player || !player.getCurrentTime) return;
@@ -44,7 +53,7 @@ const playerHtml = (videoId, startSeconds) => `<!DOCTYPE html>
     try {
       if (cmd.type === 'play') player.playVideo();
       else if (cmd.type === 'pause') player.pauseVideo();
-      else if (cmd.type === 'seek') { player.seekTo(cmd.time, true); tick(); }
+      else if (cmd.type === 'seek') { loopSeekedAt = Date.now(); player.seekTo(cmd.time, true); tick(); }
       else if (cmd.type === 'rate') player.setPlaybackRate(cmd.rate);
       else if (cmd.type === 'loop') {
         loop = cmd.end > cmd.start ? { start: cmd.start, end: cmd.end } : null;

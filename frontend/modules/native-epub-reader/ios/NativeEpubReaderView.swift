@@ -198,6 +198,50 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
       if pagedFocus != oldValue { pagedFocusChanged() }
     }
   }
+
+  // MARK: Song mode
+  // A song playing with timed lyrics: the line being sung is lit (the others
+  // dimmed by the scroll host's dim layer) and kept a third of the way down.
+  // After a scroll by hand the view waits a few seconds before following
+  // again, unless `follow` changes (the back / next buttons).
+  private var songLineEnabled = false
+  private var songLineBlockIds: [String] = []
+  private var songLineFollow = 0
+  private var songLastUserScroll: CFTimeInterval = 0
+  private let songResumeFollow: CFTimeInterval = 4
+
+  func setSongLine(_ line: [String: Any]) {
+    let enabled = !line.isEmpty
+    let ids = ((line["blockIds"] as? [Any]) ?? []).compactMap { $0 as? String }
+    let follow = (line["follow"] as? NSNumber)?.intValue ?? 0
+    let forced = follow != songLineFollow
+    let changed = ids != songLineBlockIds || enabled != songLineEnabled
+    songLineFollow = follow
+    songLineBlockIds = ids
+    songLineEnabled = enabled
+    if changed || forced { applySongLine(scroll: true, forced: forced) }
+  }
+
+  private func applySongLine(scroll: Bool, forced: Bool = false) {
+    guard mode == .continuous else { return }
+    guard songLineEnabled, let page = pages[safe: currentPage] else {
+      if mode != .focus { host.clearBeam() }
+      return
+    }
+    let ranges: [ReaderSourceRange] = page.items.compactMap { item in
+      guard item.layout.imageFrame == nil, songLineBlockIds.contains(item.layout.block.id) else { return nil }
+      return ReaderSourceRange(blockId: item.layout.block.id, range: NSRange(location: 0, length: item.layout.text.length))
+    }
+    let rects = host.probe.beamRects(ranges)
+    host.setSongBeam(lit: rects)
+    guard scroll, !rects.isEmpty else { return }
+    if forced { songLastUserScroll = 0 }
+    guard forced || CACurrentMediaTime() - songLastUserScroll >= songResumeFollow else { return }
+    let top = rects.map(\.minY).min() ?? 0
+    let bottom = rects.map(\.maxY).max() ?? top
+    let target = ((top + bottom) / 2 - host.viewportHeight / 3).rounded()
+    host.animateOffset(to: target, duration: 0.38)
+  }
   var tappedTerms: [Any] = [] {
     didSet {
       var next: [String: Double] = [:]
@@ -852,7 +896,8 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     let top = host.offset
     let bottom = top + host.viewportHeight
     let now = CACurrentMediaTime()
-    for item in page.items where item.layout.imageFrame == nil {
+    // A song line's translation isn't reading.
+    for item in page.items where item.layout.imageFrame == nil && !item.layout.block.isInert {
       let blockId = item.layout.block.id
       guard !blocksEmitted.contains(blockId) else { continue }
       let blockTop = host.textTop + item.y
@@ -1157,6 +1202,8 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     host.selection = selection
     host.marks = marks
     host.bind(page: page, textTop: verticalTextTop(), contentHeight: verticalContentHeight(page), target: mode == .focus ? nil : target)
+    // The lit song line, laid out again (the scroll stays where it was put).
+    if mode == .continuous { applySongLine(scroll: false) }
     guard mode == .focus else { return }
 
     rebuildFocusSentences()
@@ -1310,7 +1357,11 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
 
   func scrollHostDidScroll(_ host: ReaderScrollHost, userDriven: Bool, delta: CGFloat) {
     guard mode == .continuous else { return }
-    if userDriven { trackReadingTravel(delta) }
+    if userDriven {
+      trackReadingTravel(delta)
+      // Song mode stops following for a while.
+      songLastUserScroll = CACurrentMediaTime()
+    }
     scrollSettleWork?.cancel()
     let work = DispatchWorkItem { [weak self] in
       self?.creditContinuousExposure()

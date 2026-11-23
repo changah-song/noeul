@@ -181,6 +181,11 @@ public class NativeEpubReaderModule: Module {
       Prop("pagedFocus") { (view: NativeEpubReaderView, value: Bool?) in
         view.pagedFocus = value ?? false
       }
+      // Song mode: { blockIds: [...], follow: n } lights the line being sung
+      // and keeps it a third of the way down; an empty map turns it off.
+      Prop("songLine") { (view: NativeEpubReaderView, value: [String: Any]?) in
+        view.setSongLine(value ?? [:])
+      }
       Prop("interfaceStrings") { (view: NativeEpubReaderView, value: [String: Any]?) in
         view.interfaceStrings = value ?? [:]
       }

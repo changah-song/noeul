@@ -23,6 +23,8 @@ private let pullFullDistance: CGFloat = 120
 private let pullFollow: CGFloat = 72
 private let focusSwipeDistance: CGFloat = 28
 private let focusDimAlpha: CGFloat = 0.22
+// Song mode: the lines not being sung.
+private let songDimAlpha: CGFloat = 0.38
 
 private extension CGPath {
   static func rects(_ rects: [CGRect]) -> CGPath {
@@ -309,8 +311,26 @@ final class ReaderScrollHost: UIView, UIScrollViewDelegate {
 
   private var beamToken = UUID()
 
+  // Song mode: every line but the one being sung (`lit`, rects in content
+  // coordinates) dimmed, with the same layer as focus mode at the song's
+  // strength (the lines drawn at 0.38).
+  func setSongBeam(lit: [CGRect]) {
+    beamToken = UUID()
+    let bounds = CGRect(x: 0, y: 0, width: contentView.bounds.width, height: contentHeight)
+    let dim = CGMutablePath()
+    dim.addRect(bounds)
+    disjointRects(lit).forEach { dim.addRect($0) }
+    dimLayer.frame = bounds
+    dimLayer.fillColor = palette.background.withAlphaComponent(1 - songDimAlpha).cgColor
+    dimLayer.path = dim
+    dimLayer.isHidden = false
+    fadingOutFill.isHidden = true
+    fadingInFill.isHidden = true
+  }
+
   func clearBeam() {
     beamToken = UUID()
+    dimLayer.fillColor = palette.background.withAlphaComponent(1 - focusDimAlpha).cgColor
     [dimLayer, fadingOutFill, fadingInFill].forEach { $0.isHidden = true }
   }
 

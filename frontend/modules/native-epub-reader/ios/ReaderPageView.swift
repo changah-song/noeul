@@ -428,7 +428,8 @@ final class ReaderPageView: UIView {
     context.saveGState()
     context.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
     // Text without a color of its own (see attributedText) uses this.
-    context.setFillColor(palette.bodyText.cgColor)
+    // A song line's translation is in the muted ink.
+    context.setFillColor((item.layout.block.isInert ? palette.mutedText : palette.bodyText).cgColor)
     for index in item.lineRange {
       let line = item.layout.lines[index]
       context.textPosition = CGPoint(x: origin.x + line.x + offsetX, y: origin.y + item.lineTop(index) + line.ascent)
@@ -970,7 +971,9 @@ final class ReaderPageView: UIView {
   func wordHit(at point: CGPoint) -> ReaderWordHit? {
     guard let page else { return nil }
     let local = CGPoint(x: point.x - origin.x, y: point.y - origin.y)
-    for item in page.items where item.layout.imageFrame == nil {
+    // A song line's translation is never looked up: a tap there is a tap on
+    // blank space.
+    for item in page.items where item.layout.imageFrame == nil && !item.layout.block.isInert {
       guard local.y >= item.y - 24, local.y <= item.y + item.height + 24 else { continue }
       let size = item.layout.fontSize
       for index in item.lineRange {

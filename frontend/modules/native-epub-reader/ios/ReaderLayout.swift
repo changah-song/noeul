@@ -373,7 +373,10 @@ func layoutBlock(_ block: ReaderBlock, config: ReaderLayoutConfig) -> ReaderBloc
   // The line spacing a line would get below it, so a paragraph break is never
   // tighter than a line break (Android adds what StaticLayout drops).
   let natural = family == .serif ? (notoSerifAscent + notoSerifDescent) * size : (lines.first?.naturalHeight ?? size)
-  let lineExtra = block.isHeading ? 0 : max(0, (natural * (multiplier - 1)).rounded())
+  // `tightBottom` keeps the next block right under the last line (a song
+  // line's translation), so the line-height extra is left out.
+  let tightBottom = (style["tightBottom"] as? Bool) == true
+  let lineExtra = (block.isHeading || tightBottom) ? 0 : max(0, (natural * (multiplier - 1)).rounded())
   return ReaderBlockLayout(
     block: block, text: text, sentences: splitSentences(text), lines: lines, imageFrame: nil,
     splittable: !block.isHeading && block.tag != "figcaption",
