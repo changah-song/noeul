@@ -588,16 +588,6 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
         language: songLanguage,
     }), [song?.artist, song?.title, songLanguage, songUri, t]);
 
-    const isScrollMode = settings.readingMode === 'scroll';
-    const nativeRenderMode = focusMode ? 'focus' : (isScrollMode ? 'continuous' : 'paged');
-    const nativeSongManifest = useMemo(() => ({
-        sourceUri: songUri || 'song:unknown',
-        currentSpineIndex: 0,
-        currentSpineHref: 'lyrics',
-        currentSpinePath: 'lyrics',
-        renderMode: nativeRenderMode,
-        readerEdgeStateEnabled: false,
-    }), [nativeRenderMode, songUri]);
     // Focus mode is one line at a time, without its translation.
     const nativeLyricBlocks = useMemo(
         () => buildNativeLyricBlocks(lyricLines, focusMode ? null : lineTranslations),
@@ -861,6 +851,39 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
     }, []);
 
     const singAlong = playerOpen && videoStatus === 'ready' && hasTiming;
+
+    // ── The line being sung, lit in the native reader (Android) ─────────────
+    // The reader's own song mode (songLine) lights the line and keeps it in
+    // view, so the song page reads exactly like a book while the song plays.
+    // iOS still uses the JS sing-along list.
+    const nativeSingAlong = singAlong && Platform.OS === 'android';
+    const [sungLine, setSungLine] = useState(-1);
+    useEffect(() => {
+        if (!nativeSingAlong) return undefined;
+        return subscribeTime((time) => {
+            const next = activeLineIndex(lineTimes, time + lyricOffset);
+            setSungLine((current) => (current === next ? current : next));
+        });
+    }, [lineTimes, lyricOffset, nativeSingAlong, subscribeTime]);
+    const songLine = useMemo(() => {
+        if (!nativeSingAlong) return null;
+        const line = lyricLines[sungLine];
+        const blockIds = line ? [line.id, `${line.id}-translation`] : [];
+        return { blockIds, follow: followToken };
+    }, [followToken, lyricLines, nativeSingAlong, sungLine]);
+
+    const isScrollMode = settings.readingMode === 'scroll';
+    // While the song plays along with its lyrics the reader scrolls (the sung
+    // line is kept in view), whatever the page setting.
+    const nativeRenderMode = focusMode ? 'focus' : (isScrollMode || singAlong ? 'continuous' : 'paged');
+    const nativeSongManifest = useMemo(() => ({
+        sourceUri: songUri || 'song:unknown',
+        currentSpineIndex: 0,
+        currentSpineHref: 'lyrics',
+        currentSpinePath: 'lyrics',
+        renderMode: nativeRenderMode,
+        readerEdgeStateEnabled: false,
+    }), [nativeRenderMode, songUri]);
 
     const focusPanelOpen = focusMode && (!!highlightedWord || !!textSelection);
 
@@ -1289,7 +1312,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
             ) : null}
 
             <View style={chrome.reader}>
-                {singAlong ? (
+                {singAlong && !nativeSingAlong ? (
                     <SingAlongLyrics
                         lines={lyricLines}
                         times={lineTimes}
@@ -1321,6 +1344,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                         chapterWindow={[]}
                         restorePosition={SONG_RESTORE_POSITION}
                         renderMode={nativeRenderMode}
+                        songLine={songLine}
                         readerEdgeStateEnabled={false}
                         fontSize={settings.fontSize}
                         lineHeight={settings.lineSpacing}

@@ -190,6 +190,21 @@ describe('SongReader', () => {
     expect(JSON.stringify(tree.toJSON())).toContain('Line translations');
   });
 
+  it('plays a synced song in the native reader, with the sung line lit there', async () => {
+    const synced = {
+      ...song,
+      id: 's2',
+      video: { id: 'vid' },
+      syncedLyrics: '[00:01.00]사랑해\n[00:05.00]그리움',
+    };
+    await act(async () => tree.update(<SongReader song={synced} onClose={() => {}} />));
+    await flush();
+    expect(tree.root.findAllByType('NativeReader')).toHaveLength(1);
+    expect(reader().props.renderMode).toBe('continuous');
+    // Before the first line is sung nothing is lit.
+    expect(reader().props.songLine).toEqual({ blockIds: [], follow: 0 });
+  });
+
   it('opens the shared reader options menu', async () => {
     await pressByLabel(tree, 'Song options');
     const json = JSON.stringify(tree.toJSON());

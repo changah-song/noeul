@@ -156,6 +156,8 @@ export const sendSpokenRange = (viewTag, range) => (
     NativeModule?.setSpokenRange?.(viewTag, range || {}) ?? androidOnly()
 );
 
+const EMPTY_SONG_LINE = {};
+
 const NativeEpubReaderView = forwardRef(({
     bookManifest,
     chapterBlocks,
@@ -214,6 +216,11 @@ const NativeEpubReaderView = forwardRef(({
     // page turns with the voice (the focusNav / onFocusSentenceChange contract
     // of focus mode).
     pagedFocus = false,
+    // A song playing with timed lyrics: { blockIds, follow } lights the line
+    // being sung (its blocks; the rest are dimmed) and keeps it a third of
+    // the way down; a change of `follow` follows at once, even right after a
+    // scroll by hand. Null: not a song playing. Android only for now.
+    songLine = null,
     onPageChange,
     onChapterEnd,
     onChapterStart,
@@ -381,6 +388,7 @@ const NativeEpubReaderView = forwardRef(({
             chromeInsets={chromeInsets || EMPTY_CHROME_INSETS}
             fullscreen={!!fullscreen}
             pagedFocus={!!pagedFocus}
+            songLine={songLine || EMPTY_SONG_LINE}
             onPageChange={handlePageChange}
             onChapterEnd={handleChapterEnd}
             onChapterStart={handleChapterStart}
