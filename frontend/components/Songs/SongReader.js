@@ -66,7 +66,6 @@ import { deriveCandidateReason, pickExampleSentence } from '../../services/wordC
 import { saveWordCandidate } from '../../services/saveWordCandidate';
 import { selectExposureCredits } from '../../services/readerExposure';
 import { createReadingPaceTracker } from '../../services/readingPace';
-import { lookupLayerPlacement } from '../../services/readerSelection';
 import {
     DEFAULT_SONG_READER_SETTINGS,
     normalizeReaderSettings,
@@ -311,7 +310,6 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
         highlightedWordContext,
         isNativeSelection,
         textSelection,
-        lookupPlacement,
         clearSelectionToken,
         dismissLookup,
         openTextSelection,
@@ -902,6 +900,20 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
         hard: colors.readerLevelUnderlineHard,
         ink: colors.readerBodyInk,
     }), [colors]);
+    // A saved word's shade strength (1 until it starts fading), 0 if not saved.
+    const strengthByNorm = useMemo(() => {
+        const map = new Map();
+        Object.entries(highlightStrengths || {}).forEach(([term, strength]) => {
+            map.set(normalizeForMatch(term), strength);
+        });
+        return map;
+    }, [highlightStrengths]);
+    const savedStrength = useCallback((text) => {
+        const key = normalizeForMatch(text);
+        if (!songHighlightSet.has(key)) return 0;
+        return strengthByNorm.get(key) ?? 1;
+    }, [songHighlightSet, strengthByNorm]);
+
     const tintWord = useCallback(
         (text) => tintLyricWord(text, levelLookup, tintColors, tappedSet),
         [levelLookup, tappedSet, tintColors]
@@ -1110,7 +1122,8 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
         onPanResponderTerminationRequest: () => true,
     }), [dismissLookup]);
 
-    const placement = lookupLayerPlacement(lookupPlacement, focusMode);
+    // The panel always comes up from the bottom, as in the book reader.
+    const placement = 'bottom';
     const songTitleLabel = localizeStoredPlaceholder(song?.title, t) || t('song.untitled');
     const songArtistLabel = localizeStoredPlaceholder(song?.artist, t) || t('common.unknownArtist');
     const useNativeLyricReader = Platform.OS === 'android';
@@ -1285,7 +1298,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                         offset={lyricOffset}
                         fontSize={settings.fontSize}
                         lineHeight={lyricLineHeight}
-                        isWordSaved={(text) => songHighlightSet.has(normalizeForMatch(text))}
+                        savedStrength={savedStrength}
                         lookupOpen={!isNativeSelection && !!highlightedWord}
                         onWordPress={handleWordTap}
                         onBackgroundPress={dismissLookup}

@@ -75,7 +75,9 @@ const SingAlongLyrics = ({
     offset = 0,
     fontSize,
     lineHeight,
-    isWordSaved,
+    // (text) → the saved word's shade strength (1, fading toward 0 as it is
+    // passed without a lookup), 0 when not saved.
+    savedStrength,
     // True while the definition panel is open on a tapped word: that word
     // (only the one tapped, not its other copies) gets the ink box.
     lookupOpen = false,
@@ -284,20 +286,52 @@ const SingAlongLyrics = ({
                                         <Text
                                             key={segment.id}
                                             onPress={onBackgroundPress}
-                                            style={[textStyle, lyricStyles.lyricWord, selected && selectedStyle(colors)]}
+                                            style={[textStyle, lyricStyles.lyricWord]}
                                         >
                                             {segment.text}
                                         </Text>
                                     );
                                 }
-                                const saved = isWordSaved(segment.text);
+                                const strength = savedStrength ? savedStrength(segment.text) : 0;
                                 const tapped = lookupOpen && tappedKey === key;
-                                const pieces = saved || tapped || !tintWord ? null : tintWord(segment.text);
+                                const pieces = tapped || !tintWord ? null : tintWord(segment.text);
+                                const marks = wordMarks(fontSize, lineHeight);
                                 return (
-                                    <Text
+                                    <View
                                         key={segment.id}
-                                        suppressHighlighting
                                         onLayout={(event) => wordLayoutsRef.current.set(flatIndex, event.nativeEvent.layout)}
+                                    >
+                                    {/* The book reader's marks, drawn behind the word:
+                                        a saved word's light ink shade and underline,
+                                        the tapped word's solid ink box (rounded, snug
+                                        to the letters), the selection tint. */}
+                                    {strength > 0.01 && !tapped ? (
+                                        <>
+                                            <View
+                                                pointerEvents="none"
+                                                style={[styles.mark, marks.box, {
+                                                    backgroundColor: inkWithAlpha(colors.readerSavedWordSurfaceBg, SAVED_SHADE_ALPHA * strength),
+                                                }]}
+                                            />
+                                            <View
+                                                pointerEvents="none"
+                                                style={[styles.mark, marks.underline, {
+                                                    backgroundColor: inkWithAlpha(colors.readerSavedWordSurfaceBg, SAVED_UNDERLINE_ALPHA * strength),
+                                                }]}
+                                            />
+                                        </>
+                                    ) : null}
+                                    {tapped ? (
+                                        <View
+                                            pointerEvents="none"
+                                            style={[styles.mark, marks.box, { backgroundColor: colors.readerTappedWordBg }]}
+                                        />
+                                    ) : null}
+                                    {selected ? (
+                                        <View pointerEvents="none" style={[styles.mark, marks.box, selectedStyle(colors)]} />
+                                    ) : null}
+                                    <Text
+                                        suppressHighlighting
                                         onPress={() => {
                                             const again = lookupOpen && tappedKey === key;
                                             if (!lookupOpen) setTappedKey(key);
@@ -307,13 +341,11 @@ const SingAlongLyrics = ({
                                         onPressOut={handleWordPressOut}
                                         style={[
                                             textStyle,
-                                            // Explicit plain colours first: on Android a
-                                            // Text keeps an old background when its
-                                            // style just drops the property.
+                                            // Plain colours set explicitly: on Android a
+                                            // Text keeps an old colour when its style
+                                            // just drops the property.
                                             lyricStyles.lyricWord,
-                                            saved && lyricStyles.savedLyricWord,
-                                            tapped && lyricStyles.activeLyricWord,
-                                            selected && selectedStyle(colors),
+                                            tapped && { color: colors.readerTappedWordText },
                                         ]}
                                     >
                                         {pieces && pieces.some((piece) => piece.color)
@@ -323,6 +355,7 @@ const SingAlongLyrics = ({
                                             ) : piece.text))
                                             : segment.text}
                                     </Text>
+                                    </View>
                                 );
                             })}
                         </View>
@@ -360,6 +393,9 @@ const styles = StyleSheet.create({
         paddingTop: 24,
         paddingHorizontal: 24,
     },
+    mark: {
+        position: 'absolute',
+    },
     // A lyric line: its words wrapped and centred.
     row: {
         flexDirection: 'row',
@@ -371,6 +407,32 @@ const styles = StyleSheet.create({
         opacity: 0.38,
     },
 });
+
+// The book reader's saved-word marks (EpubPageView.kt): a shade of the ink
+// at this opacity, and an ink underline at this one, both times the word's
+// fade strength.
+const SAVED_SHADE_ALPHA = 0.16;
+const SAVED_UNDERLINE_ALPHA = 0.85;
+
+// '#rrggbb' (or '#rrggbbaa') with its alpha set to `alpha` (0–1).
+export const inkWithAlpha = (color, alpha) => {
+    const match = /^#([0-9a-f]{6})(?:[0-9a-f]{2})?$/i.exec(String(color || ''));
+    if (!match) return color;
+    const a = Math.round(Math.max(0, Math.min(1, alpha)) * 255).toString(16).padStart(2, '0');
+    return `#${match[1]}${a}`;
+};
+
+// Where the marks sit in a word's line box: snug to the letters (the line's
+// extra leading is split above and below the glyphs), rounded 3, with the
+// underline 2 thick just under the baseline — as the book reader draws them.
+const wordMarks = (fontSize, lineHeight) => {
+    const glyphs = fontSize * 1.18;
+    const top = Math.max(0, (lineHeight - glyphs) / 2) - 1;
+    return {
+        box: { top, height: glyphs + 3, left: -1, right: -1, borderRadius: 3 },
+        underline: { top: top + glyphs * 0.86, height: 2, left: 0, right: 0, borderRadius: 1 },
+    };
+};
 
 // The book reader's text-selection tint.
 const selectedStyle = (colors) => ({ backgroundColor: colors.readerTextSelectionHighlight });
