@@ -376,7 +376,11 @@ func layoutBlock(_ block: ReaderBlock, config: ReaderLayoutConfig) -> ReaderBloc
   // `tightBottom` keeps the next block right under the last line (a song
   // line's translation), so the line-height extra is left out.
   let tightBottom = (style["tightBottom"] as? Bool) == true
-  let lineExtra = (block.isHeading || tightBottom) ? 0 : max(0, (natural * (multiplier - 1)).rounded())
+  // (Android's text layout still pads the line by the font's extra room, so
+  // a translation keeps a hair of space under the line; this matches it.)
+  let lineExtra = block.isHeading ? 0
+    : tightBottom ? (size * 0.18).rounded()
+    : max(0, (natural * (multiplier - 1)).rounded())
   return ReaderBlockLayout(
     block: block, text: text, sentences: splitSentences(text), lines: lines, imageFrame: nil,
     splittable: !block.isHeading && block.tag != "figcaption",
@@ -395,6 +399,8 @@ private func normalizeParagraphGaps(_ layouts: [ReaderBlockLayout]) {
     let current = layouts[index]
     let next = layouts[index + 1]
     guard current.block.tag == "p", next.block.tag == "p", let last = current.lines.last else { continue }
+    // A song line's translation hangs right under its line (tightBottom).
+    if (current.block.style["tightBottom"] as? Bool) == true || next.block.isInert { continue }
     guard current.lineMultiplier > 1 || next.lineMultiplier > 1 else { continue }
     let lineGap = last.naturalHeight * (current.lineMultiplier - 1)
     let gap = current.marginBottom + next.marginTop
