@@ -12,6 +12,20 @@ import { activeLineIndex } from '../../services/lrc';
 // renders four times a second, not the whole song reader.
 
 const RESUME_FOLLOW_MS = 4000;
+// A line's translation is drawn this much smaller than the lyrics.
+export const TRANSLATION_SCALE = 0.68;
+
+// A line's translation text style: smaller, and pulled up over the lyric
+// line's extra leading so it sits right under the words, not a line below.
+export const translationTextStyle = (fontSize, lineHeight) => {
+    const size = Math.max(12, Math.round(fontSize * TRANSLATION_SCALE));
+    const leading = Math.max(0, lineHeight - fontSize * 1.25);
+    return {
+        fontSize: size,
+        lineHeight: Math.round(size * 1.3),
+        marginTop: -Math.round(leading / 2),
+    };
+};
 
 const SingAlongLyrics = ({
     lines,
@@ -29,7 +43,7 @@ const SingAlongLyrics = ({
     colors,
     styles: lyricStyles,
 }) => {
-    const translationSize = Math.max(12, Math.round(fontSize * 0.68));
+    const translationStyle = translationTextStyle(fontSize, lineHeight);
     const [active, setActive] = useState(-1);
     const scrollRef = useRef(null);
     const viewHeightRef = useRef(0);
@@ -111,7 +125,7 @@ const SingAlongLyrics = ({
                                 onPress={timed ? () => onLinePress(index) : undefined}
                                 style={[
                                     lyricStyles.lineTranslation,
-                                    { fontSize: translationSize, lineHeight: Math.round(translationSize * 1.45) },
+                                    translationStyle,
                                     !isActive && styles.dimmed,
                                 ]}
                             >

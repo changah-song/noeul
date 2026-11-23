@@ -57,7 +57,7 @@ import { findSongVideo } from '../../services/api/songVideo';
 import { chapterTranslations } from '../../services/chapterTranslations';
 import { activeLineIndex, lineEndTime, lyricLineTimes, parseLrc } from '../../services/lrc';
 import SongPlayer, { PLAYER_STATE } from './SongPlayer';
-import SingAlongLyrics from './SingAlongLyrics';
+import SingAlongLyrics, { TRANSLATION_SCALE, translationTextStyle } from './SingAlongLyrics';
 import { tapCommit, tapUndo } from '../../services/haptics';
 import { requestUserDataSync } from '../../services/userDataSyncQueue';
 import { deriveCandidateReason, pickExampleSentence } from '../../services/wordCandidates';
@@ -87,8 +87,6 @@ const SONG_SHEET_FEATURES = {
     hideSavedAnnotations: false,
     lineTranslations: true,
 };
-// A line's translation is drawn this much smaller than the lyrics.
-const TRANSLATION_SCALE = 0.68;
 
 // Word characters we treat as tappable/lookup-able across supported targets:
 // Hangul (jamo + syllables), Latin letters, digits, and CJK ideographs
@@ -176,8 +174,11 @@ const buildNativeLyricBlocks = (lyricLines, translations) => lyricLines.flatMap(
         styleTokens: {
             textAlign: 'center',
             marginTop: 0,
-            marginBottom: line.isBlank ? 18 : (translation ? 2 : 10),
+            marginBottom: line.isBlank ? 18 : (translation ? 0 : 10),
             fontFamily: 'serif',
+            // The translation sits right under the line: no reader line-height
+            // leading below it.
+            ...(translation ? { tightBottom: true } : null),
         },
         spans: [{ text }],
     }];
@@ -189,8 +190,8 @@ const buildNativeLyricBlocks = (lyricLines, translations) => lyricLines.flatMap(
             text: translation,
             styleTokens: {
                 textAlign: 'center',
-                marginTop: 0,
-                marginBottom: 14,
+                marginTop: -2,
+                marginBottom: 16,
                 fontScale: TRANSLATION_SCALE,
                 lineHeight: 1.15,
                 fontFamily: 'sans-serif',
@@ -1289,10 +1290,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                                 <Text
                                     style={[
                                         styles.lineTranslation,
-                                        {
-                                            fontSize: Math.max(12, Math.round(settings.fontSize * TRANSLATION_SCALE)),
-                                            lineHeight: Math.round(Math.max(12, settings.fontSize * TRANSLATION_SCALE) * 1.45),
-                                        },
+                                        translationTextStyle(settings.fontSize, lyricLineHeight),
                                     ]}
                                 >
                                     {translation}
@@ -1561,11 +1559,11 @@ const createStyles = (colors) => StyleSheet.create({
         width: '100%',
     },
     lyricLineTranslated: {
-        marginBottom: 2,
+        marginBottom: 0,
     },
     lineTranslation: {
         width: '100%',
-        marginBottom: 14,
+        marginBottom: 16,
         fontFamily: fontFamilies.sansRegular ?? fontFamilies.sansMedium,
         color: colors.readerMutedInk,
         textAlign: 'center',
