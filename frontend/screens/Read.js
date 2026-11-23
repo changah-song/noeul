@@ -1878,8 +1878,8 @@ const Read = ({
     // ── The long-press AI explanation ────────────────────────────────────────
     const renderSelectionExplain = () => (
         <SelectionExplainPanel
-            text={textSelection.text}
-            sentence={textSelection.sentence}
+            text={textSelection?.text ?? ''}
+            sentence={textSelection?.sentence ?? ''}
             language={activeBookLanguage}
             interfaceLanguage={interfaceLanguage}
             bottomInset={focusMode ? navigationButtonsInset(insets.bottom) : insets.bottom}
@@ -5634,7 +5634,8 @@ const Read = ({
                         onLookupResolved={handleLookupResolved}
                         translationVisualState={translationBannerVisualState}
                     />
-                    {textSelection ? renderSelectionExplain() : null}
+                    {/* Always mounted, so it can slide away when closed. */}
+                    {renderSelectionExplain()}
                 </View>
             </View>
 

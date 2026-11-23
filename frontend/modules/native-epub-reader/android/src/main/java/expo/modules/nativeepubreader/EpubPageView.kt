@@ -1460,8 +1460,10 @@ class EpubPageView(context: Context) : View(context) {
     drawBlockContent(canvas, block, layout)
     // Faux medium weight: a hairline-offset second pass thickens the focused
     // glyphs slightly, standing in for the design's 400 → 500 weight bump.
+    // Drawn with the word colours (drawBlockText), not the plain layout: a
+    // plain pass would lay body ink over the coloured words and darken them.
     canvas.translate(FOCUS_EMPHASIS_OFFSET_DP * resources.displayMetrics.density, 0f)
-    layout.draw(canvas)
+    drawBlockText(canvas, block, layout)
     canvas.translate(-FOCUS_EMPHASIS_OFFSET_DP * resources.displayMetrics.density, 0f)
     canvas.restoreToCount(overlayLayer)
     canvas.restoreToCount(clipSave)
@@ -2229,6 +2231,10 @@ class EpubPageView(context: Context) : View(context) {
       if (tapY < rendered.y || tapY > blockBottom) {
         return@forEach
       }
+      // A translation line: a tap there is a tap on blank space.
+      if (block.inert) {
+        return null
+      }
 
       if (tapX < rendered.x || tapX > rendered.x + rendered.width) {
         Log.d(PAGE_VIEW_TAG, "word hit no-hit: reason=margin block=${block.blockId}")
@@ -2393,7 +2399,7 @@ class EpubPageView(context: Context) : View(context) {
       val block = rendered.block
       val blockBottom = rendered.y + layout.height
 
-      if (tapY < rendered.y || tapY > blockBottom || layout.lineCount <= 0) {
+      if (tapY < rendered.y || tapY > blockBottom || layout.lineCount <= 0 || block.inert) {
         return@forEachIndexed
       }
 

@@ -3,18 +3,36 @@ import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { activeLineIndex } from '../../services/lrc';
 
 // The lyrics while the song plays: the line being sung is lit and kept a
-// third of the way down; the others are dimmed. A tap on a word looks it up
-// (as in the reader); a tap elsewhere on a line plays the song from there.
+// third of the way down; the others are dimmed. Words are coloured as in the
+// book reader (services/lyricTint.js). A tap on a word looks it up and a long
+// press explains it in its line (the AI explanation), as in the reader. Moving
+// between lines is the player's back / next buttons; a row tap does nothing.
 // After the reader scrolls by hand the view stops following for a few seconds.
+// A line's translation, when there is one, sits under it in the muted ink.
 //
 // The time comes through `subscribeTime` instead of a prop so only this list
 // renders four times a second, not the whole song reader.
 
 const RESUME_FOLLOW_MS = 4000;
+// A line's translation is drawn this much smaller than the lyrics.
+export const TRANSLATION_SCALE = 0.68;
+
+// A line's translation text style: smaller, and pulled up over the lyric
+// line's extra leading so it sits right under the words, not a line below.
+export const translationTextStyle = (fontSize, lineHeight) => {
+    const size = Math.max(12, Math.round(fontSize * TRANSLATION_SCALE));
+    const leading = Math.max(0, lineHeight - fontSize * 1.25);
+    return {
+        fontSize: size,
+        lineHeight: Math.round(size * 1.3),
+        marginTop: -Math.round(leading / 2),
+    };
+};
 
 const SingAlongLyrics = ({
     lines,
     times,
+    translations,
     subscribeTime,
     offset = 0,
     fontSize,
@@ -22,11 +40,18 @@ const SingAlongLyrics = ({
     isWordSaved,
     activeWord,
     onWordPress,
-    onLinePress,
+    onWordLongPress,
+    // (text) → [{ text, color? }]: the word in pieces, its level colour on
+    // the part the level term covers.
+    tintWord,
+    // Bumped when the reader jumps to a line (the back / next buttons): the
+    // view follows again at once, even right after a scroll by hand.
+    followToken = 0,
     bottomPadding = 0,
     colors,
     styles: lyricStyles,
 }) => {
+    const translationStyle = translationTextStyle(fontSize, lineHeight);
     const [active, setActive] = useState(-1);
     const scrollRef = useRef(null);
     const viewHeightRef = useRef(0);
@@ -51,6 +76,14 @@ const SingAlongLyrics = ({
         follow(active);
     }, [active, follow]);
 
+    const activeRef = useRef(active);
+    activeRef.current = active;
+    useEffect(() => {
+        if (!followToken) return;
+        userScrolledAtRef.current = 0;
+        if (activeRef.current >= 0) follow(activeRef.current);
+    }, [follow, followToken]);
+
     return (
         <ScrollView
             ref={scrollRef}
@@ -64,7 +97,7 @@ const SingAlongLyrics = ({
         >
             {lines.map((line, index) => {
                 const isActive = index === active;
-                const timed = times[index] != null;
+                const translation = line.isBlank ? '' : translations?.get(line.text.trim());
                 return (
                     <View
                         key={line.id}
@@ -72,7 +105,6 @@ const SingAlongLyrics = ({
                     >
                         <Text
                             suppressHighlighting
-                            onPress={timed ? () => onLinePress(index) : undefined}
                             style={[
                                 lyricStyles.lyricLine,
                                 { fontSize, lineHeight },
@@ -82,25 +114,46 @@ const SingAlongLyrics = ({
                             ]}
                         >
                             {line.isBlank ? ' ' : line.segments.map((segment) => {
-                                const saved = segment.isWord && isWordSaved(segment.text);
-                                const tapped = segment.isWord && activeWord(segment.text);
+                                if (!segment.isWord) {
+                                    return <Text key={segment.id}>{segment.text}</Text>;
+                                }
+                                const saved = isWordSaved(segment.text);
+                                const tapped = activeWord(segment.text);
+                                const pieces = saved || tapped || !tintWord ? null : tintWord(segment.text);
+                                const word = { text: segment.text, sentence: line.text };
                                 return (
                                     <Text
                                         key={segment.id}
                                         suppressHighlighting
-                                        onPress={segment.isWord
-                                            ? () => onWordPress({ text: segment.text, sentence: line.text })
-                                            : undefined}
+                                        onPress={() => onWordPress(word)}
+                                        onLongPress={onWordLongPress ? () => onWordLongPress(word) : undefined}
                                         style={[
                                             saved && lyricStyles.savedLyricWord,
                                             tapped && lyricStyles.activeLyricWord,
                                         ]}
                                     >
-                                        {segment.text}
+                                        {pieces && pieces.some((piece) => piece.color)
+                                            ? pieces.map((piece, pieceIndex) => (piece.color ? (
+                                                // eslint-disable-next-line react/no-array-index-key
+                                                <Text key={pieceIndex} style={{ color: piece.color }}>{piece.text}</Text>
+                                            ) : piece.text))
+                                            : segment.text}
                                     </Text>
                                 );
                             })}
                         </Text>
+                        {translation ? (
+                            <Text
+                                suppressHighlighting
+                                style={[
+                                    lyricStyles.lineTranslation,
+                                    translationStyle,
+                                    !isActive && styles.dimmed,
+                                ]}
+                            >
+                                {translation}
+                            </Text>
+                        ) : null}
                     </View>
                 );
             })}

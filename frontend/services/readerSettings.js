@@ -42,6 +42,8 @@ export const DEFAULT_BOOK_READER_SETTINGS = {
     readingMode: 'paged',
     levelMarkStyle: 'underline',
     pinyinAnnotations: false,
+    // Each line's translation under it (the song reader only).
+    lineTranslations: false,
 };
 
 // Lyrics are short centered lines, so they read better a little larger and
@@ -51,6 +53,7 @@ export const DEFAULT_SONG_READER_SETTINGS = {
     fontSize: 22,
     lineSpacing: 1.85,
     readingMode: 'scroll',
+    lineTranslations: true,
 };
 
 export const clampNumber = (value, min, max, fallback = min) => {
@@ -111,6 +114,9 @@ export const normalizeReaderSettings = (settings, defaults = DEFAULT_BOOK_READER
         pinyinAnnotations: typeof source.pinyinAnnotations === 'boolean'
             ? source.pinyinAnnotations
             : defaults.pinyinAnnotations,
+        lineTranslations: typeof source.lineTranslations === 'boolean'
+            ? source.lineTranslations
+            : Boolean(defaults.lineTranslations),
     };
 };
 
