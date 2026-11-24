@@ -58,10 +58,11 @@ const CLIP_COPY = {
 };
 
 const MORE = [
-    { key: 'Focus', Icon: MaterialCommunityIcons, icon: 'image-filter-center-focus' },
-    { key: 'Songs', Icon: Feather, icon: 'music' },
+    { key: 'Fullscreen', Icon: MaterialCommunityIcons, icon: 'fullscreen' },
+    { key: 'Audio', Icon: Feather, icon: 'headphones' },
     { key: 'Bookmark', Icon: MaterialIcons, icon: 'bookmark-border' },
     { key: 'Jump', Icon: MaterialCommunityIcons, icon: 'gesture-swipe-horizontal' },
+    { key: 'Settings', Icon: Feather, icon: 'menu' },
     { key: 'Learn', Icon: MaterialCommunityIcons, icon: 'cards-outline' },
     { key: 'Goal', Icon: MaterialCommunityIcons, icon: 'circle-half-full' },
 ];
