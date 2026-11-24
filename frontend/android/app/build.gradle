@@ -100,7 +100,7 @@ android {
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
-        versionName "1.3.0"
+        versionName "1.4.0"
         // -PappIdSuffix=.dev builds a copy that installs next to the Play
         // Store build (which is signed with a different key) instead of over it.
         if (project.hasProperty('appIdSuffix')) {
