@@ -984,7 +984,6 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
 
     // ── Song actions ─────────────────────────────────────────────────────────
     const openEditModal = useCallback(() => {
-        setIsMenuVisible(false);
         setEditDraft(makeSongDraft(song));
         setIsEditModalVisible(true);
     }, [song]);
@@ -1014,7 +1013,6 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
     }, [editDraft.artist, editDraft.lyrics, editDraft.title, onSongUpdate, t]);
 
     const confirmDeleteSong = useCallback(() => {
-        setIsMenuVisible(false);
         Alert.alert(
             t('song.deleteTitle'),
             t('song.deleteBody', { title: localizeStoredPlaceholder(song?.title, t) || t('song.untitled') }),
@@ -1035,10 +1033,8 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
             key: 'saved',
             label: t('read.savedTab', { count: songSavedWords.length }),
             icon: <MaterialCommunityIcons name="cards-outline" size={21} color={colors.readerBodyInk} />,
-            onPress: () => {
-                setIsMenuVisible(false);
-                openSavedPanel();
-            },
+            // The sheet closes itself and runs this once it is gone.
+            onPress: () => openSavedPanel(),
         },
         {
             key: 'edit',

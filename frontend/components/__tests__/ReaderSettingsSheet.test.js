@@ -88,7 +88,8 @@ describe('ReaderSettingsSheet', () => {
     expect(tree.root.findAllByProps({ testID: 'reader-settings-tab-focus' })).toHaveLength(0);
 
     await press(tree, 'Checkpoints');
-    expect(props.actions[0].onPress).toHaveBeenCalled();
+    // The row closes the sheet; its action runs once the sheet is gone.
+    expect(props.onClose).toHaveBeenCalled();
     await act(async () => tree.unmount());
   });
 
@@ -203,6 +204,68 @@ describe('ReaderSettingsSheet', () => {
       await new Promise((resolve) => setTimeout(resolve, 350));
     });
     expect(tree.toJSON()).toBeNull();
+    await act(async () => tree.unmount());
+  });
+  // Presenting Edit lyrics (a Modal) or an alert while the sheet's own Modal
+  // is still dismissing never shows it on iOS and leaves the app ignoring
+  // touches, so an action row waits for the sheet to be gone.
+  const hideSheet = async (tree, props) => {
+    await act(async () => {
+      tree.update(<ReaderSettingsSheet {...props} visible={false} />);
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 350));
+    });
+  };
+
+  it('runs an action row only after the sheet has closed (Android)', async () => {
+    const { tree, props } = await renderSheet();
+    await press(tree, 'Checkpoints');
+    expect(props.onClose).toHaveBeenCalledTimes(1);
+    expect(props.actions[0].onPress).not.toHaveBeenCalled();
+
+    await hideSheet(tree, props);
+    expect(props.actions[0].onPress).toHaveBeenCalledTimes(1);
+    await act(async () => tree.unmount());
+  });
+
+  it('on iOS waits for the Modal to report it was dismissed', async () => {
+    const { Platform, Modal } = require('react-native');
+    Platform.OS = 'ios';
+    try {
+      const { tree, props } = await renderSheet();
+      await press(tree, 'Checkpoints');
+      await hideSheet(tree, props);
+      expect(props.actions[0].onPress).not.toHaveBeenCalled();
+
+      await act(async () => {
+        tree.root.findByType(Modal).props.onDismiss();
+      });
+      expect(props.actions[0].onPress).toHaveBeenCalledTimes(1);
+      // The late fallback does not run it a second time.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 700));
+      });
+      expect(props.actions[0].onPress).toHaveBeenCalledTimes(1);
+      await act(async () => tree.unmount());
+    } finally {
+      Platform.OS = 'android';
+    }
+  });
+
+  it('drops a pending action when the sheet opens again first', async () => {
+    const { tree, props } = await renderSheet();
+    await press(tree, 'Checkpoints');
+    await act(async () => {
+      tree.update(<ReaderSettingsSheet {...props} visible={false} />);
+    });
+    await act(async () => {
+      tree.update(<ReaderSettingsSheet {...props} visible />);
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 350));
+    });
+    expect(props.actions[0].onPress).not.toHaveBeenCalled();
     await act(async () => tree.unmount());
   });
 });

@@ -4257,10 +4257,8 @@ const Read = ({
         key: 'saved',
         label: t('read.savedTab', { count: bookSavedWords.length }),
         icon: <MaterialCommunityIcons name="cards-outline" size={21} color={themeColors.readerBodyInk} />,
-        onPress: () => {
-            setShowMenu(false);
-            openSavedPanel('saved');
-        },
+        // The sheet closes itself and runs this once it is gone.
+        onPress: () => openSavedPanel('saved'),
     }, {
         key: 'checkpoints',
         label: t('read.checkpoints'),

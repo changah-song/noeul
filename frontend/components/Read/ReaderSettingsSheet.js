@@ -4,6 +4,7 @@ import {
     Animated,
     Easing,
     Modal,
+    Platform,
     Pressable,
     StyleSheet,
     Text,
@@ -60,6 +61,10 @@ const LINE_SPACING_MIN = READER_LINE_SPACING_STEPS[0].value;
 const LINE_SPACING_MAX = READER_LINE_SPACING_STEPS[READER_LINE_SPACING_STEPS.length - 1].value;
 const nearestLineSpacing = (value) => READER_LINE_SPACING_STEPS[nearestLineSpacingIndex(value)].value;
 
+// How long an action row waits for iOS to report the sheet dismissed before
+// running anyway (a dismissal without animation takes a frame or two).
+const IOS_DISMISS_FALLBACK_MS = 600;
+
 const scopeOrDefault = (value, fallback) => (ANNOTATION_SCOPES.includes(value) ? value : fallback);
 
 /**
@@ -81,6 +86,11 @@ const scopeOrDefault = (value, fallback) => (ANNOTATION_SCOPES.includes(value) ?
  *
  * Focus mode has nothing to set (one sentence, swiped), and the sentence
  * translation bar is always on.
+ *
+ * An action row closes the sheet and runs its onPress only once the sheet's
+ * Modal is gone (iOS: its onDismiss). On iOS a Modal (Edit lyrics) or alert
+ * presented while this one is still dismissing never appears, and leaves an
+ * invisible layer over the app that swallows every touch.
  *
  * `settings` is the raw stored object; values are clamped here with the
  * shared helpers in services/readerSettings so the sheet never shows an
@@ -142,8 +152,36 @@ const ReaderSettingsSheet = ({
     const [mounted, setMounted] = useState(visible);
     const slideAnim = useRef(new Animated.Value(0)).current;
 
+    // The action row tapped, waiting for the sheet to be fully gone.
+    const pendingActionRef = useRef(null);
+    const runPendingAction = useCallback(() => {
+        const action = pendingActionRef.current;
+        pendingActionRef.current = null;
+        action?.();
+    }, []);
+    const pressAction = useCallback((action) => {
+        if (typeof action?.onPress !== 'function') return;
+        pendingActionRef.current = action.onPress;
+        onClose?.();
+    }, [onClose]);
+
+    // iOS reports the dismissal through the Modal's onDismiss (with a late
+    // fallback so a tapped row is never lost); Android shows the next dialog
+    // fine as soon as this one is unmounted.
+    useEffect(() => {
+        if (mounted || !pendingActionRef.current) return undefined;
+        if (Platform.OS !== 'ios') {
+            runPendingAction();
+            return undefined;
+        }
+        const fallback = setTimeout(runPendingAction, IOS_DISMISS_FALLBACK_MS);
+        return () => clearTimeout(fallback);
+    }, [mounted, runPendingAction]);
+
     useEffect(() => {
         if (visible) {
+            // Opened again before the last close finished: drop that action.
+            pendingActionRef.current = null;
             setMounted(true);
             Animated.timing(slideAnim, {
                 toValue: 1,
@@ -175,7 +213,17 @@ const ReaderSettingsSheet = ({
     );
 
     if (!mounted) {
-        return null;
+        // Still a Modal (now hidden), so iOS reports when it is dismissed.
+        return (
+            <Modal
+                visible={false}
+                transparent
+                animationType="none"
+                onRequestClose={onClose}
+                onDismiss={runPendingAction}
+                statusBarTranslucent
+            />
+        );
     }
 
     const source = settings && typeof settings === 'object' ? settings : {};
@@ -447,7 +495,14 @@ const ReaderSettingsSheet = ({
     };
 
     return (
-        <Modal visible transparent animationType="none" onRequestClose={onClose} statusBarTranslucent>
+        <Modal
+            visible
+            transparent
+            animationType="none"
+            onRequestClose={onClose}
+            onDismiss={runPendingAction}
+            statusBarTranslucent
+        >
             <View style={styles.overlay}>
                 <Animated.View pointerEvents="none" style={[styles.scrim, { opacity: slideAnim }]} />
                 <Pressable
@@ -475,7 +530,7 @@ const ReaderSettingsSheet = ({
                                     <TouchableOpacity
                                         key={action.key}
                                         style={styles.actionRow}
-                                        onPress={action.onPress}
+                                        onPress={() => pressAction(action)}
                                         activeOpacity={0.7}
                                         accessibilityRole="button"
                                         accessibilityLabel={action.accessibilityLabel ?? action.label}
