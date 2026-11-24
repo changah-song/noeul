@@ -57,6 +57,20 @@ def banner(c, w, h, s=1.0):
             + phone('reader.png', S(2290), S(260), S(450), 6, 2))
     return page(w, h, body)
 
+def header(c, w=3840, h=1646):
+    # App Store product page header (21:9). The store crops the sides on
+    # narrower screens, so the copy sits in the middle with phones either side.
+    pw = 500
+    body = (f'<div class="orb" style="width:1700px;height:1700px;right:-300px;top:-900px"></div>'
+            f'<div style="position:absolute;left:{(w - 1300) // 2}px;top:520px;width:1300px;text-align:center;z-index:5">'
+            f'<div class="new" style="font-size:34px;padding:14px 30px;margin-bottom:46px">{c["new"]}</div>'
+            f'<div class="title" style="font-size:118px"><span class="dim">{c["banner_dim"]}</span>{c["banner_main"]}</div>'
+            f'<div class="sub" style="font-size:44px;margin:40px auto 0;max-width:1100px">{c["banner_sub"]}</div></div>'
+            + phone('home.png', 330, 360, pw, -6, 1)
+            + phone('reader.png', 730, 250, pw, 4, 2)
+            + phone(SONG_SHOT, 2760, 230, 540, 0, 3))
+    return page(w, h, body)
+
 def songs(c, w, h, s=1.0):
     S = lambda v: round(v * s)
     pw = S(1000)
@@ -83,6 +97,7 @@ for lang, c in COPY.items():
     for name, html in [
         (f'appstore-00-banner-{lang}-2868x1320', banner(c, 2868, 1320)),
         (f'appstore-07-songs-{lang}-1320x2868', songs(c, 1320, 2868)),
+        (f'appstore-header-{lang}-3840x1646', header(c)),
         (f'play-07-songs-{lang}-1080x1920', songs(c, 1080, 1920 + 0, 1080 / 1320)),
         (f'play-feature-graphic-{lang}-1024x500', feature(c)),
     ]:
