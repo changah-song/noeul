@@ -242,7 +242,9 @@ final class ReaderScrollHost: UIView, UIScrollViewDelegate {
     // never begins, so the pull to the next or previous chapter can't start
     // and the reader is stuck there. Such a chapter bounces instead; once a
     // pull starts, scrollViewDidScroll holds the content at the edge.
-    scrollView.bounces = maxScroll <= 0.5
+    // With no chapter on either side (a song's lyrics) the edges bounce
+    // instead of stopping dead.
+    scrollView.bounces = maxScroll <= 0.5 || (!pullNextEnabled && !pullPreviousEnabled && !focusSwipeMode)
   }
 
   func setOffset(_ y: CGFloat) {

@@ -711,6 +711,7 @@ private class ContinuousReaderScrollView(context: Context) : ScrollView(context)
   // Focus-mode swipe navigation: vertical swipes advance the sentence beam
   // instead of scrolling. Threshold mirrors the design spec (28dp).
   var swipeNavigationEnabled = false
+    set(value) { field = value; updateOverScrollMode() }
   var onSwipeNavigate: ((Int) -> Unit)? = null
   private val swipeNavigationThreshold = 28f * context.resources.displayMetrics.density
 
@@ -733,7 +734,9 @@ private class ContinuousReaderScrollView(context: Context) : ScrollView(context)
   var edgePullEnabled = false
   var onEdgePull: ((Int) -> Unit)? = null
   var pullNextEnabled = false
+    set(value) { field = value; updateOverScrollMode() }
   var pullPreviousEnabled = false
+    set(value) { field = value; updateOverScrollMode() }
   private val density = context.resources.displayMetrics.density
   // Empty space after the chapter's text, where the ring waits.
   val pullSpacePx = (CONTINUOUS_PULL_SPACE_DP * density).roundToInt()
@@ -963,11 +966,18 @@ private class ContinuousReaderScrollView(context: Context) : ScrollView(context)
 
   init {
     isFillViewport = true
-    // The chapter pull (below) is the edge feedback, so no stretch or glow.
-    overScrollMode = OVER_SCROLL_NEVER
+    updateOverScrollMode()
     // drawChapterScrollbar is the scrollbar; the platform one (shown by default,
     // and always visible on some OEM skins) would be a second.
     isVerticalScrollBarEnabled = false
+  }
+
+  // The chapter pull is the edge feedback, so no stretch or glow while one is
+  // possible (nor in focus mode, where swipes step the beam). With no chapter
+  // on either side (a song's lyrics) the edges stretch instead of stopping dead.
+  private fun updateOverScrollMode() {
+    val quiet = pullNextEnabled || pullPreviousEnabled || swipeNavigationEnabled
+    overScrollMode = if (quiet) OVER_SCROLL_NEVER else OVER_SCROLL_ALWAYS
   }
 
   override fun dispatchTouchEvent(event: MotionEvent): Boolean {

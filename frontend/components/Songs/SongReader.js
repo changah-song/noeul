@@ -869,6 +869,8 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
         currentSpineIndex: 0,
         currentSpineHref: 'lyrics',
         currentSpinePath: 'lyrics',
+        // One "chapter": no pull up for a next chapter past the last line.
+        totalSpineItems: 1,
         renderMode: nativeRenderMode,
         readerEdgeStateEnabled: false,
     }), [nativeRenderMode, songUri]);
