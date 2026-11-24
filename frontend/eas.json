@@ -42,7 +42,8 @@
     "production": {
       "android": {
         "track": "alpha",
-        "releaseStatus": "completed"
+        "releaseStatus": "completed",
+        "applicationId": "com.noeulapp.Noeul"
       }
     }
   }
