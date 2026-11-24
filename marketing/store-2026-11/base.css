@@ -17,4 +17,9 @@ body {
   width: calc(var(--pw) * 0.30); height: calc(var(--pw) * 0.085); background: #000; border-radius: 999px; }
 .title, .sub { word-break: keep-all; text-wrap: balance; }
 .phone .screen { position: relative; border-radius: calc(var(--pw) * 0.115); overflow: hidden; }
-.phone .blur { position: absolute; left: 0; right: 0; backdrop-filter: blur(calc(var(--pw) * 0.09)) brightness(0.9); -webkit-backdrop-filter: blur(calc(var(--pw) * 0.09)) brightness(0.9); }
+.phone .wave { position: absolute; left: 0; right: 0; overflow: hidden; background: linear-gradient(160deg, #2a2d3c, #15161d); }
+.phone .wave .bars { position: absolute; left: 8%; right: 8%; top: 22%; bottom: 22%; display: flex; align-items: center; justify-content: space-between; }
+.phone .wave .bars i { display: block; width: calc(var(--pw) * 0.011); border-radius: calc(var(--pw) * 0.006); background: linear-gradient(#f7c77e, #c9707a); }
+.phone .wave .prog { position: absolute; left: 0; right: 0; bottom: 0; height: calc(var(--pw) * 0.011); background: rgba(255,255,255,.25); }
+.phone .wave .prog b { position: absolute; left: 0; top: 0; bottom: 0; width: 40%; background: #fff; }
+.phone .wave .prog u { position: absolute; left: 40%; top: 50%; width: calc(var(--pw) * 0.028); height: calc(var(--pw) * 0.028); transform: translate(-50%, -50%); border-radius: 50%; background: #fff; }

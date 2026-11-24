@@ -7,7 +7,7 @@ from pathlib import Path
 HERE = Path(__file__).parent
 SONG_SHOT = 'song.png'
 # The song shot's video area (top, bottom as fractions of the screen height) is
-# blurred so no performer or label artwork shows.
+# covered by a drawn waveform, so no performer or label artwork shows.
 BLUR_ARG = (0.137, 0.398)
 
 COPY = {
@@ -27,15 +27,21 @@ COPY = {
   ),
 }
 
-# Fraction of the screenshot's height covered by the video, blurred so no
-# third-party artwork shows (None = no blur).
+# Fraction of the screenshot's height covered by the video, drawn over with a
+# waveform (None = leave the screenshot as is).
 BLUR = BLUR_ARG
+
+import math, random
+_rng = random.Random(4)
+WAVE_BARS = ''.join(f'<i style="height:{round(18 + 70 * abs(math.sin(i * 0.45)) * _rng.uniform(0.5, 1))}%"></i>'
+                    for i in range(34))
 
 def phone(shot, x, y, pw, rot=0, z=1):
     blur = ''
     if BLUR and shot == SONG_SHOT:
         top, bottom = BLUR
-        blur = (f'<div class="blur" style="top:{top*100:.2f}%;height:{(bottom-top)*100:.2f}%"></div>')
+        blur = (f'<div class="wave" style="top:{top*100:.2f}%;height:{(bottom-top)*100:.2f}%">'
+                f'<div class="bars">{WAVE_BARS}</div><div class="prog"><b></b><u></u></div></div>')
     return (f'<div class="phone" style="--pw:{pw}px;left:{x}px;top:{y}px;transform:rotate({rot}deg);z-index:{z}">'
             f'<div class="screen"><img src="shots/{shot}">{blur}</div><div class="island"></div></div>')
 
