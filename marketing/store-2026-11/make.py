@@ -89,13 +89,14 @@ def songs(c, w, h, s=1.0):
     return page(w, h, body)
 
 def feature(c):
-    # Play feature graphic 1024x500: copy left, two phones cropped at the bottom.
+    # Play feature graphic 1024x500. Play's desktop site crops the sides, so
+    # everything stays inside the middle ~800px (x 110-914).
     body = ('<div class="orb" style="width:620px;height:620px;right:-150px;top:-300px"></div>'
-            '<div style="position:absolute;left:56px;top:96px;width:520px">'
-            f'<div class="new" style="font-size:13px;padding:6px 13px;margin-bottom:20px">{c["new"]}</div>'
-            f'<div class="title" style="font-size:46px"><span class="dim">{c["banner_dim"]}</span>{c["banner_main"]}</div>'
-            f'<div class="sub" style="font-size:17px;margin-top:18px;max-width:440px">{c["banner_sub"]}</div></div>'
-            + phone(SONG_SHOT, 600, 60, 210, -4, 2) + phone('reader.png', 790, 110, 200, 5, 1))
+            '<div style="position:absolute;left:120px;top:110px;width:440px">'
+            f'<div class="new" style="font-size:13px;padding:6px 13px;margin-bottom:18px">{c["new"]}</div>'
+            f'<div class="title" style="font-size:40px"><span class="dim">{c["banner_dim"]}</span>{c["banner_main"]}</div>'
+            f'<div class="sub" style="font-size:16px;margin-top:16px;max-width:380px">{c["banner_sub"]}</div></div>'
+            + phone('reader.png', 720, 120, 180, 6, 1) + phone(SONG_SHOT, 580, 60, 200, -4, 2))
     return page(1024, 500, body)
 
 out = []
