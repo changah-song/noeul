@@ -2,8 +2,13 @@
 
 shots/ holds simulator screenshots (1320x2868): home.png, reader.png, song.png.
 """
+import sys
 from pathlib import Path
 HERE = Path(__file__).parent
+SONG_SHOT = 'song.png'
+# The song shot's video area (top, bottom as fractions of the screen height) is
+# blurred so no performer or label artwork shows.
+BLUR_ARG = (0.137, 0.398)
 
 COPY = {
   'en': dict(
@@ -22,9 +27,17 @@ COPY = {
   ),
 }
 
+# Fraction of the screenshot's height covered by the video, blurred so no
+# third-party artwork shows (None = no blur).
+BLUR = BLUR_ARG
+
 def phone(shot, x, y, pw, rot=0, z=1):
+    blur = ''
+    if BLUR and shot == SONG_SHOT:
+        top, bottom = BLUR
+        blur = (f'<div class="blur" style="top:{top*100:.2f}%;height:{(bottom-top)*100:.2f}%"></div>')
     return (f'<div class="phone" style="--pw:{pw}px;left:{x}px;top:{y}px;transform:rotate({rot}deg);z-index:{z}">'
-            f'<img src="shots/{shot}"><div class="island"></div></div>')
+            f'<div class="screen"><img src="shots/{shot}">{blur}</div><div class="island"></div></div>')
 
 def page(w, h, body):
     return (f'<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="base.css">'
@@ -40,7 +53,7 @@ def banner(c, w, h, s=1.0):
             f'<div class="title" style="font-size:{S(118)}px"><span class="dim">{c["banner_dim"]}</span>{c["banner_main"]}</div>'
             f'<div class="sub" style="font-size:{S(42)}px;margin-top:{S(40)}px;max-width:{S(1000)}px">{c["banner_sub"]}</div></div>'
             + phone('home.png', S(1330), S(260), S(450), -6, 1)
-            + phone('song.png', S(1800), S(120), S(500), 0, 3)
+            + phone(SONG_SHOT, S(1800), S(120), S(500), 0, 3)
             + phone('reader.png', S(2290), S(260), S(450), 6, 2))
     return page(w, h, body)
 
@@ -52,7 +65,7 @@ def songs(c, w, h, s=1.0):
             f'<div class="new" style="font-size:{S(34)}px;padding:{S(12)}px {S(30)}px;margin-bottom:{S(44)}px">{c["new"]}</div>'
             f'<div class="title" style="font-size:{S(112)}px"><span class="dim">{c["songs_dim"]}</span>{c["songs_main"]}</div>'
             f'<div class="sub" style="font-size:{S(44)}px;margin:{S(40)}px auto 0;max-width:{S(1060)}px">{c["songs_sub"]}</div></div>'
-            + phone('song.png', (w - pw) // 2, S(820), pw, 0, 1))
+            + phone(SONG_SHOT, (w - pw) // 2, S(820), pw, 0, 1))
     return page(w, h, body)
 
 def feature(c):
@@ -62,7 +75,7 @@ def feature(c):
             f'<div class="new" style="font-size:13px;padding:6px 13px;margin-bottom:20px">{c["new"]}</div>'
             f'<div class="title" style="font-size:46px"><span class="dim">{c["banner_dim"]}</span>{c["banner_main"]}</div>'
             f'<div class="sub" style="font-size:17px;margin-top:18px;max-width:440px">{c["banner_sub"]}</div></div>'
-            + phone('song.png', 600, 60, 210, -4, 2) + phone('reader.png', 790, 110, 200, 5, 1))
+            + phone(SONG_SHOT, 600, 60, 210, -4, 2) + phone('reader.png', 790, 110, 200, 5, 1))
     return page(1024, 500, body)
 
 out = []

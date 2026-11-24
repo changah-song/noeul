@@ -16,3 +16,5 @@ body {
 .phone .island { position: absolute; top: calc(var(--pw) * 0.05); left: 50%; transform: translateX(-50%);
   width: calc(var(--pw) * 0.30); height: calc(var(--pw) * 0.085); background: #000; border-radius: 999px; }
 .title, .sub { word-break: keep-all; text-wrap: balance; }
+.phone .screen { position: relative; border-radius: calc(var(--pw) * 0.115); overflow: hidden; }
+.phone .blur { position: absolute; left: 0; right: 0; backdrop-filter: blur(calc(var(--pw) * 0.09)) brightness(0.9); -webkit-backdrop-filter: blur(calc(var(--pw) * 0.09)) brightness(0.9); }
