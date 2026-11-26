@@ -631,15 +631,18 @@ private data class PagedFocusSentence(
 
 // Focus (sentence beam) mode geometry and motion: the focused sentence's top is
 // pinned at 28% of the viewport, in the top half so even a long sentence fits
-// on screen (higher still when the span is too tall to fit below that line —
-// see focusAnchorRatioFor). The content gets generous top/bottom insets so
-// edge sentences can still anchor there, the anchor scroll eases over 380ms,
+// on screen (higher still when the span is too tall to fit below that line,
+// and scrollable when it is taller than the screen — see anchorScrollToFocus).
+// The content gets generous top/bottom insets so edge sentences can still
+// anchor there, the anchor scroll eases over 380ms,
 // and the dictionary-panel lift (only as much as the sentence needs to clear
-// the panel — see focusLiftFor) matches the panel's 450ms
+// the panel — see applyFocusLift) matches the panel's 450ms
 // cubic-bezier(.22,.61,.36,1) slide.
 private const val FOCUS_ANCHOR_RATIO = 0.28f
 private const val FOCUS_TOP_INSET_RATIO = 0.545f
-private const val FOCUS_BOTTOM_INSET_RATIO = 0.52f
+// A full screen below the text: a long sentence near the chapter's end can
+// still be scrolled up clear of an open panel.
+private const val FOCUS_BOTTOM_INSET_RATIO = 1f
 // Breathing room kept between a span and the edge it is aligned against, so an
 // overlong sentence never sits flush against the panel or runs up under the
 // controls. The top margin is the larger of the two because the focus-mode
@@ -1130,7 +1133,11 @@ private class ContinuousReaderScrollView(context: Context) : ScrollView(context)
           val delta = (lastDragY - event.y).roundToInt()
           lastDragY = event.y
           if (delta != 0) {
-            scrollTo(0, (scrollY + delta).coerceIn(bounds.first, bounds.last))
+            // A lift or the controls coming or going can leave the span just
+            // outside its range: it moves back toward it, never jumps.
+            val low = min(bounds.first, scrollY)
+            val high = max(bounds.last, scrollY)
+            scrollTo(0, (scrollY + delta).coerceIn(low, high))
           }
         }
       }
@@ -1329,6 +1336,15 @@ class NativeEpubReaderView(
   private var focusPanelHeightPx = 0f
   private var focusPanelLiftPx = 0f
   private var focusScrollAnimator: ValueAnimator? = null
+  // Where the beam's last anchor scroll is headed (the real scrollY lags while
+  // it animates or waits for its post).
+  private var focusScrollTarget = 0
+  private var focusScrollPending = false
+  // The tapped word's top and bottom in content coordinates, while its lookup
+  // may be open: kept on screen and clear of the panel (null otherwise).
+  private var focusWordExtent: Pair<Int, Int>? = null
+  // Where the chapter's text starts in focus mode's content (see rebuildFocusSentences).
+  private var focusContentTop = 0
 
   // Song mode (see setSongLine).
   private var songLineBlockIds: List<String> = emptyList()
@@ -1452,6 +1468,9 @@ class NativeEpubReaderView(
       clearActiveSelection(dispatchEvent = true, forceEvent = true)
     }
     continuousScrollView.onSwipeNavigate = { direction ->
+      // Swiping on through the sentences is reading on: the controls go (and
+      // come back on a swipe back), as in the other modes.
+      reportReadingDirection(direction)
       moveFocus(direction)
     }
     continuousScrollView.onScrollPositionChanged = { y ->
@@ -3184,6 +3203,9 @@ class NativeEpubReaderView(
 
   private fun rebuildFocusSentences(page: ReaderPage, topPadding: Int) {
     val sentences = mutableListOf<FocusSentenceInfo>()
+    focusContentTop = topPadding
+    // Laid out again: a word still selected is found in the new layout.
+    focusWordExtent = focusSelectionExtent(activeSelectionRanges)
     var yOffset = topPadding
 
     page.blocks.forEach { block ->
@@ -3246,13 +3268,66 @@ class NativeEpubReaderView(
     return focusSentences.indexOfFirst { it.blockId == blockId }.takeIf { it >= 0 } ?: 0
   }
 
-  private fun handleFocusTextTapped(blockId: String, localOffset: Int) {
+  private fun handleFocusTextTapped(blockId: String, localOffset: Int, wordTap: Boolean) {
     if (!isFocusMode() || focusSentences.isEmpty()) {
       return
     }
 
     val index = focusSentenceIndexAt(blockId, localOffset) ?: return
+    // A word tap (its lookup follows, see handlePageWordSelected) keeps the
+    // word on screen; a tap on blank space has no word to keep.
+    focusWordExtent = if (wordTap) focusTextExtent(blockId, localOffset, localOffset + 1) else null
+    // A tap inside the lit sentence leaves it where the reader has it (a long
+    // one may be scrolled to its end); only another sentence is moved to.
+    if (index in focusIndex until focusIndex + focusSpanCount) {
+      if (wordTap && focusPanelHeightPx > 0f) applyFocusLift(currentFocusScroll(), animated = true)
+      return
+    }
     focusTo(index, animate = true)
+  }
+
+  // What of a selection must stay in view: all of it when it fits above the
+  // panel, else its first line.
+  private fun focusSelectionExtent(ranges: List<TextRange>): Pair<Int, Int>? {
+    if (!isFocusMode()) return null
+    val first = ranges.firstOrNull() ?: return null
+    val last = ranges.last()
+    val top = focusTextExtent(first.blockId, first.sourceStartOffset, first.sourceStartOffset + 1, source = true)
+      ?: return null
+    val bottom = focusTextExtent(last.blockId, last.sourceEndOffset - 1, last.sourceEndOffset, source = true)?.second
+      ?: top.second
+    val room = focusWindowBottom(withPanel = true) - focusWindowTop()
+    return top.first to if (bottom - top.first <= room) bottom else top.second
+  }
+
+  // Top and bottom, in focus mode's content coordinates, of the lines holding
+  // [start, end) of a block: offsets into its plain text, or into its source
+  // text when `source`.
+  private fun focusTextExtent(blockId: String, start: Int, end: Int, source: Boolean = false): Pair<Int, Int>? {
+    val page = pages.getOrNull(continuousPageIndex) ?: return null
+    var yOffset = focusContentTop
+    page.blocks.forEach { block ->
+      yOffset += block.marginTop
+      if (block.type == "image") {
+        yOffset += block.imageHeight
+      } else {
+        val layout = block.textLayout
+        if (layout != null) {
+          if (block.blockId == blockId) {
+            val length = block.plainText.length
+            if (length == 0) return null
+            val shift = if (source) block.sourceStartOffset else 0
+            val first = (start - shift).coerceIn(0, length - 1)
+            val last = (end - shift - 1).coerceIn(first, length - 1)
+            return (yOffset + layout.getLineTop(layout.getLineForOffset(first))) to
+              (yOffset + layout.getLineBottom(layout.getLineForOffset(last)))
+          }
+          yOffset += layout.height
+        }
+      }
+      yOffset += block.marginBottom
+    }
+    return null
   }
 
   private fun focusTo(index: Int, animate: Boolean, fast: Boolean = false) {
@@ -3302,6 +3377,7 @@ class NativeEpubReaderView(
     // Close an open lookup with the step; with nothing open, no event (each
     // one costs the reader a round of state updates on every sentence).
     clearActiveSelection(dispatchEvent = true, forceEvent = continuousPageView.focusPanelOpen)
+    focusWordExtent = null
     focusTo(next, animate = true, fast = rapid)
     return focusStatePayload() + mapOf("moved" to true)
   }
@@ -3509,36 +3585,19 @@ class NativeEpubReaderView(
     continuousPageView.setFocusHighlight(ranges, animate, fast)
   }
 
-  // Where the focused span's top should sit, as a fraction of the viewport.
-  // Normally FOCUS_ANCHOR_RATIO, but a span taller than the room below that
-  // line would spill off screen, so it gets bottom-aligned instead, never
-  // higher than the top margin (the floor). The panel doesn't enter into it:
-  // focusLiftFor lifts the surface only as far as the span needs.
-  private fun focusAnchorRatioFor(spanHeight: Int): Float {
-    if (layoutHeight <= 0) {
-      return FOCUS_ANCHOR_RATIO
-    }
+  // The part of the screen a focused span can be read in: below the header
+  // and above the scrubber while they're up (they lie over the reader; full
+  // screen takes them away), and above the dictionary panel when it's open.
+  private fun focusChromeTopPx(): Int = if (readerFullscreen) 0 else chromeTopPx
 
-    val height = layoutHeight.toFloat()
-    val fitted = (height - spanHeight - focusSpanBottomMarginPx()) / height
-    val floor = (focusSpanTopMarginPx() / height).coerceAtMost(1f)
-    return min(FOCUS_ANCHOR_RATIO, fitted).coerceIn(floor, 1f)
-  }
+  private fun focusChromeBottomPx(): Int = if (readerFullscreen) 0 else chromeBottomPx
 
-  // How far to lift the surface so a span whose top sits `spanTopOnScreen` px
-  // down the viewport ends clear of the open dictionary panel: just the
-  // overlap, and never so far that the span's first line leaves the screen
-  // (a sentence taller than the room above the panel keeps its opening lines
-  // and lets the tail run behind the panel). 0 with the panel closed, and for
-  // the usual sentence, which already ends above the panel.
-  private fun focusLiftFor(spanTopOnScreen: Float, spanHeight: Int): Float {
-    if (focusPanelHeightPx <= 0f || layoutHeight <= 0) {
-      return 0f
-    }
-    val panelTop = layoutHeight - focusPanelHeightPx
-    val overlap = spanTopOnScreen + spanHeight + focusSpanBottomMarginPx() - panelTop
-    val maxLift = (spanTopOnScreen - focusSpanTopMarginPx()).coerceAtLeast(0f)
-    return overlap.coerceIn(0f, maxLift)
+  private fun focusWindowTop(): Float =
+    max(focusSpanTopMarginPx(), focusChromeTopPx() + focusSpanBottomMarginPx())
+
+  private fun focusWindowBottom(withPanel: Boolean): Float {
+    val panel = if (withPanel) focusPanelHeightPx else 0f
+    return layoutHeight - max(focusChromeBottomPx().toFloat(), panel) - focusSpanBottomMarginPx()
   }
 
   // Content extent of the whole highlighted beam, first sentence's top through
@@ -3557,28 +3616,103 @@ class NativeEpubReaderView(
   private fun focusSpanBottomMarginPx(): Float =
     FOCUS_SPAN_BOTTOM_MARGIN_DP * resources.displayMetrics.density
 
-  // A span taller than the viewport cannot be shown at once, so instead of
-  // anchoring it at one fixed position the reader may drag it between its two
-  // extremes: top of the span against the top of the screen, and bottom of the
-  // span against the top of the dictionary panel. A swipe that starts and ends
-  // at either extreme falls through to sentence navigation. When the span fits,
-  // both extremes collapse into the single anchor position and the bounds go
-  // away, leaving swipe navigation exactly as it was.
-  private fun updateFocusScrollBounds() {
+  // Where the beam is, or is about to be once its anchor scroll lands.
+  private fun currentFocusScroll(): Int =
+    if (focusScrollPending || focusScrollAnimator?.isRunning == true) focusScrollTarget
+    else continuousScrollView.scrollY
+
+  // The span rests with its top at FOCUS_ANCHOR_RATIO of the screen; one too
+  // tall to fit below that line ends at the window's bottom instead, and one
+  // taller than the window starts at its top (the reader scrolls down it, see
+  // applyFocusLift). A tapped word is kept inside the window whatever that
+  // takes.
+  private fun anchorScrollToFocus(animated: Boolean, fast: Boolean = false) {
     val extent = focusSpanExtent()
-    if (!isFocusMode() || extent == null || layoutHeight <= 0) {
-      continuousScrollView.focusScrollBounds = null
+    if (extent == null || layoutHeight <= 0) {
+      applyFocusLift(continuousScrollView.scrollY, animated)
+      return
+    }
+    val (spanTop, spanBottom) = extent
+    val windowTop = focusWindowTop()
+    val windowBottom = focusWindowBottom(withPanel = false)
+    val topOnScreen = max(min(layoutHeight * FOCUS_ANCHOR_RATIO, windowBottom - (spanBottom - spanTop)), windowTop)
+    var target = spanTop - topOnScreen
+    focusWordExtent?.let { (wordTop, wordBottom) ->
+      target = max(target, wordBottom - windowBottom).coerceAtMost(wordTop - windowTop)
+    }
+    val contentHeight = continuousPageView.layoutParams?.height ?: 0
+    val maxScroll = (contentHeight - layoutHeight).coerceAtLeast(0)
+    val scrollTarget = target.roundToInt().coerceIn(0, maxScroll)
+    focusScrollTarget = scrollTarget
+
+    applyFocusLift(scrollTarget, animated)
+
+    focusScrollAnimator?.cancel()
+    if (!animated) {
+      focusScrollPending = true
+      continuousScrollView.post {
+        focusScrollPending = false
+        continuousScrollView.scrollTo(0, scrollTarget)
+      }
       return
     }
 
+    val from = continuousScrollView.scrollY
+    if (abs(scrollTarget - from) < 2) {
+      continuousScrollView.scrollTo(0, scrollTarget)
+      return
+    }
+
+    focusScrollAnimator = ValueAnimator.ofInt(from, scrollTarget).apply {
+      duration = if (fast) FOCUS_SCROLL_FAST_DURATION_MS else FOCUS_SCROLL_DURATION_MS
+      interpolator = PathInterpolator(0.33f, 1f, 0.68f, 1f)
+      addUpdateListener { animator ->
+        continuousScrollView.scrollTo(0, animator.animatedValue as Int)
+      }
+      start()
+    }
+  }
+
+  // With the span at `scroll`: lifts the surface (a transform, so the scroll
+  // stays put and comes back when the panel goes) just far enough for the span
+  // to end above the open panel, without its first line leaving the window —
+  // and always far enough for a tapped word to show above the panel. Then sets
+  // the range the reader can drag a span through when it is taller than the
+  // window: from its top at the window's top to its end at the window's
+  // bottom. Swipes at either end of that range step the beam.
+  private fun applyFocusLift(scroll: Int, animated: Boolean) {
+    val extent = focusSpanExtent()
+    if (!isFocusMode() || extent == null || layoutHeight <= 0) {
+      continuousScrollView.focusScrollBounds = null
+      if (focusPanelLiftPx != 0f) {
+        focusPanelLiftPx = 0f
+        updateFocusLift(animated)
+      }
+      return
+    }
     val (spanTop, spanBottom) = extent
+    val windowTop = focusWindowTop()
+    val windowBottom = focusWindowBottom(withPanel = true)
+    var lift = 0f
+    if (focusPanelHeightPx > 0f) {
+      val topOnScreen = (spanTop - scroll).toFloat()
+      lift = (topOnScreen + (spanBottom - spanTop) - windowBottom)
+        .coerceIn(0f, (topOnScreen - windowTop).coerceAtLeast(0f))
+      focusWordExtent?.let { (wordTop, wordBottom) ->
+        val low = wordBottom - scroll - windowBottom
+        val high = wordTop - scroll - windowTop
+        lift = if (low <= high) lift.coerceIn(low, high) else low
+      }
+    }
+    if (lift != focusPanelLiftPx) {
+      focusPanelLiftPx = lift
+      updateFocusLift(animated)
+    }
+
     val contentHeight = continuousPageView.layoutParams?.height ?: 0
     val maxScroll = (contentHeight - layoutHeight).coerceAtLeast(0)
-    val topAligned = (spanTop - focusPanelLiftPx - focusSpanTopMarginPx())
-      .roundToInt().coerceIn(0, maxScroll)
-    val bottomAligned = (spanBottom - layoutHeight + focusSpanBottomMarginPx())
-      .roundToInt().coerceIn(0, maxScroll)
-
+    val topAligned = (spanTop - lift - windowTop).roundToInt().coerceIn(0, maxScroll)
+    val bottomAligned = (spanBottom - lift - windowBottom).roundToInt().coerceIn(0, maxScroll)
     continuousScrollView.focusScrollBounds = if (bottomAligned > topAligned) {
       topAligned..bottomAligned
     } else {
@@ -3586,50 +3720,11 @@ class NativeEpubReaderView(
     }
   }
 
-  private fun anchorScrollToFocus(animated: Boolean, fast: Boolean = false) {
-    val sentence = focusSentences.getOrNull(focusIndex)
-    if (sentence == null) {
-      updateFocusScrollBounds()
-      return
-    }
-    val extent = focusSpanExtent()
-    val spanHeight = extent?.let { (top, bottom) -> bottom - top } ?: 0
-    val contentHeight = continuousPageView.layoutParams?.height ?: 0
-    val maxScroll = (contentHeight - layoutHeight).coerceAtLeast(0)
-    val ratio = focusAnchorRatioFor(spanHeight)
-    val target = (sentence.topY - (layoutHeight * ratio)).roundToInt()
-      .coerceIn(0, maxScroll)
-
-    // Lift for the panel from where the span will actually land (a sentence
-    // near a chapter edge can't always reach the anchor line).
-    val nextLift = focusLiftFor((sentence.topY - target).toFloat(), spanHeight)
-    if (nextLift != focusPanelLiftPx) {
-      focusPanelLiftPx = nextLift
-      updateFocusLift(animated = animated)
-    }
-    updateFocusScrollBounds()
-
-    focusScrollAnimator?.cancel()
-    if (!animated) {
-      continuousScrollView.post {
-        continuousScrollView.scrollTo(0, target)
-      }
-      return
-    }
-
-    val from = continuousScrollView.scrollY
-    if (abs(target - from) < 2) {
-      continuousScrollView.scrollTo(0, target)
-      return
-    }
-
-    focusScrollAnimator = ValueAnimator.ofInt(from, target).apply {
-      duration = if (fast) FOCUS_SCROLL_FAST_DURATION_MS else FOCUS_SCROLL_DURATION_MS
-      interpolator = PathInterpolator(0.33f, 1f, 0.68f, 1f)
-      addUpdateListener { animator ->
-        continuousScrollView.scrollTo(0, animator.animatedValue as Int)
-      }
-      start()
+  // The window changed (the controls came or went): same scroll, new lift and
+  // drag range.
+  private fun refreshFocusWindow() {
+    if (isFocusMode() && focusSentences.isNotEmpty()) {
+      applyFocusLift(currentFocusScroll(), animated = true)
     }
   }
 
@@ -3739,6 +3834,7 @@ class NativeEpubReaderView(
   fun setFullscreen(enabled: Boolean) {
     if (readerFullscreen == enabled) return
     readerFullscreen = enabled
+    refreshFocusWindow()
     invalidate()
   }
 
@@ -4024,6 +4120,7 @@ class NativeEpubReaderView(
     chromeTopPx = top
     chromeBottomPx = bottom
     continuousScrollView.setScrollbarInsets(top, bottom)
+    refreshFocusWindow()
     // Paged pages leave the bottom room below their text, so they're laid out
     // again; also when the first layout is still under way without it.
     val paginating = paginationTask?.isDone == false
@@ -4060,9 +4157,10 @@ class NativeEpubReaderView(
     }
 
     focusPanelHeightPx = nextPanelPx
-    // Re-anchoring works out the lift the span needs under the new panel.
+    // The span stays where it is (a long one where the reader scrolled it);
+    // only the lift changes, to clear the panel and keep the tapped word in view.
     if (isFocusMode() && focusSentences.isNotEmpty()) {
-      anchorScrollToFocus(animated = true)
+      applyFocusLift(currentFocusScroll(), animated = true)
     } else {
       focusPanelLiftPx = 0f
       updateFocusLift(animated = true)
@@ -4685,6 +4783,14 @@ class NativeEpubReaderView(
     activeSelectionKind = ActiveSelectionKind.WORD
     pageAdapter?.updateActiveSelectionRanges(activeSelectionRanges, activeSelectionKind)
     invalidateVisiblePageHighlights()
+    // Focus mode: the panel coming up (or already up, for another word) must
+    // leave this word in view.
+    if (isFocusMode()) {
+      focusTextExtent(hit.range.blockId, hit.localStartOffset, hit.localEndOffset)?.let { extent ->
+        focusWordExtent = extent
+        if (focusPanelHeightPx > 0f) applyFocusLift(currentFocusScroll(), animated = true)
+      }
+    }
 
     val event = mutableMapOf<String, Any>(
       "text" to hit.text,
@@ -4718,6 +4824,14 @@ class NativeEpubReaderView(
     activeSelectionKind = ActiveSelectionKind.TEXT
     pageAdapter?.updateActiveSelectionRanges(activeSelectionRanges, activeSelectionKind)
     invalidateVisiblePageHighlights()
+    // Focus mode: the AI explanation coming up keeps the held text's start in
+    // view (all of it when it fits).
+    if (isFocusMode()) {
+      focusSelectionExtent(selection.ranges)?.let { extent ->
+        focusWordExtent = extent
+        if (focusPanelHeightPx > 0f) applyFocusLift(currentFocusScroll(), animated = true)
+      }
+    }
 
     val event = mutableMapOf<String, Any>(
       "text" to selection.text,

@@ -191,6 +191,7 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
   var fullscreen = false {
     didSet {
       if !fullscreen { progressThumb.hide() }
+      if fullscreen != oldValue { refreshFocusWindow() }
     }
   }
   var pagedFocus = false {
@@ -342,6 +343,11 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
   private var focusSentences: [FocusSentence] = []
   private var focusIndex = 0
   private var lastFocusMoveAt: CFTimeInterval = 0
+  // Where the beam's last anchor scroll is headed (the offset lags while it animates).
+  private var focusScrollTarget: CGFloat = 0
+  // The tapped word's top and bottom in content coordinates, while its lookup
+  // may be open: kept on screen and clear of the panel (nil otherwise).
+  private var focusWord: (top: CGFloat, bottom: CGFloat)?
   private var focusNavTokenSeen = false
   private var pendingFocusLandAtEndSpine: Int?
   // The sentence span the beam lights.
@@ -571,6 +577,7 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     chromeBottom = bottom
     host.chromeTop = mode == .continuous ? top : 0
     host.setIndicatorInsets(top: top, bottom: bottom)
+    refreshFocusWindow()
     switch mode {
     case .paged:
       if bottomChanged { repaginate(resetToFirstPage: pages.isEmpty) }
@@ -1101,7 +1108,9 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
   // MARK: - Vertical modes
 
   private var focusTopInset: CGFloat { mode == .focus ? (0.545 * bounds.height).rounded() : 0 }
-  private var focusBottomInset: CGFloat { mode == .focus ? (0.52 * bounds.height).rounded() : 0 }
+  // A full screen below the text: a long sentence near the chapter's end can
+  // still be scrolled up clear of an open panel.
+  private var focusBottomInset: CGFloat { mode == .focus ? bounds.height.rounded() : 0 }
 
   private func verticalTextTop() -> CGFloat {
     30 + (mode == .continuous ? chromeTop : 0) + focusTopInset
@@ -1405,6 +1414,12 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
 
   func scrollHostFocusSwipe(_ host: ReaderScrollHost, direction: Int) {
     guard focusSwipeEnabled else { return }
+    // Swiping on through the sentences is reading on: the controls go (and
+    // come back on a swipe back), as in the other modes.
+    if direction != reportedDirection {
+      reportedDirection = direction
+      onReadingDirection(["direction": direction > 0 ? "forward" : "back"])
+    }
     _ = moveFocus(direction)
   }
 
@@ -1416,6 +1431,8 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
 
   private func rebuildFocusSentences() {
     focusSentences = []
+    // Laid out again: a word still selected is found in the new layout.
+    defer { focusWord = selection.flatMap { focusSelectionExtent($0.ranges) } }
     guard let page = pages[safe: currentPage] else { return }
     let textTop = host.textTop
     for (itemIndex, item) in page.items.enumerated() where item.layout.imageFrame == nil && !item.lineRange.isEmpty {
@@ -1465,31 +1482,123 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     host.setBeam(current: rects, previous: host.probe.beamRects(old), duration: fast ? 0.14 : 0.3)
   }
 
-  // Scroll the span to its anchor (0.28 of the screen) and lift it above an
-  // open panel.
+  // Top and bottom, in content coordinates, of the lines holding `range` of a
+  // block (offsets in its text).
+  private func focusTextExtent(blockId: String, range: NSRange) -> (top: CGFloat, bottom: CGFloat)? {
+    guard let page = pages[safe: currentPage] else { return nil }
+    let textTop = host.textTop
+    for item in page.items where item.layout.block.id == blockId && item.layout.imageFrame == nil && !item.lineRange.isEmpty {
+      let layout = item.layout
+      let lineFor: (Int) -> Int = { offset in
+        item.lineRange.first { NSLocationInRange(offset, layout.lines[$0].range) } ?? item.lineRange.upperBound - 1
+      }
+      let first = lineFor(range.location)
+      let last = max(first, lineFor(max(range.location, NSMaxRange(range) - 1)))
+      let bottom = last + 1 < item.lineRange.upperBound
+        ? item.lineTop(last + 1)
+        : item.lineTop(last) + layout.lines[last].naturalHeight * layout.lineMultiplier
+      return (textTop + item.lineTop(first), textTop + bottom)
+    }
+    return nil
+  }
+
+  private func focusSpanExtent() -> (top: CGFloat, bottom: CGFloat)? {
+    guard let first = focusSentences[safe: focusIndex] else { return nil }
+    let last = focusSentences[min(focusIndex + focusSpanCount - 1, focusSentences.count - 1)]
+    return (first.topY, max(first.topY, last.bottomY))
+  }
+
+  // The part of the screen a focused span can be read in: below the header
+  // and above the scrubber while they're up (they lie over the reader; full
+  // screen takes them away), and above the dictionary panel when it's open.
+  private var focusWindowTop: CGFloat { max(focusTopMargin, (fullscreen ? 0 : chromeTop) + focusBottomMargin) }
+
+  private func focusWindowBottom(withPanel: Bool) -> CGFloat {
+    let panel = withPanel ? CGFloat(max(0, focusPanelHeight)) : 0
+    return bounds.height - max(fullscreen ? 0 : chromeBottom, panel) - focusBottomMargin
+  }
+
+  // Where the beam is, or is about to be once its anchor scroll lands.
+  private var currentFocusScroll: CGFloat { host.isAnimatingOffset ? focusScrollTarget : host.offset }
+
+  // The span rests with its top at 0.28 of the screen; one too tall to fit
+  // below that line ends at the window's bottom instead, and one taller than
+  // the window starts at its top (the reader scrolls down it, see
+  // applyFocusLift). A tapped word is kept inside the window whatever that
+  // takes.
   private func anchorFocus(animated: Bool, fast: Bool) {
-    guard mode == .focus, let first = focusSentences[safe: focusIndex] else {
+    guard mode == .focus, let span = focusSpanExtent() else {
+      applyFocusLift(scroll: host.offset, animated: animated)
+      return
+    }
+    let windowTop = focusWindowTop
+    let windowBottom = focusWindowBottom(withPanel: false)
+    let topOnScreen = max(min(bounds.height * focusAnchorRatio, windowBottom - (span.bottom - span.top)), windowTop)
+    var target = span.top - topOnScreen
+    if let word = focusWord {
+      target = min(max(target, word.bottom - windowBottom), word.top - windowTop)
+    }
+    target = min(max(target.rounded(), 0), host.maxScroll)
+    focusScrollTarget = target
+    applyFocusLift(scroll: target, animated: animated)
+    host.animateOffset(to: target, duration: animated ? (fast ? 0.18 : 0.38) : 0)
+  }
+
+  // With the span at `scroll`: lifts the content (a transform, so the scroll
+  // stays put and comes back when the panel goes) just far enough for the span
+  // to end above the open panel, without its first line leaving the window —
+  // and always far enough for a tapped word to show above the panel. Then sets
+  // the range the reader can drag a span through when it is taller than the
+  // window: from its top at the window's top to its end at the window's
+  // bottom. Swipes at either end of that range step the beam.
+  private func applyFocusLift(scroll: CGFloat, animated: Bool) {
+    guard mode == .focus, let span = focusSpanExtent() else {
       host.setLift(0, animated: animated)
       host.focusSpanBounds = nil
       return
     }
-    let height = bounds.height
-    let last = focusSentences[min(focusIndex + focusSpanCount - 1, focusSentences.count - 1)]
-    let spanTop = first.topY
-    let spanBottom = max(spanTop, last.bottomY)
-    let spanHeight = spanBottom - spanTop
-    let low = min(1, focusTopMargin / height)
-    let ratio = min(max(min(focusAnchorRatio, (height - spanHeight - focusBottomMargin) / height), low), 1)
-    let target = min(max((spanTop - height * ratio).rounded(), 0), host.maxScroll)
-    let panel = CGFloat(max(0, focusPanelHeight))
-    let spanTopOnScreen = spanTop - target
-    let lift = panel <= 0 ? 0 : min(max(spanTopOnScreen + spanHeight + focusBottomMargin - (height - panel), 0),
-                                    max(0, spanTopOnScreen - focusTopMargin))
+    let windowTop = focusWindowTop
+    let windowBottom = focusWindowBottom(withPanel: true)
+    var lift: CGFloat = 0
+    if focusPanelHeight > 0 {
+      let topOnScreen = span.top - scroll
+      lift = min(max(topOnScreen + (span.bottom - span.top) - windowBottom, 0), max(0, topOnScreen - windowTop))
+      if let word = focusWord {
+        let low = word.bottom - scroll - windowBottom
+        let high = word.top - scroll - windowTop
+        lift = low <= high ? min(max(lift, low), high) : low
+      }
+    }
     host.setLift(lift, animated: animated)
-    let topAligned = min(max((spanTop - lift - focusTopMargin).rounded(), 0), host.maxScroll)
-    let bottomAligned = min(max((spanBottom - height + focusBottomMargin).rounded(), 0), host.maxScroll)
+    let topAligned = min(max((span.top - lift - windowTop).rounded(), 0), host.maxScroll)
+    let bottomAligned = min(max((span.bottom - lift - windowBottom).rounded(), 0), host.maxScroll)
     host.focusSpanBounds = bottomAligned > topAligned ? topAligned...bottomAligned : nil
-    host.animateOffset(to: target, duration: animated ? (fast ? 0.18 : 0.38) : 0)
+  }
+
+  // The window changed (the controls came or went): same scroll, new lift and
+  // drag range.
+  private func refreshFocusWindow() {
+    guard mode == .focus, !focusSentences.isEmpty else { return }
+    applyFocusLift(scroll: currentFocusScroll, animated: true)
+  }
+
+  // What of a selection must stay in view: all of it when it fits above the
+  // panel, else its first line.
+  private func focusSelectionExtent(_ ranges: [ReaderSourceRange]) -> (top: CGFloat, bottom: CGFloat)? {
+    guard mode == .focus, let first = ranges.first, let last = ranges.last,
+          let top = focusTextExtent(blockId: first.blockId, range: NSRange(location: first.range.location, length: 1))
+    else { return nil }
+    let bottom = focusTextExtent(blockId: last.blockId, range: NSRange(location: max(last.range.location, NSMaxRange(last.range) - 1), length: 1))?.bottom ?? top.bottom
+    let room = focusWindowBottom(withPanel: true) - focusWindowTop
+    return (top.top, bottom - top.top <= room ? bottom : top.bottom)
+  }
+
+  // Focus mode: a word or held text whose panel is coming up (or is up) stays
+  // in view above it.
+  private func keepFocusSelectionInView(_ ranges: [ReaderSourceRange]) {
+    guard let extent = focusSelectionExtent(ranges) else { return }
+    focusWord = extent
+    if focusPanelHeight > 0 { applyFocusLift(scroll: currentFocusScroll, animated: true) }
   }
 
   private func focusTo(_ index: Int, animated: Bool, fast: Bool) {
@@ -1519,6 +1628,7 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     let fast = now - lastFocusMoveAt < 0.45
     lastFocusMoveAt = now
     clearSelection(fromTap: false, force: focusPanelHeight > 0)
+    focusWord = nil
     focusTo(next, animated: true, fast: fast)
     var payload = focusStatePayload(focusIndex, withNext: true)
     payload["moved"] = true
@@ -1640,7 +1750,9 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
   private func focusPanelChanged(from old: Double) {
     guard focusPanelHeight != old else { return }
     if mode == .focus && !focusSentences.isEmpty {
-      anchorFocus(animated: true, fast: false)
+      // The span stays where it is (a long one where the reader scrolled it);
+      // only the lift changes, to clear the panel and keep the tapped word in view.
+      applyFocusLift(scroll: currentFocusScroll, animated: true)
     } else {
       host.setLift(0, animated: true)
     }
@@ -1914,6 +2026,7 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
       "tapOffset": hit.tapOffset,
     ]
     if let word = hit.phraseWord, !word.isEmpty { payload["phraseWord"] = word }
+    keepFocusSelectionInView([ReaderSourceRange(blockId: layout.block.id, range: hit.range)])
     onWordSelected(payload)
   }
 
@@ -1977,16 +2090,23 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
       return
     }
     if let hit {
-      if let index = focusSentenceIndex(blockId: hit.item.layout.block.id, offset: hit.range.location) {
+      let blockId = hit.item.layout.block.id
+      focusWord = focusTextExtent(blockId: blockId, range: hit.range)
+      // A tap inside the lit sentence leaves it where the reader has it (a long
+      // one may be scrolled to its end); only another sentence is moved to.
+      if let index = focusSentenceIndex(blockId: blockId, offset: hit.range.location),
+         !(focusIndex..<(focusIndex + focusSpanCount)).contains(index) {
         focusTo(index, animated: true, fast: false)
       }
       selectWord(hit, page: page, surface: surface)
       return
     }
+    focusWord = nil
     if let position = surface.view.textPosition(at: point, allowClosest: false),
        let item = page.items[safe: position.itemIndex],
        !focusTapsInSpanOnly || isInLitSpan(item.layout.block.id, position.offset),
-       let index = focusSentenceIndex(blockId: item.layout.block.id, offset: position.offset) {
+       let index = focusSentenceIndex(blockId: item.layout.block.id, offset: position.offset),
+       !(focusIndex..<(focusIndex + focusSpanCount)).contains(index) {
       focusTo(index, animated: true, fast: false)
     }
     onSelectionCleared(["fromTap": true])
@@ -2144,6 +2264,7 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
       return
     }
     fadeContextSentence()
+    keepFocusSelectionInView(selection.ranges)
     onTextSelected(payload)
   }
 
@@ -2275,6 +2396,7 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
   private func publishExtended(_ next: ReaderSelection) {
     guard !next.ranges.isEmpty else { return }
     setSelection(next)
+    keepFocusSelectionInView(next.ranges)
     if let payload = textSelectionPayload(next) { onTextSelected(payload) }
   }
 
