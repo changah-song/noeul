@@ -4270,7 +4270,9 @@ const Read = ({
     // The line along the bottom: where you are in the story, its chapters and
     // bookmarks; dragging previews and releasing goes there.
     // Listening is full screen too: only its own bar is up. The reader's own
-    // focus mode keeps the header (its eye turns it off) and the line.
+    // focus mode goes full screen like the other modes: swiping on to the next
+    // sentence hides the header and the line, swiping back or a tap on the
+    // page brings them back (the eye that turns it off is in the header).
     const chromeHidden = isFullscreen || (focusMode && (!userFocus || listenActive));
     const scrubberShown = Boolean(currentBook) && bookLoadState === 'ready' && !chromeHidden;
     const scrubberSpace = scrubberShown ? PAGE_SCRUBBER_HEIGHT + insets.bottom : 0;
@@ -5200,11 +5202,14 @@ const Read = ({
 
     // ── The controls coming and going ────────────────────────────────────────
     // They go the moment the reader reads on (drags or flings the text on,
-    // turns a page forward) and come back the moment they go back, even a
-    // little, or tap the page. Jumps don't count: the reader reports only
-    // its own gestures. Listening (focus mode) keeps its own controls.
+    // turns a page forward, swipes on to the next sentence in focus mode) and
+    // come back the moment they go back, even a little, or tap the page.
+    // Jumps don't count: the reader reports only its own gestures. Listening
+    // keeps its own controls (its bar is all that's up).
+    const listenActiveRef = useRef(listenActive);
+    listenActiveRef.current = listenActive;
     const handleReadingDirection = useCallback((event) => {
-        if (focusModeRef.current) return;
+        if (listenActiveRef.current) return;
         if (event?.direction === 'forward') {
             setIsFullscreen(true);
         } else if (event?.direction === 'back') {

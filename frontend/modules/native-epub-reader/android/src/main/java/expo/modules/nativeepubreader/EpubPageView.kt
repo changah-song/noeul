@@ -218,7 +218,8 @@ class EpubPageView(context: Context) : View(context) {
   private var onSelectionCleared: (() -> Unit)? = null
   private var onSelectionDragStateChanged: ((Boolean) -> Unit)? = null
   private var onEdgeAction: ((ReaderEdgeKind) -> Unit)? = null
-  private var onFocusTextTapped: ((String, Int) -> Unit)? = null
+  // (blockId, local offset, whether a word was tapped rather than blank space)
+  private var onFocusTextTapped: ((String, Int, Boolean) -> Unit)? = null
   private var focusModeEnabled = false
   // Set while the JS lookup panel is visible in focus mode; taps then dismiss
   // the panel instead of moving the beam or selecting another word.
@@ -399,7 +400,7 @@ class EpubPageView(context: Context) : View(context) {
     onSelectionDragStateChanged: ((Boolean) -> Unit)?,
     onEdgeAction: ((ReaderEdgeKind) -> Unit)?,
     focusModeEnabled: Boolean = false,
-    onFocusTextTapped: ((String, Int) -> Unit)? = null,
+    onFocusTextTapped: ((String, Int, Boolean) -> Unit)? = null,
     showPinyin: Boolean = false,
     showGloss: Boolean = false
   ) {
@@ -1710,7 +1711,7 @@ class EpubPageView(context: Context) : View(context) {
             if (focusModeEnabled) {
               // Word taps move the beam to the word's sentence; the lookup panel
               // always slides up from the bottom in focus mode.
-              onFocusTextTapped?.invoke(hit.range.blockId, hit.localStartOffset)
+              onFocusTextTapped?.invoke(hit.range.blockId, hit.localStartOffset, true)
               onWordSelected?.invoke(hit.copy(placement = "bottom"))
             } else {
               onWordSelected?.invoke(hit)
@@ -1721,7 +1722,7 @@ class EpubPageView(context: Context) : View(context) {
               hitTestTextPosition(event.x, event.y, allowClosest = false)
                 ?.takeUnless { tapOutsideFocusSpan(it.block.blockId, it.localOffset) }
                 ?.let { position ->
-                  onFocusTextTapped?.invoke(position.block.blockId, position.localOffset)
+                  onFocusTextTapped?.invoke(position.block.blockId, position.localOffset, false)
                 }
             }
             onSelectionCleared?.invoke()

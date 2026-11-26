@@ -444,6 +444,8 @@ final class ReaderScrollHost: UIView, UIScrollViewDelegate {
     scrollAnimator.stop()
   }
 
+  var isAnimatingOffset: Bool { scrollAnimator.isRunning }
+
   // Focus mode: lifts the content so the lit sentence stays above the panel.
   func setLift(_ value: CGFloat, animated: Bool) {
     guard value != lift else { return }
@@ -554,7 +556,11 @@ final class ReaderScrollHost: UIView, UIScrollViewDelegate {
       delegate?.scrollHostWillBeginDragging(self)
     case .changed:
       if let bounds = focusSpanBounds {
-        setOffset(min(max(offset + (focusPanLastY - y), bounds.lowerBound), bounds.upperBound))
+        // A lift or the controls coming or going can leave the span just
+        // outside its range: it moves back toward it, never jumps.
+        let low = min(bounds.lowerBound, offset)
+        let high = max(bounds.upperBound, offset)
+        setOffset(min(max(offset + (focusPanLastY - y), low), high))
       }
       focusPanLastY = y
     case .ended:
